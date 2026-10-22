@@ -1,6 +1,6 @@
 # ADR 0002 — LLM providers and tool calling
 
-- Status: **proposed**
+- Status: **accepted** (owner, 2026-10-23)
 - Date: 2026-10-22
 
 ## Context
@@ -61,6 +61,17 @@ sufficient.
    picks the final default order from its output.
 5. If the Gemini compat layer proves unreliable for tools, add `GeminiNativeProvider`
    (`google-genai`) behind the same protocol — no core changes.
+
+## Amendment (2026-10-23): local fallback is LM Studio
+
+The owner already runs **LM Studio**, so it replaces Ollama as the default local
+provider. LM Studio serves an OpenAI-compatible API at `http://localhost:1234/v1`
+(start it in LM Studio: Developer → Start Server, or `lms server start`), so the same
+`OpenAICompatProvider` is used with a different `base_url`; Ollama remains possible
+by config only. The provider key in config is `local`. The local model is chosen by
+the #22 benchmark; a ~4B official Qwen model is preferred for voice slices because a
+9B Q4 model (~6.5 GB) doesn't fit in 6 GB VRAM next to STT. Community "uncensored"
+fine-tunes are not used as the default for tool calling.
 
 ## Consequences
 

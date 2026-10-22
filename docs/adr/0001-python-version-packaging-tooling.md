@@ -1,6 +1,6 @@
 # ADR 0001 — Python version, packaging and tooling
 
-- Status: **proposed**
+- Status: **accepted** (owner, 2026-10-23)
 - Date: 2026-10-22
 - Deciders: owner (approval), architect (proposal)
 

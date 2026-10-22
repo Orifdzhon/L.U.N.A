@@ -1,6 +1,6 @@
 # ADR 0008 — Opening apps and websites on Windows
 
-- Status: **proposed**
+- Status: **accepted** (owner, 2026-10-23)
 - Date: 2026-10-22
 
 ## Context

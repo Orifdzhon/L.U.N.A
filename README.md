@@ -21,3 +21,7 @@ uv run pytest                   # tests (live/gpu/audio markers are skipped by d
 
 Copy `.env.example` to `.env` for API keys (gitignored). Config lives in `luna.toml`
 (`--config PATH`, then `%APPDATA%\LUNA\luna.toml`, then `./luna.toml`).
+
+## License
+
+[Apache-2.0](LICENSE)

@@ -27,7 +27,9 @@
       "Bash(gh issue close:*)",
       "Bash(gh pr close:*)",
       "Bash(gh release:*)",
-      "Bash(git branch -d:*)"
+      "Bash(git branch -d:*)",
+      "Bash(gh pr merge:*)",
+      "Edit(./.github/workflows/**)"
     ],
     "deny": [
       "Bash(git push --force:*)",
@@ -38,7 +40,6 @@
       "Bash(git reset --hard:*)",
       "Bash(git clean -fdx:*)",
       "Bash(git branch -D:*)",
-      "Bash(gh pr merge:*)",
       "Bash(gh repo delete:*)",
       "Bash(gh release delete:*)",
       "Bash(rm -rf:*)",
@@ -52,8 +53,7 @@
       "Read(./.env.*)",
       "Edit(./.claude/settings.json)",
       "Edit(./CLAUDE.md)",
-      "Edit(./.claude/agents/**)",
-      "Edit(./.github/workflows/**)"
+      "Edit(./.claude/agents/**)"
     ]
   }
 }

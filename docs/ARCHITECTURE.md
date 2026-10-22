@@ -452,6 +452,8 @@ autostart = false
   `ts, request_id, source, text (user request), tool, args, safety, confirmed, ok,
   summary, duration_ms, provider`. Written by `ToolRegistry.execute` for every tool
   call, including refused ones. Rotated monthly.
+  Summaries of `untrusted` tool results are never written to the action log (only a
+  placeholder with the length).
 - Timing spans (wake→end of speech→STT→LLM→first audio) are logged at INFO to
   validate latency targets N4.
 

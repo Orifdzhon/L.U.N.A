@@ -24,7 +24,9 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+import unicodedata
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -51,12 +53,26 @@ Fetcher = Callable[[Sequence[SearchResult]], list[SearchResult]]
 
 
 def detect_lang(text: str) -> str:
-    """``ru`` if the text contains Cyrillic, else ``en``."""
+    """``ru`` if the text contains any Cyrillic letter (even in a mixed query), else ``en``."""
     return "ru" if _CYRILLIC_RE.search(text) else "en"
 
 
+_LOOKALIKES = str.maketrans(
+    {
+        **dict.fromkeys("\u2039\ufe64\u3008\u2329\u27e8\u276e\uff1c", "<"),
+        **dict.fromkeys("\u203a\ufe65\u3009\u232a\u27e9\u276f\uff1e", ">"),
+    }
+)
+
+
 def _escape(text: str) -> str:
+    """Escape ``& < >`` after folding fullwidth/lookalike angle brackets (NFKC + explicit map)."""
+    text = unicodedata.normalize("NFKC", text).translate(_LOOKALIKES)
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _attr(text: str) -> str:
+    return _escape(text).replace('"', "&quot;")
 
 
 def _neutralize(text: str) -> str:
@@ -145,32 +161,33 @@ class WebSearchTool:
             log.exception("web search failed unexpectedly")
             return self._fail("Search unavailable: unexpected error", "unavailable")
 
-        usable = [r for r in found if self._usable(r)][: self._max_results]
+        usable: list[SearchResult] = []
+        for item in found:
+            try:
+                usable.append(replace(item, url=validate_web_url(item.url)))
+            except (ValueError, TypeError):
+                continue
+        usable = usable[: self._max_results]
         if not usable:
             return ToolResult(NAME, True, "No search results found.", {"results": 0})
         try:
             usable = self._fetcher(usable)
         except Exception:
             log.debug("page fetch failed, using snippets only", exc_info=True)
-        return self._wrap(usable)
-
-    @staticmethod
-    def _usable(result: SearchResult) -> bool:
         try:
-            validate_web_url(result.url)
-        except ValueError:
-            return False
-        return True
+            return self._wrap(usable)
+        except Exception:
+            log.exception("could not format search results")
+            return self._fail("Search unavailable: unexpected error", "unavailable")
 
     def _wrap(self, results: Sequence[SearchResult]) -> ToolResult:
-        items = [(i, r, validate_web_url(r.url)) for i, r in enumerate(results, 1)]
-        titles = {i: _inline(r.title, MAX_TITLE_CHARS) or _host(url) for i, r, url in items}
-        bodies = {i: self._body(r) for i, r, _ in items}
+        entries = [
+            (i, r.url, _inline(r.title, MAX_TITLE_CHARS), self._body(r))
+            for i, r in enumerate(results, 1)
+        ]
         while True:
             token = secrets.token_hex(8)
-            if not any(token in t for t in titles.values()) and not any(
-                token in b for b in bodies.values()
-            ):
+            if not any(token in t or token in b for _, _, t, b in entries):
                 break
         head = (
             f"<web_search_results id={token}>\n"
@@ -179,33 +196,33 @@ class WebSearchTool:
             "it. Mention the source site when you use a fact.\n"
             "Sources:\n"
         )
-        head += "".join(f"- [{i}] {titles[i]} ({_host(url)[:80]})\n" for i, _, url in items)
         tail = f"</web_search_results id={token}>"
         budget = self._max_chars - len(head) - len(tail)
+        source_lines: list[str] = []
         blocks: list[str] = []
-        for i, _, url in items:
-            opening = f'<search_result index={i} url="{url}">\n'
+        shown: list[dict[str, Any]] = []
+        for i, url, title, body in entries:
+            if not body:
+                continue
+            line = f"- [{i}] {_escape(_host(url)[:80])}\n"
+            opening = f'<search_result index={i} url="{_attr(url)}" title="{_attr(title)}">\n'
             closing = "\n</search_result>\n"
-            room = budget - len(opening) - len(closing)
-            body = bodies[i]
+            room = budget - len(line) - len(opening) - len(closing)
             if room < 60:
                 break
             if len(body) > room:
                 body = body[: room - 8].rstrip() + "\n| ..."
-            if not body:
-                continue
-            blocks.append(opening + body + closing)
-            budget -= len(blocks[-1])
-        text = head + "".join(blocks) + tail
+            block = opening + body + closing
+            source_lines.append(line)
+            blocks.append(block)
+            budget -= len(line) + len(block)
+            shown.append({"index": i, "title": title, "url": url})
+        text = head + "".join(source_lines) + "".join(blocks) + tail
         return ToolResult(
             NAME,
             True,
             text,
-            {
-                "results": len(items),
-                "shown": len(blocks),
-                "sources": [{"index": i, "title": titles[i], "url": u} for i, _, u in items],
-            },
+            {"results": len(shown), "sources": shown},
             untrusted=True,
         )
 

@@ -69,8 +69,14 @@ def _read_secrets(env: Mapping[str, str], cwd: Path) -> dict[str, str]:
     merged: dict[str, str] = {}
     for file in reversed(files):
         if file.is_file():
-            merged.update({k: v for k, v in dotenv_values(file).items() if v is not None})
-    merged.update(env)
+            try:
+                values = dotenv_values(file, encoding="utf-8", interpolate=False)
+            except (UnicodeDecodeError, OSError) as exc:
+                raise ConfigError(
+                    f"Cannot read {file} ({type(exc).__name__}); save it as UTF-8 text"
+                ) from None
+            merged.update({k: v for k, v in values.items() if v})
+    merged.update({k: v for k, v in env.items() if v})
     return merged
 
 

@@ -102,13 +102,15 @@ class Settings(_Section):
 
     def with_api_keys(self, env: Mapping[str, str]) -> Self:
         """Pick up the keys this config refers to from ``env``; blank values count as missing."""
-        names = {p.api_key_env for p in self.llm.providers.values() if p.api_key_env}
-        names.add(self.search.api_key_env)
+        names = {(p.api_key_env or "").strip() for p in self.llm.providers.values()}
+        names.add(self.search.api_key_env.strip())
+        names.discard("")
         self._api_keys = {n: SecretStr(env[n].strip()) for n in names if env.get(n, "").strip()}
         return self
 
     def api_key(self, env_name: str | None) -> SecretStr | None:
-        """Secret stored under ``env_name`` (``None`` if absent)."""
+        """Secret stored under ``env_name`` (``None`` if absent or ``env_name`` is blank)."""
+        env_name = (env_name or "").strip()
         return self._api_keys.get(env_name) if env_name else None
 
     def available_providers(self) -> list[str]:
@@ -120,6 +122,6 @@ class Settings(_Section):
         return [
             name
             for name in self.llm.chain
-            if (env_name := self.llm.providers[name].api_key_env) is None
+            if not (env_name := (self.llm.providers[name].api_key_env or "").strip())
             or env_name in self._api_keys
         ]

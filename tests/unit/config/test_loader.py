@@ -94,8 +94,12 @@ def test_router_aliases_loaded(tmp_path):
     assert settings.router.threshold == 85
 
 
-def test_example_config_parses_and_equals_defaults():
-    settings = load_settings(REPO_ROOT / "luna.example.toml", env={}, cwd=REPO_ROOT)
+def test_example_config_parses_and_equals_defaults(tmp_path):
+    example = tmp_path / "example.toml"
+    example.write_bytes((REPO_ROOT / "luna.example.toml").read_bytes())
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    settings = load_settings(example, env={}, cwd=cwd)
     defaults = Settings()
     for section in ("app", "llm", "search", "router"):
         assert getattr(settings, section) == getattr(defaults, section)
@@ -138,6 +142,38 @@ def test_secret_never_in_repr_or_dumps(tmp_path):
     ):
         assert "test-key-123" not in text
     assert "test-key-123" not in repr(settings.api_key("GEMINI_API_KEY"))
+
+
+def test_non_utf8_dotenv_raises_config_error_without_contents(tmp_path):
+    (tmp_path / ".env").write_bytes("GEMINI_API_KEY=test-key-123\n".encode("utf-16"))
+    with pytest.raises(ConfigError, match="UTF-8") as exc:
+        load_settings(env={}, cwd=tmp_path)
+    assert ".env" in str(exc.value)
+    assert "test-key-123" not in str(exc.value)
+
+
+def test_empty_env_var_does_not_override_dotenv(tmp_path):
+    (tmp_path / ".env").write_text("GROQ_API_KEY=from-file\n")
+    settings = load_settings(env={"GROQ_API_KEY": ""}, cwd=tmp_path)
+    assert settings.api_key("GROQ_API_KEY").get_secret_value() == "from-file"
+
+
+def test_dotenv_values_are_not_interpolated(tmp_path):
+    (tmp_path / ".env").write_text("GROQ_API_KEY=a${HOME}b\n")
+    settings = load_settings(env={"HOME": "X"}, cwd=tmp_path)
+    assert settings.api_key("GROQ_API_KEY").get_secret_value() == "a${HOME}b"
+
+
+def test_empty_api_key_env_means_no_key_needed(tmp_path):
+    settings = _load_text(tmp_path, '[llm.providers.groq]\napi_key_env = ""\n')
+    assert settings.api_key("") is None
+    assert settings.available_providers() == ["groq", "local"]
+
+
+def test_api_key_in_toml_is_rejected_without_leaking_it(tmp_path):
+    with pytest.raises(ConfigError, match="api_key") as exc:
+        _load_text(tmp_path, '[llm.providers.gemini]\napi_key = "test-key-123"\n')
+    assert "test-key-123" not in str(exc.value)
 
 
 def test_blank_key_counts_as_missing(tmp_path):

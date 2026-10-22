@@ -20,9 +20,9 @@ config.local.*
 
 # Runtime data
 *.sqlite3
-logs/
+/logs/
 data/cache/
-models/
+/models/
 
 # Claude Code (local only)
 .claude/settings.local.json

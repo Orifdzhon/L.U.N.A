@@ -1,0 +1,50 @@
+[project]
+name = "luna"
+version = "0.1.0"
+description = "L.U.N.A. - voice assistant for Windows"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+]
+
+[project.optional-dependencies]
+# Declared now, populated by later Issues (voice: STT/TTS/wake word; ui: PySide6).
+voice = []
+ui = []
+
+[project.scripts]
+luna = "luna.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-timeout>=2.3",
+    "respx>=0.21",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/luna"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 60
+markers = [
+    "live: needs real network / API keys (run manually)",
+    "gpu: needs a CUDA GPU",
+    "audio: needs a microphone or speakers",
+]
+addopts = '-m "not live and not gpu and not audio"'

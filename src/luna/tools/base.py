@@ -24,7 +24,11 @@ class ToolResult:
 
 @runtime_checkable
 class Confirmer(Protocol):
-    """Provided by the UI: the CLI asks y/n, Qt shows a dialog."""
+    """Provided by the UI: the CLI asks y/n, Qt shows a dialog.
+
+    Only a return value of exactly ``True`` counts as approval. Implementations MUST return
+    ``False`` on timeout, cancellation or any doubt; the registry does not enforce a timeout.
+    """
 
     def confirm(self, prompt: str) -> bool: ...
 

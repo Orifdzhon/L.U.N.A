@@ -52,6 +52,13 @@ def _clip(text: Any, limit: int = MAX_LOG_TEXT_CHARS) -> str:
     return text if len(text) <= limit else text[:limit] + _TRUNC
 
 
+def _log_summary(result: ToolResult) -> str:
+    """Summary for the action log; untrusted web text is never written to disk."""
+    if result.untrusted:
+        return f"[untrusted web content omitted, {len(str(result.summary))} chars]"
+    return _clip(result.summary)
+
+
 @dataclass(frozen=True)
 class _Entry:
     """Immutable snapshot taken at registration; later mutation of the tool changes nothing."""
@@ -235,7 +242,7 @@ class ToolRegistry:
                 safety=entry.safety.value if entry else "unknown",
                 confirmed=state["confirmed"],
                 ok=bool(result.ok),
-                summary=_clip(result.summary),
+                summary=_log_summary(result),
                 duration_ms=max(0, round((self._timer() - start) * 1000)),
                 provider=getattr(ctx, "provider", None),
             )

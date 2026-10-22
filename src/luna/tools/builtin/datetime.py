@@ -2,7 +2,7 @@
 
 The module is named like the stdlib one on purpose (path fixed by ARCHITECTURE). It is safe
 because imports are absolute: ``import datetime`` here still resolves to the stdlib module.
-The clock is a ``luna.core.clock.Clock`` returning wall-clock epoch seconds (``time.time`` in
+The clock is a ``luna.core.clock.WallClock`` returning wall-clock epoch seconds (``time.time`` in
 production, a ``FakeClock`` started at an epoch value in tests). Without an explicit ``tz`` the
 system local zone is used, so no ``tzdata`` dependency is needed.
 """
@@ -13,7 +13,7 @@ import datetime as dt
 import time
 from typing import Any
 
-from luna.core.clock import Clock
+from luna.core.clock import WallClock
 from luna.tools.base import SafetyLevel, ToolContext, ToolResult
 
 NAME = "get_datetime"
@@ -29,7 +29,7 @@ def _offset(moment: dt.datetime) -> str:
     return f"{sign}{hours:02d}:{minutes:02d}"
 
 
-def _info(clock: Clock, tz: dt.tzinfo | None) -> dict[str, Any]:
+def _info(clock: WallClock, tz: dt.tzinfo | None) -> dict[str, Any]:
     utc = dt.datetime.fromtimestamp(clock(), tz=dt.UTC)
     moment = utc.astimezone(tz).replace(microsecond=0)  # tz=None: system local zone
     return {
@@ -42,7 +42,7 @@ def _info(clock: Clock, tz: dt.tzinfo | None) -> dict[str, Any]:
     }
 
 
-def current_datetime_context(clock: Clock = time.time, tz: dt.tzinfo | None = None) -> str:
+def current_datetime_context(clock: WallClock = time.time, tz: dt.tzinfo | None = None) -> str:
     """One line for the system prompt (used by #19)."""
     info = _info(clock, tz)
     return (
@@ -64,7 +64,7 @@ class GetDatetimeTool:
     }
     safety = SafetyLevel.SAFE
 
-    def __init__(self, clock: Clock = time.time, tz: dt.tzinfo | None = None) -> None:
+    def __init__(self, clock: WallClock = time.time, tz: dt.tzinfo | None = None) -> None:
         self._clock = clock
         self._tz = tz
 

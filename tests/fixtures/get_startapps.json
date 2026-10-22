@@ -1,0 +1,17 @@
+[
+  {"Name": "Google Chrome", "AppID": "Chrome"},
+  {"Name": "Microsoft Edge", "AppID": "MSEdge"},
+  {"Name": "Telegram", "AppID": "Telegram.TelegramDesktop"},
+  {"Name": "Калькулятор", "AppID": "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"},
+  {"Name": "Блокнот", "AppID": "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\notepad.exe"},
+  {"Name": "Paint", "AppID": "Microsoft.Paint_8wekyb3d8bbwe!App"},
+  {"Name": "Проводник", "AppID": "Microsoft.Windows.Explorer"},
+  {"Name": "Параметры", "AppID": "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel"},
+  {"Name": "Visual Studio Code", "AppID": "Microsoft.VisualStudioCode"},
+  {"Name": "Microsoft Word", "AppID": "{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}\\Microsoft Office\\root\\Office16\\WINWORD.EXE"},
+  {"Name": "Spotify", "AppID": "SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify"},
+  {"Name": "Discord", "AppID": "com.squirrel.Discord.Discord"},
+  {"Name": "Steam", "AppID": "{6D809377-6AF0-444B-8957-A3773F02200E}\\Steam\\steam.exe"},
+  {"Name": "Диспетчер задач", "AppID": "Microsoft.Windows.TaskManager"},
+  {"Name": "Командная строка", "AppID": "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\cmd.exe"}
+]

@@ -397,7 +397,8 @@ after their timeout and their results discarded.
   Search order: `--config PATH` → `%APPDATA%\LUNA\luna.toml` → `./luna.toml`.
   A committed `luna.example.toml` documents every key.
 - `.env` (gitignored) for secrets only: `GEMINI_API_KEY`, `GROQ_API_KEY`,
-  `TAVILY_API_KEY`. Loaded by `pydantic-settings`; keys are `SecretStr`, never logged.
+  `TAVILY_API_KEY`. Parsed by the loader with `python-dotenv` (no interpolation; environment
+  variables win over `.env`); keys are `SecretStr`, never logged.
 - Aliases in `data/*.toml` (shipped defaults) merged with user overrides in `luna.toml`.
 
 ```toml

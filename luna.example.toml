@@ -1,0 +1,75 @@
+# L.U.N.A. example configuration.
+#
+# Copy to %APPDATA%\LUNA\luna.toml (or ./luna.toml, or pass --config PATH) and edit.
+# Every key below is optional: the values shown are the defaults. Your values are merged
+# over the defaults, so you only need to write what you change.
+#
+# API keys do NOT go here. Put them in a gitignored `.env` file (see .env.example) or in
+# environment variables: GEMINI_API_KEY, GROQ_API_KEY, TAVILY_API_KEY.
+
+[app]
+log_level = "INFO"          # DEBUG | INFO | WARNING | ERROR | CRITICAL
+history_turns = 6           # dialogue turns kept as LLM context (>= 0)
+request_timeout_s = 20.0    # overall limit for one user request, seconds (> 0)
+
+[llm]
+# Providers are tried in this order; a provider whose key is missing is skipped.
+chain = ["gemini", "groq", "local"]
+timeout_s = 20.0            # per-request read timeout, seconds (> 0)
+connect_timeout_s = 5.0     # connection timeout, seconds (> 0)
+
+[llm.providers.gemini]
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+model = "gemini-3.5-flash-lite"
+api_key_env = "GEMINI_API_KEY"   # name of the environment variable holding the key
+# Optional per-provider quirks:
+# supports_tool_choice = true
+# reasoning_effort = "low"
+# max_tokens = 1024
+
+[llm.providers.groq]
+base_url = "https://api.groq.com/openai/v1"
+model = "openai/gpt-oss-120b"
+api_key_env = "GROQ_API_KEY"
+
+# Local fallback: LM Studio (Developer -> Start Server). For Ollama use
+# base_url = "http://localhost:11434/v1". No key needed.
+[llm.providers.local]
+base_url = "http://localhost:1234/v1"
+model = "qwen3-4b"               # exact model name as shown by LM Studio
+
+[search]
+provider = "ddgs"           # ddgs | searxng | tavily
+max_results = 5             # >= 1
+fetch_pages = 3             # result pages to download and read, >= 0
+# searxng_url = "http://localhost:8080"   # required when provider = "searxng"
+# api_key_env = "TAVILY_API_KEY"          # key variable for provider = "tavily"
+
+[router]
+threshold = 85              # fuzzy match score 0..100 needed to open an app/site
+margin = 5                  # the best match must beat the runner-up by this much
+# Your own aliases (spoken name -> app name / URL), merged with the shipped ones:
+# [router.app_aliases]
+# "блокнот" = "notepad"
+# [router.site_aliases]
+# "ютуб" = "https://www.youtube.com"
+
+# The sections below are accepted but not validated yet; they are owned by later Issues.
+[stt]
+provider = "faster_whisper"   # or "groq"
+model = "large-v3-turbo"
+device = "cuda"               # "cpu" -> model "small", compute_type "int8"
+compute_type = "int8_float16"
+
+[tts]
+provider = "piper"            # or "sapi"
+voice_ru = "ru_RU-dmitri-medium"
+voice_en = "en_US-ljspeech-medium"
+
+[wakeword]
+engine = "vosk"               # "vosk" | "onnx" | "off"
+keywords = ["луна"]
+hotkey = "ctrl+alt+space"
+
+[ui]
+autostart = false

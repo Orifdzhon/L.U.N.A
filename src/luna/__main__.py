@@ -5,10 +5,9 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from pydantic import ValidationError
-
 from luna import __version__
 from luna.config.loader import load_settings
+from luna.core.errors import ConfigError
 from luna.logs.setup import setup_logging
 
 
@@ -25,7 +24,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         settings = load_settings(args.config)
-    except (OSError, ValueError, ValidationError) as exc:
+    except (OSError, ConfigError) as exc:
         print(f"luna: config error: {exc}", file=sys.stderr)
         return 2
     setup_logging(settings.app.log_level)

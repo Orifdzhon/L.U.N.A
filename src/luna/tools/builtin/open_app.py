@@ -3,13 +3,15 @@
 Only ``AppEntry`` objects returned by the ``AppCatalog`` are ever passed to the launcher
 (ARCHITECTURE section 9); the model-supplied text is only used to pick among them.
 Results: ``ok=True`` launched; ``ok=False`` with ``data["reason"]`` one of ``no_match``,
-``ambiguous`` (plus ``candidates``), ``catalog_unavailable``, ``open_failed``, ``invalid_name``.
+``ambiguous`` (plus ``candidates``), ``unsupported_request``, ``catalog_unavailable``,
+``open_failed``, ``invalid_name``.
 """
 
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from luna.core.errors import ProviderUnavailable, ToolError
@@ -26,6 +28,7 @@ from luna.tools.app_matching import (
 from luna.tools.base import SafetyLevel, ToolContext, ToolResult
 
 NAME = "open_app"
+REFRESH_MIN_INTERVAL_S = 300.0  # at most one rescan on a miss per 5 minutes
 
 
 class OpenAppTool:
@@ -57,6 +60,7 @@ class OpenAppTool:
         *,
         threshold: int = DEFAULT_THRESHOLD,
         margin: int = DEFAULT_MARGIN,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """``app_aliases``/``threshold``/``margin`` come from ``settings.router``."""
         self._catalog = catalog
@@ -64,6 +68,8 @@ class OpenAppTool:
         self._aliases = merge_aliases(app_aliases)
         self._threshold = threshold
         self._margin = margin
+        self._clock = clock
+        self._last_refresh: float | None = None
 
     def _match(self, name: str) -> MatchResult:
         apps = self._catalog.list_apps()
@@ -75,14 +81,17 @@ class OpenAppTool:
             return self._fail("name must be a non-empty string", "invalid_name")
         try:
             result = self._match(name)
-            if result.status is MatchStatus.NONE:
-                # the app may have been installed after the scan; on failure keep the old snapshot
+            if result.status is MatchStatus.NONE and self._refresh_allowed():
+                # The app may have been installed after the scan. The Windows rescan can
+                # block for up to its timeout (20 s), hence the rate limit.
                 with contextlib.suppress(ProviderUnavailable):
                     self._catalog.refresh()
                 result = self._match(name)
         except ProviderUnavailable:
             return self._fail("The list of installed apps is not available", "catalog_unavailable")
 
+        if result.status is MatchStatus.UNSUPPORTED:
+            return self._fail("Only opening one app by name is supported", "unsupported_request")
         if result.status is MatchStatus.NONE:
             return self._fail("No installed app matches that name", "no_match")
         if result.status is MatchStatus.AMBIGUOUS:
@@ -96,6 +105,13 @@ class OpenAppTool:
         entry = result.entry
         assert entry is not None  # MATCH always carries an entry
         return self._launch(entry)
+
+    def _refresh_allowed(self) -> bool:
+        now = self._clock()
+        if self._last_refresh is not None and now - self._last_refresh < REFRESH_MIN_INTERVAL_S:
+            return False
+        self._last_refresh = now
+        return True
 
     def _launch(self, entry: AppEntry) -> ToolResult:
         try:

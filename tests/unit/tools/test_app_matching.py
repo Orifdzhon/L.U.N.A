@@ -111,9 +111,11 @@ def test_near_equal_candidates_are_ambiguous() -> None:
     assert {e.name for e in res.candidates} == {"Visual Studio 2019", "Visual Studio 2022"}
 
 
-def test_same_name_different_ids_is_ambiguous() -> None:
-    apps = [AppEntry("Steam", "a"), AppEntry("Steam", "b")]
-    assert match_app("steam", apps, {}).status is MatchStatus.AMBIGUOUS
+def test_same_name_different_ids_collapses_to_lowest_id() -> None:
+    apps = [AppEntry("Steam", "b"), AppEntry("Steam", "a")]
+    res = match_app("steam", apps, {})
+    assert res.status is MatchStatus.MATCH
+    assert res.entry == AppEntry("Steam", "a")
 
 
 def test_duplicate_app_id_is_one_app() -> None:

@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from fakes import FakeAppCatalog, FakeConfirmer, FakeLauncher
+from fakes import FakeAppCatalog, FakeClock, FakeConfirmer, FakeLauncher
 from luna.core.errors import ProviderUnavailable, ToolError
 from luna.logs.action_log import ActionLog
 from luna.platform.base import AppEntry
@@ -175,3 +175,39 @@ def test_schema_registers_and_validates(tool: OpenAppTool, tmp_path: Path) -> No
     assert validate_args({"name": 1}, schema)
     assert validate_args({"name": "x", "extra": 1}, schema)
     assert validate_args({"name": "x" * 500}, schema)
+
+
+def test_refresh_on_miss_is_rate_limited(catalog: FakeAppCatalog, launcher: FakeLauncher) -> None:
+    clock = FakeClock()
+    t = OpenAppTool(catalog, launcher, clock=clock)
+    assert t.run({"name": "фотошоп"}, CTX).data == {"reason": "no_match"}
+    assert t.run({"name": "gimp"}, CTX).data == {"reason": "no_match"}
+    assert catalog.refresh_count == 1
+    clock.advance(301)
+    assert t.run({"name": "gimp"}, CTX).data == {"reason": "no_match"}
+    assert catalog.refresh_count == 2
+
+
+@pytest.mark.parametrize("name", ["закрой телеграм", "удали телеграм", "хром и телеграм"])
+def test_other_intents_launch_nothing(
+    tool: OpenAppTool, launcher: FakeLauncher, catalog: FakeAppCatalog, name: str
+) -> None:
+    res = tool.run({"name": name}, CTX)
+    assert not res.ok
+    assert res.data == {"reason": "unsupported_request"}
+    assert launcher.launched == []
+    assert catalog.refresh_count == 0
+
+
+@pytest.mark.parametrize("name", ["чат", "окно", "блок", "tel", "музыка"])
+def test_partial_names_launch_nothing(tool: OpenAppTool, launcher: FakeLauncher, name: str) -> None:
+    assert not tool.run({"name": name}, CTX).ok
+    assert launcher.launched == []
+
+
+@pytest.mark.parametrize("name", ["Notepad++", "Battle.net"])
+def test_names_with_punctuation(name: str) -> None:
+    cat = FakeAppCatalog([AppEntry("Notepad++", "n"), AppEntry("Battle.net", "b")])
+    launcher = FakeLauncher(cat)
+    assert OpenAppTool(cat, launcher).run({"name": name}, CTX).ok
+    assert launcher.launched[0].name == name

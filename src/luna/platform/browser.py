@@ -12,6 +12,8 @@ in its IDNA/punycode ASCII form (mixed-script and fullwidth hosts are refused).
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 import unicodedata
 import webbrowser
 from urllib.parse import urlsplit, urlunsplit
@@ -71,6 +73,23 @@ def validate_web_url(url: str) -> str:
     if port is not None:
         netloc += f":{port}"
     return urlunsplit((scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def is_local_host(host: str) -> bool:
+    """True for localhost and any loopback/private/link-local/reserved/unspecified address,
+    including legacy numeric forms such as ``0x7f.1`` or ``2130706433``."""
+    name = host.rstrip(".").lower()
+    if name == "localhost" or name.endswith(".localhost"):
+        return True
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address
+    try:
+        addr = ipaddress.ip_address(name)
+    except ValueError:
+        try:
+            addr = ipaddress.IPv4Address(socket.inet_aton(name))
+        except (OSError, ValueError):
+            return False
+    return not addr.is_global
 
 
 class WebBrowserOpener:

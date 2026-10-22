@@ -12,6 +12,7 @@ class SearchResult:
     url: str
     snippet: str
     content: str | None = None  # extracted page text (truncated), filled by the fetch step
+    untrusted: bool = True  # web text is data, never instructions (ARCHITECTURE section 9)
 
 
 @runtime_checkable

@@ -45,5 +45,9 @@ def load_settings(
     for path in candidate_paths(explicit, env, cwd):
         if path.is_file():
             with path.open("rb") as fh:
-                return Settings.model_validate(tomllib.load(fh))
+                try:
+                    data = tomllib.load(fh)
+                except tomllib.TOMLDecodeError as exc:
+                    raise ValueError(f"Invalid TOML in {path}: {exc}") from exc
+            return Settings.model_validate(data)
     return Settings()

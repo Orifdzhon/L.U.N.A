@@ -22,7 +22,7 @@ config.local.*
 *.sqlite3
 /logs/
 data/cache/
-models/
+/models/
 
 # Claude Code (local only)
 .claude/settings.local.json

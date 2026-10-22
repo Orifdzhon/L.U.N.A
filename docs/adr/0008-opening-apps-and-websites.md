@@ -84,3 +84,12 @@ arguments are passed.
 - rapidfuzz on PyPI: https://pypi.org/pypi/rapidfuzz/json
 - Python `webbrowser`: https://docs.python.org/3/library/webbrowser.html (not re-fetched this session)
 - Local check on the owner's PC: `Get-StartApps` (count 193, sample entries above), 2026-10-22.
+
+## Amendment (2026-10-23, Issue #10)
+
+- "Open browser" with no target opens a configurable http(s) home page
+  (`https://www.google.com` by default) instead of `about:blank`: the `BrowserOpener`
+  contract accepts only http/https (ARCHITECTURE section 9).
+- Bare names are accepted only with a curated TLD list (no `calc.exe`, `readme.txt`);
+  loopback/private addresses are refused for non-alias targets; the host is always opened
+  in IDNA/punycode form and mixed-script hosts are refused.

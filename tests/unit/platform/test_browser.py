@@ -1,3 +1,4 @@
+# ruff: noqa: RUF001
 import webbrowser
 
 import pytest
@@ -45,6 +46,14 @@ def test_opens_web_urls(url: str, calls: list[str]) -> None:
         "https:///nohost",
         "https://example.com:0/",
         "https://example.com:99999/",
+        'https://x.com/"-osint',
+        "https://x.com/<a>",
+        "https://x.com/a^b",
+        "https://x.com/a`b",
+        "https://x.com/a|b",
+        "https://x.com/{a}",
+        "https://аpple.com",
+        "https://ｅxample.com",
         "",
         "x" * 3000,
     ],
@@ -72,3 +81,17 @@ def test_os_error_is_tool_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_validate_returns_url_unchanged() -> None:
     assert validate_web_url("https://example.com/a?b=1") == "https://example.com/a?b=1"
+
+
+@pytest.mark.parametrize(
+    ("given", "opened"),
+    [
+        ("HTTPS://Example.COM/Path?Q=1", "https://example.com/Path?Q=1"),
+        ("https://яндекс.рф/", "https://xn--d1acpjx3f.xn--p1ai/"),
+        ("https://x.com/?a=1&b=2", "https://x.com/?a=1&b=2"),
+        ("http://[::1]:8080/", "http://[::1]:8080/"),
+    ],
+)
+def test_opens_normalized_url(given: str, opened: str, calls: list[str]) -> None:
+    WebBrowserOpener().open_url(given)
+    assert calls == [opened]

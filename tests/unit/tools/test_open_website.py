@@ -53,13 +53,17 @@ def test_other_aliases(tool: OpenWebsiteTool, browser: FakeBrowser, target: str,
     ("target", "url"),
     [
         ("habr.com", "https://habr.com"),
-        ("HABR.com", "https://HABR.com"),
+        ("HABR.com", "https://habr.com"),
         ("www.example.org/path", "https://www.example.org/path"),
         ("example.com:8080", "https://example.com:8080"),
         ("https://example.com/a?b=1", "https://example.com/a?b=1"),
         ("http://example.com", "http://example.com"),
-        ("HTTPS://Example.com/x", "HTTPS://Example.com/x"),
-        ("кремль.рф", "https://кремль.рф"),
+        ("HTTPS://Example.com/x", "https://example.com/x"),
+        ("яндекс.рф", "https://xn--d1acpjx3f.xn--p1ai"),
+        ("https://кремль.рф/a", "https://xn--e1ajeds9e.xn--p1ai/a"),
+        ("https://x.com/?a=1&b=2", "https://x.com/?a=1&b=2"),
+        ("https://8.8.8.8/x", "https://8.8.8.8/x"),
+        ("https://calc.exe", "https://calc.exe"),
     ],
 )
 def test_domains_and_urls(
@@ -90,6 +94,33 @@ def test_domains_and_urls(
         "https://example.com/a b",
         "habr.com\x00",
         "https:///x",
+        'https://x.com/"-osint',
+        "https://x.com/<a>",
+        "https://x.com/a^b",
+        "https://x.com/a`b",
+        "https://x.com/a|b",
+        "https://x.com/{a}",
+        "localhost",
+        "http://localhost:8000",
+        "127.0.0.1",
+        "http://127.0.0.1",
+        "127.1",
+        "0x7f.1",
+        "2130706433",
+        "http://0x7f.1/",
+        "http://[::1]/",
+        "[::1]",
+        "10.0.0.1",
+        "http://172.16.0.1",
+        "192.168.0.1",
+        "169.254.169.254",
+        "http://169.254.169.254/latest",
+        "0.0.0.0",
+        "foo.localhost",
+        "аpple.com",
+        "https://аpple.com",
+        "ｅxample.com",
+        "https://ｅxample.com",
     ],
 )
 def test_unsafe_targets_rejected(tool: OpenWebsiteTool, browser: FakeBrowser, target: str) -> None:
@@ -101,7 +132,20 @@ def test_unsafe_targets_rejected(tool: OpenWebsiteTool, browser: FakeBrowser, ta
 
 @pytest.mark.parametrize(
     "target",
-    ["неизвестный сайт", "foo", "localhost", "192.168.0.1", "hello world", "a.b", "-x.com"],
+    [
+        "неизвестный сайт",
+        "foo",
+        "hello world",
+        "a.b",
+        "-x.com",
+        "calc.exe",
+        "notepad.exe",
+        "readme.txt",
+        "foo.bat",
+        "run.cmd",
+        "a.ps1",
+        "8.8.8.8",
+    ],
 )
 def test_no_match(tool: OpenWebsiteTool, browser: FakeBrowser, target: str) -> None:
     res = tool.run({"target": target}, CTX)
@@ -184,3 +228,28 @@ def test_schema_registers_and_validates(tool: OpenWebsiteTool, tmp_path: Path) -
     assert validate_args({"target": 1}, schema)
     assert validate_args({"target": "x", "extra": 1}, schema)
     assert validate_args({"target": "x" * 3000}, schema)
+
+
+def test_alias_may_point_to_local_address(browser: FakeBrowser) -> None:
+    t = OpenWebsiteTool(browser, {"мой сервер": "http://192.168.0.5:8080/"})
+    assert t.run({"target": "мой сервер"}, CTX).ok
+    assert browser.urls == ["http://192.168.0.5:8080/"]
+
+
+def test_opener_value_error_becomes_unsafe_target() -> None:
+    class Rejecting:
+        def open_url(self, url: str) -> None:
+            raise ValueError("nope")
+
+    res = OpenWebsiteTool(Rejecting()).run({"target": "habr.com"}, CTX)
+    assert not res.ok
+    assert res.data["reason"] == "unsafe_target"
+
+
+def test_allowed_tlds_cover_common_sites() -> None:
+    from luna.tools.builtin.open_website import ALLOWED_BARE_TLDS
+
+    for tld in ("com", "org", "net", "ru", "xn--p1ai", "ua", "by", "kz", "io", "dev"):
+        assert tld in ALLOWED_BARE_TLDS
+    assert 40 <= len(ALLOWED_BARE_TLDS) <= 60
+    assert not {"exe", "bat", "cmd", "txt", "ps1", "lnk", "msi"} & ALLOWED_BARE_TLDS

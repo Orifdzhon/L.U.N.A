@@ -8,7 +8,9 @@ Text that is none of the above yields ``reason="no_match"`` so the router can fa
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 import tomllib
 from collections.abc import Mapping
 from importlib import resources
@@ -23,6 +25,18 @@ from luna.tools.base import SafetyLevel, ToolContext, ToolResult
 NAME = "open_website"
 DEFAULT_HOME_URL = "https://www.google.com"
 MAX_TARGET_CHARS = 2048
+
+# Bare names ("habr.com") are accepted only with these TLDs, so file names like calc.exe,
+# readme.txt or foo.bat never become URLs. Full http(s):// URLs are not limited by this list.
+ALLOWED_BARE_TLDS = frozenset(
+    {
+        "com", "org", "net", "edu", "gov", "info", "biz", "io", "dev", "app", "ai", "me",
+        "tv", "gg", "co", "xyz", "online", "site", "tech", "cloud", "blog", "wiki", "page",
+        "ru", "xn--p1ai", "su", "ua", "by", "kz", "uz", "tj", "kg", "am", "az", "ge", "md",
+        "de", "uk", "fr", "eu", "us", "ca", "jp", "cn", "in", "it", "es", "nl", "pl", "se",
+        "ch", "br", "au", "kr", "tr",
+    }
+)  # fmt: skip
 
 _SCHEME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*:")
 _HOST_PORT_RE = re.compile(r"[^/\\?#:]+:\d{1,5}(?:[/?#]|$)")
@@ -68,6 +82,30 @@ def _valid_host(host: str) -> bool:
     )
 
 
+def _ascii_tld(host: str) -> str:
+    try:
+        return host.rstrip(".").lower().encode("idna").decode("ascii").rsplit(".", 1)[-1]
+    except UnicodeError:
+        return ""
+
+
+def _is_local_host(host: str) -> bool:
+    """True for localhost and any loopback/private/link-local/reserved/unspecified address,
+    including legacy numeric forms such as ``0x7f.1`` or ``2130706433``."""
+    name = host.rstrip(".").lower()
+    if name == "localhost" or name.endswith(".localhost"):
+        return True
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address
+    try:
+        addr = ipaddress.ip_address(name)
+    except ValueError:
+        try:
+            addr = ipaddress.IPv4Address(socket.inet_aton(name))
+        except (OSError, ValueError):
+            return False
+    return not addr.is_global
+
+
 class _Unsafe(Exception):
     pass
 
@@ -88,9 +126,12 @@ def resolve_target(target: str, aliases: Mapping[str, str]) -> str | None:
         raise _Unsafe
     if re.match(r"https?://", text, re.IGNORECASE):
         try:
-            return validate_web_url(text)
+            url = validate_web_url(text)
         except ValueError as exc:
             raise _Unsafe from exc
+        if _is_local_host(urlsplit(url).hostname or ""):
+            raise _Unsafe
+        return url
     if _SCHEME_RE.match(text) and not _HOST_PORT_RE.match(text):
         raise _Unsafe  # javascript:, file:, data:, ftp:, mailto:, C:... and similar
     if any(ch.isspace() for ch in text):
@@ -103,8 +144,15 @@ def resolve_target(target: str, aliases: Mapping[str, str]) -> str | None:
         return None
     if parts.username is not None or parts.password is not None:
         raise _Unsafe
-    if not parts.hostname or not _valid_host(parts.hostname):
+    host = parts.hostname
+    if not host:
         return None
+    if _is_local_host(host):
+        raise _Unsafe  # loopback / private / reserved: only explicit aliases or URLs may
+    if not _valid_host(host):
+        return None
+    if _ascii_tld(host) not in ALLOWED_BARE_TLDS:
+        return None  # calc.exe, readme.txt, foo.bat ...: not a website name
     try:
         return validate_web_url(candidate)
     except ValueError as exc:

@@ -6,6 +6,7 @@ import pytest
 
 from luna import __version__
 from luna.__main__ import main
+from luna.logs.redact import clear_secrets
 
 
 @pytest.fixture
@@ -16,11 +17,17 @@ def isolated(monkeypatch, tmp_path):
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
     monkeypatch.chdir(cwd)
+    clear_secrets()
     root = logging.getLogger()
     handlers, level = list(root.handlers), root.level
     yield tmp_path
-    root.handlers[:] = handlers
+    clear_secrets()
+    for handler in list(root.handlers):
+        if handler not in handlers:
+            root.removeHandler(handler)
+            handler.close()
     root.setLevel(level)
 
 

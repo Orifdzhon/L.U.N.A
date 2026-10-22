@@ -113,6 +113,10 @@ class Settings(_Section):
         env_name = (env_name or "").strip()
         return self._api_keys.get(env_name) if env_name else None
 
+    def secret_values(self) -> list[str]:
+        """Plain secret values, only for registering them with the log redaction filter."""
+        return [secret.get_secret_value() for secret in self._api_keys.values()]
+
     def available_providers(self) -> list[str]:
         """LLM providers of the chain that can be used, in chain order.
 

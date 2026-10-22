@@ -27,7 +27,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ConfigError) as exc:
         print(f"luna: config error: {exc}", file=sys.stderr)
         return 2
-    setup_logging(settings.app.log_level)
+    setup_logging(settings.app.log_level, console=args.text, secrets=settings.secret_values())
     if args.text:
         print("luna: --text mode is not implemented yet", file=sys.stderr)
         return 2

@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Python project doesn't exist yet; skip checks until pyproject.toml is added.
+      - name: Detect Python project
+        id: detect
+        shell: bash
+        run: |
+          if [ -f pyproject.toml ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: astral-sh/setup-uv@v6
+        if: steps.detect.outputs.present == 'true'
+
+      - name: Install dependencies
+        if: steps.detect.outputs.present == 'true'
+        run: uv sync --all-extras --dev
+
+      - name: Lint
+        if: steps.detect.outputs.present == 'true'
+        run: uv run ruff check .
+
+      - name: Format check
+        if: steps.detect.outputs.present == 'true'
+        run: uv run ruff format --check .
+
+      - name: Tests
+        if: steps.detect.outputs.present == 'true'
+        run: uv run pytest

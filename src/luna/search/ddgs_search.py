@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, Protocol
 
 from ddgs.exceptions import DDGSException, RatelimitException
@@ -26,10 +28,12 @@ MAX_TITLE_CHARS = 200
 MAX_SNIPPET_CHARS = 500
 _REGIONS = {"ru": "ru-ru", "en": "us-en"}
 _DEFAULT_REGION = "wt-wt"
-_NO_RESULTS = "No results found."
+OVERALL_GRACE_S = 1.0  # search() never takes longer than timeout_s + this
 
 
 class DdgsClient(Protocol):
+    def __enter__(self) -> DdgsClient: ...
+    def __exit__(self, *exc_info: object) -> None: ...
     def text(self, query: str, **kwargs: Any) -> list[dict[str, Any]]: ...
 
 
@@ -40,6 +44,13 @@ def _default_client(timeout_s: int) -> DdgsClient:
     from ddgs import DDGS
 
     return DDGS(timeout=timeout_s)
+
+
+def is_no_results(exc: Exception) -> bool:
+    """``ddgs`` 9.x has no dedicated exception for "nothing found": it raises a plain
+    ``DDGSException("No results found.")``. This is the one place that knows the wording
+    (pinned by a test against the installed version)."""
+    return "no results found" in str(exc).lower()
 
 
 def region_for(lang: str) -> str:
@@ -60,20 +71,30 @@ class DdgsSearch:
             raise ProviderRequestError("empty search query")
         if max_results < 1:
             raise ProviderRequestError("max_results must be >= 1")
+        ceil_s = max(1, math.ceil(timeout_s))
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="luna-ddgs")
         try:
-            client = self._factory(max(1, math.ceil(timeout_s)))
-            raw = client.text(
-                query.strip(), region=region_for(lang), max_results=max_results, backend="auto"
-            )
+            future = pool.submit(self._query, query.strip(), lang, max_results, ceil_s)
+            raw = future.result(timeout=timeout_s + OVERALL_GRACE_S)
+        except FutureTimeout as exc:
+            raise ProviderUnavailable("ddgs search timed out") from exc
         except RatelimitException as exc:
             raise RateLimited("ddgs rate limited") from exc
         except DDGSException as exc:
-            if str(exc).strip() == _NO_RESULTS:
+            if is_no_results(exc):
                 return []
             raise ProviderUnavailable(f"ddgs search failed: {exc}") from exc
         except Exception as exc:  # network errors, parser breakage inside the library
             raise ProviderUnavailable(f"ddgs search failed: {exc}") from exc
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         return self._map(raw, max_results)
+
+    def _query(self, query: str, lang: str, max_results: int, timeout_s: int) -> Any:
+        with self._factory(timeout_s) as client:  # always closed, even on errors
+            return client.text(
+                query, region=region_for(lang), max_results=max_results, backend="auto"
+            )
 
     @staticmethod
     def _map(raw: Any, max_results: int) -> list[SearchResult]:

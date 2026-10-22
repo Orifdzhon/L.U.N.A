@@ -1,4 +1,7 @@
+import gzip
+import threading
 import time
+import zlib
 from pathlib import Path
 
 import httpx
@@ -139,14 +142,174 @@ def test_error_status_and_timeout_are_skipped() -> None:
         assert fetch_one(f"https://example.com/{path}").content is None
 
 
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 @respx.mock
-def test_overall_deadline_stops_slow_body(monkeypatch: pytest.MonkeyPatch) -> None:
-    respx.get("https://example.com/drip").respond(
+def test_deadline_stops_slow_body_and_skips_extraction(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = FakeClock()
+    body = page("article_en.html")
+
+    def drip():  # type: ignore[no-untyped-def]
+        yield body[:100]
+        clock.now += 100  # the budget is gone while the body is still arriving
+        yield body[100:]
+
+    respx.get("https://example.com/drip").mock(
+        return_value=httpx.Response(200, headers=HTML, content=drip())
+    )
+    assert fetch_one("https://example.com/drip", timeout_s=1.0, clock=clock).content is None
+
+
+@respx.mock
+def test_deadline_between_redirect_hops(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = FakeClock()
+
+    def first_hop(request: httpx.Request) -> httpx.Response:
+        clock.now += 100
+        return httpx.Response(302, headers={"location": "https://example.com/two"})
+
+    respx.get("https://example.com/one").mock(side_effect=first_hop)
+    second = respx.get("https://example.com/two").respond(
         200, content=page("article_en.html"), headers=HTML
     )
-    ticks = iter([0.0, 100.0, 100.0, 100.0])
-    monkeypatch.setattr(fetch.time, "monotonic", lambda: next(ticks))
-    assert fetch_one("https://example.com/drip", timeout_s=1.0).content is None
+    assert fetch_one("https://example.com/one", timeout_s=1.0, clock=clock).content is None
+    assert not second.called
+
+
+@respx.mock
+def test_extraction_is_not_started_when_time_is_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = FakeClock()
+    calls: list[str] = []
+    monkeypatch.setattr(fetch.trafilatura, "extract", lambda *a, **k: calls.append("x"))
+    body = page("article_en.html")
+
+    def last_chunk():  # type: ignore[no-untyped-def]
+        yield body
+        clock.now += 100
+
+    respx.get("https://example.com/late").mock(
+        return_value=httpx.Response(200, headers=HTML, content=last_chunk())
+    )
+    assert fetch_one("https://example.com/late", timeout_s=1.0, clock=clock).content is None
+    assert calls == []
+
+
+@respx.mock
+def test_dns_resolution_is_bounded_by_the_deadline() -> None:
+    release = threading.Event()
+
+    def hanging(host: str) -> list[str]:
+        release.wait(10)
+        return ["93.184.216.34"]
+
+    route = respx.get("https://example.com/").respond(200, content=b"x", headers=HTML)
+    started = time.monotonic()
+    try:
+        out = fetch_one("https://example.com/", timeout_s=0.3, resolver=hanging)
+    finally:
+        release.set()
+    assert out.content is None and not route.called
+    assert time.monotonic() - started < 2
+
+
+@respx.mock
+def test_global_wait_returns_even_if_a_worker_is_stuck() -> None:
+    release = threading.Event()
+
+    def stuck(request: httpx.Request) -> httpx.Response:
+        release.wait(10)
+        return httpx.Response(200, content=page("article_en.html"), headers=HTML)
+
+    respx.get("https://slow.example.com/").mock(side_effect=stuck)
+    respx.get("https://fast.example.com/").respond(
+        200, content=page("article_en.html"), headers=HTML
+    )
+    results = [
+        SearchResult("slow", "https://slow.example.com/", "s"),
+        SearchResult("fast", "https://fast.example.com/", "s"),
+    ]
+    started = time.monotonic()
+    try:
+        out = fetch_and_extract(results, timeout_s=0.5, resolver=public_resolver)
+    finally:
+        release.set()
+    assert time.monotonic() - started < 3
+    assert [r.title for r in out] == ["slow", "fast"]
+    assert out[0].content is None and out[1].content is not None
+
+
+@respx.mock
+def test_gzip_bomb_is_stopped_early() -> None:
+    bomb = gzip.compress(b"<html><body>" + b"A" * (50 * 1024 * 1024) + b"</body></html>")
+    assert len(bomb) < 200 * 1024
+    headers = {**HTML, "content-encoding": "gzip"}
+    respx.get("https://example.com/bomb").respond(200, content=bomb, headers=headers)
+    started = time.monotonic()
+    assert fetch_one("https://example.com/bomb").content is None
+    assert time.monotonic() - started < 3
+
+
+@respx.mock
+def test_gzip_and_deflate_pages_are_decoded() -> None:
+    raw = page("article_en.html")
+    respx.get("https://example.com/gz").respond(
+        200, content=gzip.compress(raw), headers={**HTML, "content-encoding": "gzip"}
+    )
+    respx.get("https://example.com/df").respond(
+        200, content=zlib.compress(raw), headers={**HTML, "content-encoding": "deflate"}
+    )
+    for path in ("gz", "df"):
+        out = fetch_one(f"https://example.com/{path}")
+        assert out.content is not None and "tides" in out.content
+
+
+@respx.mock
+def test_unsupported_content_encoding_is_skipped() -> None:
+    respx.get("https://example.com/br").respond(
+        200, content=b"xx", headers={**HTML, "content-encoding": "br"}
+    )
+    assert fetch_one("https://example.com/br").content is None
+
+
+@respx.mock
+def test_dangerous_charset_names_fall_back_to_utf8() -> None:
+    body = page("article_ru.html")
+    respx.get("https://example.ru/e").respond(
+        200, content=body, headers={"content-type": "text/html; charset=unicode_escape"}
+    )
+    out = fetch_one("https://example.ru/e")
+    assert out.content is not None and "Центральный банк" in out.content
+    assert fetch._safe_charset("unicode_escape") is None
+    assert fetch._safe_charset("idna") is None
+    assert fetch._safe_charset("windows-1251") == "cp1251"
+    assert fetch._safe_charset("UTF-8") == "utf-8"
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://user:pw@example.org/x",
+        "//127.0.0.1/x",
+        "//localhost/x",
+        "http://[::ffff:7f00:1]/x",
+        "http://[64:ff9b::7f00:1]/x",
+        "http://224.0.0.1/x",
+        "http://100.64.0.1/x",
+    ],
+)
+def test_redirect_location_tricks_are_blocked(location: str) -> None:
+    respx.get("https://example.com/r").respond(302, headers={"location": location})
+    other = respx.route(host__regex=r"example\.org|127\.0\.0\.1|localhost|.*:.*|224\..*|100\..*")
+    other.respond(200, content=page("article_en.html"), headers=HTML)
+    assert fetch_one("https://example.com/r").content is None
+    assert not other.called
 
 
 @pytest.mark.parametrize(

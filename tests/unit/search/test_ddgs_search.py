@@ -1,4 +1,7 @@
 # ruff: noqa: RUF001
+import inspect
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -6,21 +9,32 @@ from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 
 from luna.core.errors import ProviderRequestError, ProviderUnavailable, RateLimited
 from luna.search.base import SearchProvider
-from luna.search.ddgs_search import DdgsSearch, region_for
+from luna.search.ddgs_search import DdgsSearch, is_no_results, region_for
 
 
 class FakeDDGS:
     def __init__(self, outcome: list[dict[str, Any]] | Exception) -> None:
         self.outcome = outcome
         self.timeouts: list[int] = []
+        self.closed = 0
+        self.release = threading.Event()
+        self.block = False
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def factory(self, timeout_s: int) -> "FakeDDGS":
         self.timeouts.append(timeout_s)
         return self
 
+    def __enter__(self) -> "FakeDDGS":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.closed += 1
+
     def text(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
         self.calls.append((query, kwargs))
+        if self.block:
+            self.release.wait(10)
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome
@@ -106,6 +120,38 @@ def test_library_failures_map_to_provider_unavailable(error: Exception) -> None:
 def test_no_results_is_empty_list_not_error() -> None:
     provider, _ = make(DDGSException("No results found."))
     assert provider.search("q", lang="en") == []
+
+
+def test_client_is_closed_after_success_and_after_errors() -> None:
+    ok, fake_ok = make([])
+    ok.search("q", lang="en")
+    assert fake_ok.closed == 1
+    bad, fake_bad = make(RatelimitException("x"))
+    with pytest.raises(RateLimited):
+        bad.search("q", lang="en")
+    assert fake_bad.closed == 1
+
+
+def test_overall_timeout_bounds_a_hanging_library(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("luna.search.ddgs_search.OVERALL_GRACE_S", 0.1)
+    provider, fake = make([])
+    fake.block = True
+    started = time.monotonic()
+    try:
+        with pytest.raises(ProviderUnavailable, match="timed out"):
+            provider.search("q", lang="en", timeout_s=0.2)
+        assert time.monotonic() - started < 2
+    finally:
+        fake.release.set()
+
+
+def test_no_results_wording_matches_installed_library() -> None:
+    import ddgs.ddgs
+
+    assert is_no_results(DDGSException("No results found."))
+    assert not is_no_results(DDGSException("engine broke"))
+    # If a ddgs bump changes the wording this fails and the mapping must be revisited.
+    assert "No results found." in inspect.getsource(ddgs.ddgs)
 
 
 def test_client_factory_failure_is_unavailable() -> None:

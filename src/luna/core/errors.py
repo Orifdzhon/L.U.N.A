@@ -12,7 +12,10 @@ class ProviderError(LunaError):
 
 
 class RateLimited(ProviderError):
-    """The provider asked us to back off."""
+    """The provider asked us to back off.
+
+    ``retry_after_s`` is in seconds; ``None`` means "use the default cooldown".
+    """
 
     def __init__(self, message: str = "rate limited", retry_after_s: float | None = None) -> None:
         super().__init__(message)
@@ -21,6 +24,10 @@ class RateLimited(ProviderError):
 
 class ProviderUnavailable(ProviderError):
     """Network failure, 5xx or timeout."""
+
+
+class ProviderRequestError(ProviderError):
+    """Our fault (HTTP 400, schema error): retried on another provider at most once."""
 
 
 class ConfigError(LunaError):

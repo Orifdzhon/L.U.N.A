@@ -1,0 +1,35 @@
+# Default app aliases for the open_app tool (lowercase, "е" instead of "ё").
+# Each value is a display name from the Start menu catalog, or a list of alternatives in
+# priority order (localized and English names). An alias only resolves to apps that really
+# exist in the catalog; otherwise fuzzy matching takes over.
+# User overrides from luna.toml ([router.app_aliases]) are merged on top.
+
+"хром" = "Google Chrome"
+"хроме" = "Google Chrome"
+"гугл хром" = "Google Chrome"
+"chrome" = "Google Chrome"
+"телега" = "Telegram"
+"телеграм" = "Telegram"
+"телеграмм" = "Telegram"
+"калькулятор" = ["Калькулятор", "Calculator"]
+"calculator" = ["Калькулятор", "Calculator"]
+"calc" = ["Калькулятор", "Calculator"]
+"блокнот" = ["Блокнот", "Notepad"]
+"notepad" = ["Блокнот", "Notepad"]
+"эдж" = "Microsoft Edge"
+"edge" = "Microsoft Edge"
+"проводник" = ["Проводник", "File Explorer"]
+"explorer" = ["Проводник", "File Explorer"]
+"пейнт" = ["Paint", "Paint 3D"]
+"ворд" = "Word"
+"эксель" = "Excel"
+"фаерфокс" = "Firefox"
+"файрфокс" = "Firefox"
+"дискорд" = "Discord"
+"спотифай" = "Spotify"
+"стим" = "Steam"
+"вс код" = "Visual Studio Code"
+"vscode" = "Visual Studio Code"
+"диспетчер задач" = ["Диспетчер задач", "Task Manager"]
+"параметры" = ["Параметры", "Settings"]
+"настройки" = ["Параметры", "Settings"]

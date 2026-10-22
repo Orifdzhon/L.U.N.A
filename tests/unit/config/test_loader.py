@@ -181,3 +181,14 @@ def test_blank_key_counts_as_missing(tmp_path):
     settings = load_settings(env={}, cwd=tmp_path)
     assert settings.api_key("GEMINI_API_KEY") is None
     assert settings.available_providers() == ["local"]
+
+
+def test_router_app_aliases_accept_lists(tmp_path):
+    text = (
+        '[router.app_aliases]\n"калькулятор" = ["Калькулятор", "Calculator"]\n"хром" = "Chrome"\n'
+    )
+    settings = _load_text(tmp_path, text)
+    assert settings.router.app_aliases == {
+        "калькулятор": ["Калькулятор", "Calculator"],
+        "хром": "Chrome",
+    }

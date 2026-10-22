@@ -81,7 +81,7 @@ class SearchSettings(_Section):
 class RouterSettings(_Section):
     threshold: int = Field(default=85, ge=0, le=100)
     margin: int = Field(default=5, ge=0, le=100)
-    app_aliases: dict[str, str] = Field(default_factory=dict)
+    app_aliases: dict[str, str | list[str]] = Field(default_factory=dict)
     site_aliases: dict[str, str] = Field(default_factory=dict)
 
 

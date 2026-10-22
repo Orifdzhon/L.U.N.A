@@ -225,3 +225,81 @@ def test_log_raising_does_not_fail_call() -> None:
     reg = ToolRegistry(BadLog())  # type: ignore[arg-type]
     reg.register(FakeTool())
     assert reg.execute(call(), ctx()).ok
+
+
+def test_untyped_subschema_rejected(registry: ToolRegistry) -> None:
+    for sub in ({}, {"description": "anything"}, {"minimum": 1}):
+        schema = {"type": "object", "properties": {"a": sub}}
+        with pytest.raises(ToolError):
+            registry.register(FakeTool(parameters=schema))
+    items = {"type": "object", "properties": {"a": {"type": "array", "items": {}}}}
+    with pytest.raises(ToolError):
+        registry.register(FakeTool(parameters=items))
+
+
+def test_enum_only_subschema_allowed(registry: ToolRegistry) -> None:
+    schema = {"type": "object", "properties": {"a": {"enum": ["x"]}, "b": {"const": 1}}}
+    registry.register(FakeTool(parameters=schema))
+
+
+def test_bidi_and_control_chars_escaped_in_prompt(registry: ToolRegistry) -> None:
+    conf = FakeConfirmer()
+    schema = {"type": "object", "properties": {"t": {"type": "string"}}}
+    registry.register(FakeTool(parameters=schema, safety=SafetyLevel.SENSITIVE))
+    evil = "a\u202eb\u0085c\u2028d\u200be\U000e0001"
+    registry.execute(call(t=evil), ctx(conf))
+    prompt = conf.prompts[0]
+    for ch in "\u202e\u0085\u2028\u200b\U000e0001":
+        assert ch not in prompt
+    assert "\\u202e" in prompt
+    assert "\\U000e0001" in prompt
+
+
+def test_huge_int_bound_rejected_at_register(registry: ToolRegistry) -> None:
+    schema = {"type": "object", "properties": {"x": {"type": "number", "maximum": 10**400}}}
+    with pytest.raises(ToolError):
+        registry.register(FakeTool(parameters=schema))
+
+
+def test_huge_int_argument_is_invalid_not_a_crash(registry: ToolRegistry, log: ActionLog) -> None:
+    schema = {"type": "object", "properties": {"x": {"type": "number", "maximum": 10}}}
+    tool = FakeTool(parameters=schema)
+    registry.register(tool)
+    res = registry.execute(call(x=10**400), ctx())
+    assert not res.ok
+    assert res.summary.startswith("invalid arguments")
+    assert tool.calls == []
+    assert len(lines(log)) == 1
+
+
+@pytest.mark.parametrize("name", ["tool\n", "a b", "\u00e9"])
+def test_name_must_fullmatch(registry: ToolRegistry, name: str) -> None:
+    with pytest.raises(ToolError):
+        registry.register(FakeTool(name=name))
+
+
+def test_required_must_be_declared(registry: ToolRegistry) -> None:
+    with pytest.raises(ToolError):
+        registry.register(
+            FakeTool(parameters={"type": "object", "required": ["a"], "properties": {}})
+        )
+    with pytest.raises(ToolError):
+        registry.register(FakeTool(parameters={"type": "object", "required": ["a"]}))
+
+
+def test_arguments_deep_copied_once(registry: ToolRegistry) -> None:
+    copies = {"n": 0}
+
+    class Counting(dict):  # type: ignore[type-arg]
+        def __deepcopy__(self, memo: Any) -> "Counting":
+            copies["n"] += 1
+            return Counting(self)
+
+    class Plain(FakeTool):
+        def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+            return self.result
+
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    registry.register(Plain(parameters=schema, safety=SafetyLevel.SENSITIVE))
+    registry.execute(ToolCall("c", "fake_tool", Counting(a="x")), ctx())
+    assert copies["n"] == 1

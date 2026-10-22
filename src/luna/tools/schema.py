@@ -48,6 +48,13 @@ def _is_num(v: Any) -> bool:
     return isinstance(v, int | float) and not isinstance(v, bool)
 
 
+def _finite(v: Any) -> bool:
+    try:
+        return math.isfinite(float(v))  # ints too big for a float overflow: not usable bounds
+    except OverflowError:
+        return False
+
+
 def _is_count(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v >= 0
 
@@ -66,6 +73,9 @@ def check_schema(
     if root and schema.get("type") != "object":
         raise SchemaError(f"{path}: root schema must have type 'object'")
 
+    if not root and not any(k in schema for k in ("type", "enum", "const")):
+        raise SchemaError(f"{path}: subschema needs 'type', 'enum' or 'const'")
+
     if "type" in schema:
         t = schema["type"]
         names = [t] if isinstance(t, str) else t
@@ -80,7 +90,7 @@ def check_schema(
         if key in schema and not _is_count(schema[key]):
             raise SchemaError(f"{path}: {key!r} must be a non-negative integer")
     for key in ("minimum", "maximum"):
-        if key in schema and not (_is_num(schema[key]) and math.isfinite(schema[key])):
+        if key in schema and not (_is_num(schema[key]) and _finite(schema[key])):
             raise SchemaError(f"{path}: {key!r} must be a finite number")
     for key in _ANNOTATIONS:
         if key in schema and not isinstance(schema[key], str):
@@ -97,6 +107,11 @@ def check_schema(
             if not isinstance(name, str):
                 raise SchemaError(f"{path}: property names must be strings")
             check_schema(sub, f"{path}.{name}", root=False, _depth=_depth + 1)
+        missing = [r for r in schema.get("required", []) if r not in props]
+        if missing:
+            raise SchemaError(f"{path}: required fields not in properties: {missing}")
+    elif schema.get("required"):
+        raise SchemaError(f"{path}: 'required' without 'properties'")
     extra = schema.get("additionalProperties", False)
     if isinstance(extra, dict):
         check_schema(extra, f"{path}.*", root=False, _depth=_depth + 1)
@@ -130,7 +145,7 @@ def _type_ok(name: str, v: Any) -> bool:
         case "integer":
             return isinstance(v, int) and not isinstance(v, bool)
         case "number":
-            return _is_num(v) and math.isfinite(v)
+            return _is_num(v) and _finite(v)
         case "boolean":
             return isinstance(v, bool)
         case "null":

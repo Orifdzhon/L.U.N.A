@@ -18,6 +18,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -37,7 +38,7 @@ MAX_ARGS_DEPTH = 8
 MAX_ARGS_BYTES = 16 * 1024
 MAX_PROMPT_CHARS = 2000
 _MAX_ERRORS_SHOWN = 3
-_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_NAME_RE = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 _TRUNC = "...[truncated]"
 
 
@@ -60,6 +61,18 @@ class _Entry:
     safety: SafetyLevel
     schema: dict[str, Any]
     tool: Tool
+
+
+def _escape_unsafe(text: str) -> str:
+    """Backslash-escape control, format (bidi) and line/paragraph separator characters."""
+    out = []
+    for ch in text:
+        if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp"):
+            cp = ord(ch)
+            out.append(f"\\u{cp:04x}" if cp <= 0xFFFF else f"\\U{cp:08x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _depth_ok(value: Any, depth: int = 0) -> bool:
@@ -103,7 +116,7 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         name = getattr(tool, "name", None)
-        if not isinstance(name, str) or not _NAME_RE.match(name):
+        if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
             raise ToolError(f"invalid tool name {name!r}: expected [a-zA-Z0-9_-]{{1,64}}")
         safety = getattr(tool, "safety", None)
         if not isinstance(safety, SafetyLevel):
@@ -152,10 +165,14 @@ class ToolRegistry:
             return ToolResult(_short(name, 64), False, f"unknown tool: {_short(name, 64)}")
         state["entry"] = entry
 
-        args = call.arguments
+        args: Any = call.arguments
         problem = _check_args_shape(args)
         if problem is None:
-            errors = validate_args(args, entry.schema)
+            args = copy.deepcopy(args)  # validated, shown and run: always this one snapshot
+            try:
+                errors = validate_args(args, entry.schema)
+            except (OverflowError, RecursionError, TypeError, ValueError):
+                errors = ["arguments could not be validated"]
             if errors:
                 problem = "; ".join(errors[:_MAX_ERRORS_SHOWN])
         if problem is not None:
@@ -164,7 +181,7 @@ class ToolRegistry:
         if entry.safety is not SafetyLevel.SAFE:
             prompt = (
                 f"Run tool {entry.name} ({entry.safety.value}) with arguments: "
-                f"{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
+                f"{_escape_unsafe(json.dumps(args, ensure_ascii=False, sort_keys=True))}"
             )
             if len(prompt) > MAX_PROMPT_CHARS:
                 state["confirmed"] = False
@@ -179,7 +196,7 @@ class ToolRegistry:
                 return ToolResult(entry.name, False, "not confirmed by the user")
 
         try:
-            result = entry.tool.run(copy.deepcopy(args), ctx)
+            result = entry.tool.run(args, ctx)
         except ToolError as exc:
             logger.warning("tool %s failed: %s", entry.name, redact_text(str(exc)))
             return ToolResult(entry.name, False, _short(f"tool failed: {exc}"))

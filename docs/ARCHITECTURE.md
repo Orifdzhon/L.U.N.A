@@ -483,6 +483,9 @@ autostart = false
   app catalog (never a raw path or command line from the LLM).
 - Web content isolation: search/page text is wrapped as quoted data in the tool
   message, marked `untrusted`, and the following LLM call has no tools (§4.1).
+- Page fetching (`search/fetch.py`) validates every URL and redirect hop against local/private
+  addresses. Known residual risk: DNS rebinding between check and connect is not pinned yet
+  (ADR 0006, Amendment 1).
 - Logs never contain secrets.
 
 ## 10. Testing strategy

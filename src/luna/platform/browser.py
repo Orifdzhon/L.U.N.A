@@ -12,6 +12,8 @@ in its IDNA/punycode ASCII form (mixed-script and fullwidth hosts are refused).
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 import unicodedata
 import webbrowser
 from urllib.parse import urlsplit, urlunsplit
@@ -71,6 +73,57 @@ def validate_web_url(url: str) -> str:
     if port is not None:
         netloc += f":{port}"
     return urlunsplit((scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_SITE_LOCAL = ipaddress.ip_network("fec0::/10")
+_V4_COMPATIBLE = ipaddress.ip_network("::/96")  # deprecated ::a.b.c.d (also covers ::, ::1)
+
+
+def _is_non_public(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+        or not addr.is_global
+    ):
+        return True
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr in _SITE_LOCAL or addr in _V4_COMPATIBLE:
+            return True
+        embedded: list[ipaddress.IPv4Address] = []
+        if addr.ipv4_mapped is not None:
+            embedded.append(addr.ipv4_mapped)
+        if addr.sixtofour is not None:
+            embedded.append(addr.sixtofour)
+        if addr.teredo is not None:
+            embedded.extend(addr.teredo)
+        if addr in _NAT64:
+            embedded.append(ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF))
+        return any(_is_non_public(v4) for v4 in embedded)
+    return False
+
+
+def is_local_host(host: str) -> bool:
+    """True for localhost and any non-public address: loopback, private, link-local, multicast,
+    reserved, unspecified, site-local, IPv4-compatible, and IPv6 forms that embed an IPv4
+    address (IPv4-mapped, 6to4, Teredo, NAT64) whose IPv4 part is itself non-public.
+    Legacy numeric forms such as ``0x7f.1`` or ``2130706433`` are understood."""
+    name = host.rstrip(".").lower().split("%", 1)[0]
+    if name == "localhost" or name.endswith(".localhost"):
+        return True
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address
+    try:
+        addr = ipaddress.ip_address(name)
+    except ValueError:
+        try:
+            addr = ipaddress.IPv4Address(socket.inet_aton(name))
+        except (OSError, ValueError):
+            return False
+    return _is_non_public(addr)
 
 
 class WebBrowserOpener:

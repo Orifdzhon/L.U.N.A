@@ -62,3 +62,28 @@ often insufficient for numbers like exchange rates).
 - SearXNG: https://docs.searxng.org/ (license AGPL-3.0; not re-verified this session)
 - Tavily / Brave free tiers (secondary, unverified numbers): https://parallel.ai/articles/best-free-web-search-api , https://www.implicator.ai/brave-drops-free-search-api-tier-puts-all-developers-on-metered-billing/
 - Gemini grounding pricing: https://ai.google.dev/gemini-api/docs/pricing
+
+## Amendment 1 - fetch hardening and residual risks (2026-10-23, PR #38)
+
+Implemented in `src/luna/search/fetch.py`; decisions taken after review of the first
+implementation:
+
+- **Page fetching**: http(s) only; every URL (first request and each of at most 3 redirect
+  hops) is validated, the host must be public both as a literal and after DNS resolution
+  (loopback, private, link-local, multicast, reserved, site-local, IPv4-compatible and
+  IPv6-embedded IPv4 forms such as mapped / 6to4 / Teredo / NAT64 are refused). The 2 MB cap
+  applies to the *decoded* body (gzip/deflate are inflated incrementally with a bounded
+  output and a compression-ratio cap); `timeout_s` (4 s) is one deadline for the whole
+  call, not per request; DNS runs with a timeout; extraction is skipped when time is up and
+  uses a `trafilatura` tree-size limit.
+- **No proxies**: `httpx` runs with `trust_env=False`. A proxy would resolve names on its own
+  and make the address checks meaningless. Consequence: users behind a corporate proxy or
+  a TLS-inspecting CA get snippet-only answers (pages are skipped). `ddgs` itself may still
+  honour proxy settings.
+- **Residual risk - DNS rebinding (TOCTOU)**: we resolve the name to check it, then `httpx`
+  resolves it again when connecting. A hostile domain that appears in search results can
+  answer with a public address for the check and a local one (`127.0.0.1`, LAN, cloud
+  metadata) for the connect. Impact: one GET to a local service, with the text entering the
+  LLM context; no data can be sent back to the attacker. **Accepted for now, not mitigated.**
+  Follow-up (separate Issue): pin the connection to the validated address (custom `httpcore`
+  network backend or connect-by-IP with `Host`/SNI preserved).

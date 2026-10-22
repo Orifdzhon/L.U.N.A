@@ -16,7 +16,7 @@ added in later slices.
 | Concern | Choice (default) | Alternatives / fallback | ADR |
 |---|---|---|---|
 | Runtime | Python 3.13, `uv`, `ruff`, `pytest`, src layout | Python 3.12 if a dependency breaks | [0001](adr/0001-python-version-packaging-tooling.md) |
-| LLM | One OpenAI-compatible client; chain Gemini `gemini-3.5-flash-lite` → Groq `openai/gpt-oss-120b` → Ollama `qwen3:4b` | native `google-genai` SDK if the compat layer breaks | [0002](adr/0002-llm-providers-and-tool-calling.md) |
+| LLM | One OpenAI-compatible client; chain Gemini `gemini-3.5-flash-lite` → Groq `openai/gpt-oss-120b` → local LM Studio (~4B Qwen) | native `google-genai` SDK if the compat layer breaks | [0002](adr/0002-llm-providers-and-tool-calling.md) |
 | STT | `faster-whisper` `large-v3-turbo` on GPU (int8_float16) | Groq `whisper-large-v3-turbo`; CPU `small` int8 | [0003](adr/0003-speech-to-text.md) |
 | Wake word | Hotkey first; then Vosk `small-ru` grammar spotter ("луна"); then a custom ONNX model | Porcupine rejected (free tier closed) | [0004](adr/0004-wake-word.md) |
 | TTS | Piper (`piper-tts`, out-of-process), CC0 voices | Windows SAPI voices (Irina ru-RU) | [0005](adr/0005-text-to-speech.md) |
@@ -402,7 +402,7 @@ after their timeout and their results discarded.
 
 ```toml
 [llm]
-chain = ["gemini", "groq", "ollama"]
+chain = ["gemini", "groq", "local"]
 [llm.providers.gemini]
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
 model = "gemini-3.5-flash-lite"
@@ -411,9 +411,9 @@ api_key_env = "GEMINI_API_KEY"
 base_url = "https://api.groq.com/openai/v1"
 model = "openai/gpt-oss-120b"
 api_key_env = "GROQ_API_KEY"
-[llm.providers.ollama]
-base_url = "http://localhost:11434/v1"
-model = "qwen3:4b"
+[llm.providers.local]              # LM Studio (ADR 0002 amendment); Ollama: http://localhost:11434/v1
+base_url = "http://localhost:1234/v1"
+model = "qwen3-4b"                 # exact name as shown by LM Studio; chosen by #22 benchmark
 
 [stt]
 provider = "faster_whisper"     # or "groq"
@@ -534,7 +534,7 @@ Each slice ends in something the owner can run. Later slices only add adapters.
 ## 13. Open questions for the owner
 
 See the decision list in each ADR. Summary:
-1. Project license (MIT / Apache-2.0 / GPL-3.0) — affects how Piper (GPL-3.0) is used (ADR 0005).
+1. ~~Project license~~ — **decided: Apache-2.0** (owner, 2026-10-23). Piper (GPL-3.0) stays in a separate process (ADR 0005).
 2. Default LLM order and models after the slice-1 benchmark (ADR 0002).
 3. Voice: Russian CC0 Piper voices are male (`dmitri`, `denis`); the female `irina`
    has an unknown dataset license; the female Windows voice "Irina" (SAPI) is free to

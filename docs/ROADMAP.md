@@ -14,7 +14,7 @@ Do these before the matching Issues can be verified manually:
 | What | Needed for | Command / action |
 |---|---|---|
 | Install `uv` | slice 0 (#4) | `winget install astral-sh.uv` |
-| Install Ollama and pull the local model | slice 1 manual checks (#16, #21, #22) | install Ollama, then `ollama pull qwen3:4b` |
+| LM Studio with a local model and its server running | slice 1 manual checks (#16, #21, #22) | already installed; download a ~4B official Qwen model, then Developer → Start Server (`http://localhost:1234/v1`) |
 | Free Gemini API key | slice 1 manual checks | create in Google AI Studio, put into `.env` as `GEMINI_API_KEY` |
 | Free Groq API key | slice 1 manual checks | create in the Groq console, put into `.env` as `GROQ_API_KEY` |
 

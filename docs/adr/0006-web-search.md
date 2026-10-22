@@ -1,6 +1,6 @@
 # ADR 0006 — Web search and content extraction
 
-- Status: **proposed**
+- Status: **accepted** (owner, 2026-10-23)
 - Date: 2026-10-22
 
 ## Context

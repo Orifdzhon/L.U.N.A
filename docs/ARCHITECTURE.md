@@ -190,6 +190,8 @@ class ChatResponse:
     tool_calls: tuple[ToolCall, ...]
     provider: str
     model: str
+    finish_reason: str | None = None     # "stop" / "tool_calls" / "length" / ...
+    usage: dict[str, int] | None = None  # token counts when the API reports them
 
 class LLMProvider(Protocol):
     name: str

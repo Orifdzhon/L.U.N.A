@@ -46,6 +46,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 timeout = 60
+pythonpath = ["tests"]
 markers = [
     "live: needs real network / API keys (run manually)",
     "gpu: needs a CUDA GPU",

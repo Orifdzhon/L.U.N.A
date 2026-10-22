@@ -28,7 +28,10 @@ def test_key_shaped_tokens_are_masked(key):
 
 
 def test_bearer_token_is_masked_but_scheme_kept():
-    assert redact_text("Authorization: Bearer abcDEF123456.xyz") == f"Authorization: Bearer {MASK}"
+    assert (
+        redact_text("Authorization: Bearer abcDEF123456789.xyz-_~+/==")
+        == f"Authorization: Bearer {MASK}"
+    )
 
 
 def test_ordinary_text_is_untouched():
@@ -143,3 +146,25 @@ def test_filter_survives_bad_format_args(logger_and_stream):
     logger, stream = logger_and_stream
     logger.info("only one placeholder %s", "a", "b")
     assert "only one placeholder" in stream.getvalue()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "task-management-panel",
+        "disk-usage-statistics",
+        "risk-assessment-report",
+        "my_gsk_something_long_name",
+        "xAIzaSyTESTTESTTESTTESTTESTTEST12",
+        "bearer authentication failed",
+        "Bearer authentication failed",
+        "Bearer token missing",
+    ],
+)
+def test_ordinary_words_are_not_mangled(text):
+    assert redact_text(text) == text
+
+
+def test_key_after_punctuation_is_still_masked():
+    assert redact_text("key=sk-TESTTESTTESTTEST,") == f"key={MASK},"
+    assert redact_text("(gsk_TESTTESTTESTTESTTEST)") == f"({MASK})"

@@ -1,4 +1,6 @@
 import json
+import logging
+import shutil
 import threading
 from datetime import datetime
 
@@ -43,6 +45,13 @@ def test_write_appends_one_valid_json_line_with_all_fields(tmp_path):
     assert data["confirmed"] is None
     assert data["tool"] == "open_app"
     datetime.fromisoformat(data["ts"])
+
+
+def test_ts_and_file_month_come_from_the_same_clock_read(tmp_path):
+    log = ActionLog(tmp_path / "actions.jsonl", clock=lambda: datetime(2026, 3, 31, 23, 59, 59))
+    log.write(make_record())
+    data = json.loads(read_lines(tmp_path / "actions-2026-03.jsonl")[0])
+    assert data["ts"].startswith("2026-03-31T23:59:59")
 
 
 def test_cyrillic_is_stored_unescaped_and_round_trips(tmp_path):
@@ -139,3 +148,29 @@ def test_concurrent_writes_produce_valid_lines(tmp_path):
     lines = read_lines(log.current_path())
     assert len(lines) == 50
     assert {json.loads(x)["request_id"] for x in lines} == {str(i) for i in range(50)}
+
+
+def test_write_returns_true_on_success(tmp_path):
+    assert ActionLog(tmp_path / "actions.jsonl").write(make_record()) is True
+
+
+def test_failed_write_returns_false_and_warns_without_payload(tmp_path, caplog):
+    log = ActionLog(tmp_path / "actions.jsonl")
+    log.current_path().mkdir()  # a directory where the file should be: open() fails
+    with caplog.at_level(logging.WARNING, logger="luna.logs.action_log"):
+        ok = log.write(make_record(request_id="req-42", text="private words"))
+    assert ok is False
+    warnings = [r for r in caplog.records if r.name == "luna.logs.action_log"]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "open_app" in message
+    assert "req-42" in message
+    assert "private words" not in message
+
+
+def test_directory_removed_after_init_is_recreated(tmp_path):
+    base = tmp_path / "logs" / "actions.jsonl"
+    log = ActionLog(base)
+    shutil.rmtree(base.parent)
+    assert log.write(make_record()) is True
+    assert len(read_lines(log.current_path())) == 1

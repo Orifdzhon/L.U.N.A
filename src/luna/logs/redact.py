@@ -17,23 +17,28 @@ from typing import Any
 MASK = "***"
 MIN_SECRET_LENGTH = 4  # shorter values would mask ordinary words
 
+# The left boundary keeps words like "task-management-panel" or "disk-usage-statistics" intact.
 _KEY_PATTERNS = (
-    re.compile(r"AIza[0-9A-Za-z_\-]{20,}"),  # Google
-    re.compile(r"gsk_[0-9A-Za-z_\-]{10,}"),  # Groq
-    re.compile(r"sk-[0-9A-Za-z_\-]{10,}"),  # OpenAI-style
+    re.compile(r"(?<![0-9A-Za-z_])AIza[0-9A-Za-z_\-]{20,}"),  # Google
+    re.compile(r"(?<![0-9A-Za-z_])gsk_[0-9A-Za-z_\-]{10,}"),  # Groq
+    re.compile(r"(?<![0-9A-Za-z_])sk-[0-9A-Za-z_\-]{10,}"),  # OpenAI-style
 )
-_BEARER = re.compile(r"(Bearer\s+)[0-9A-Za-z._~+/=\-]{8,}", re.IGNORECASE)
+# Case-sensitive and token-like (>= 16 chars), so "Bearer authentication failed" stays readable.
+_BEARER = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-~+/]{16,}=*")
 
 _lock = threading.Lock()
 _secrets: set[str] = set()
+_sorted_secrets: tuple[str, ...] = ()  # longest first; rebuilt only when the registry changes
 
 
 def register_secret(value: str | None) -> None:
     """Mask this exact value everywhere from now on (blank or very short values are ignored)."""
     value = (value or "").strip()
     if len(value) >= MIN_SECRET_LENGTH:
+        global _sorted_secrets
         with _lock:
             _secrets.add(value)
+            _sorted_secrets = tuple(sorted(_secrets, key=len, reverse=True))
 
 
 def register_secrets(values: Iterable[str]) -> None:
@@ -43,15 +48,15 @@ def register_secrets(values: Iterable[str]) -> None:
 
 def clear_secrets() -> None:
     """Forget all registered values (for tests)."""
+    global _sorted_secrets
     with _lock:
         _secrets.clear()
+        _sorted_secrets = ()
 
 
 def redact_text(text: str) -> str:
     """Return ``text`` with registered secrets and key-shaped tokens masked."""
-    with _lock:
-        known = sorted(_secrets, key=len, reverse=True)  # longest first
-    for secret in known:
+    for secret in _sorted_secrets:  # immutable tuple, swapped atomically
         text = text.replace(secret, MASK)
     for pattern in _KEY_PATTERNS:
         text = pattern.sub(MASK, text)

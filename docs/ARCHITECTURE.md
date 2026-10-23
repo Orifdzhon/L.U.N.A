@@ -488,6 +488,19 @@ autostart = false
   app catalog (never a raw path or command line from the LLM).
 - Web content isolation: search/page text is wrapped as quoted data in the tool
   message, marked `untrusted`, and the following LLM call has no tools (§4.1).
+- A turn that used web content is stored in the dialog history with a
+  `[answer based on web search]` prefix (truncated), and the system prompt tells the model never
+  to act on requests originating from such messages; only the user's current request is acted on.
+- Forced search (`force_search`): the assistant runs `web_search` itself and passes the wrapped
+  summary as a system message (no fabricated assistant tool call), then calls the LLM with no tools.
+- The tools-free follow-up after untrusted content carries no assistant `tool_calls` / `tool`
+  messages (providers such as Groq reject or hallucinate tools then): this turn's tool summaries
+  are collapsed into one system message. A `ToolUseRejected` (Groq `tool_use_failed`) on that call
+  is retried once with "Answer in plain text. Tools are not available."
+  That call uses a dedicated answer-only system prompt (no tool descriptions, no search
+  instruction). An empty completion is `EmptyResponse` (a request error: no provider cooldown),
+  and a reply that looks like a pseudo tool call in text (`<search`, `{"name":`, ...) is retried
+  once, then replaced by a graceful "couldn't" reply; it is never shown to the user.
 - Page fetching (`search/fetch.py`) validates every URL and redirect hop against local/private
   addresses. Known residual risk: DNS rebinding between check and connect is not pinned yet
   (ADR 0006, Amendment 1).

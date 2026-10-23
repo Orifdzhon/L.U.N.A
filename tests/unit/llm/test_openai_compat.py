@@ -6,7 +6,13 @@ import httpx
 import pytest
 import respx
 
-from luna.core.errors import ProviderRequestError, ProviderUnavailable, RateLimited
+from luna.core.errors import (
+    EmptyResponse,
+    ProviderRequestError,
+    ProviderUnavailable,
+    RateLimited,
+    ToolUseRejected,
+)
 from luna.llm.base import LLMProvider, Message, ToolCall, ToolSchema
 from luna.llm.openai_compat import (
     MAX_PROVIDER_EXTRA_BYTES,
@@ -429,7 +435,7 @@ def test_arguments_of_unsupported_type_are_rejected() -> None:
 )
 def test_empty_completion_is_unavailable(content: Any, finish_reason: str) -> None:
     respx.post(URL).respond(json=completion(content, finish_reason=finish_reason))
-    with pytest.raises(ProviderUnavailable, match=f"empty response.*{finish_reason}"):
+    with pytest.raises(EmptyResponse, match=f"empty response.*{finish_reason}"):
         ask(make())
 
 
@@ -607,3 +613,25 @@ def test_provider_extra_is_deep_copied() -> None:
     source["extra_content"]["google"]["thought_signature"] = "changed"
     assert call.provider_extra == {"extra_content": {"google": {"thought_signature": "a"}}}
     assert source["extra_content"]["google"]["thought_signature"] == "changed"
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"message": "Tool choice is none, but model called a tool", "code": "tool_use_failed"},
+        {"error": {"message": "x", "code": "tool_use_failed"}},
+    ],
+)
+def test_tool_use_failed_maps_to_tool_use_rejected(body: dict) -> None:
+    respx.post(URL).respond(400, json=body)
+    with pytest.raises(ToolUseRejected):
+        ask(make())
+
+
+@respx.mock
+def test_other_400_is_plain_request_error() -> None:
+    respx.post(URL).respond(400, json={"error": {"message": "bad", "code": "other"}})
+    with pytest.raises(ProviderRequestError) as info:
+        ask(make())
+    assert not isinstance(info.value, ToolUseRejected)

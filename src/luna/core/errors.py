@@ -30,6 +30,16 @@ class ProviderRequestError(ProviderError):
     """Our fault (HTTP 400, schema error): retried on another provider at most once."""
 
 
+class EmptyResponse(ProviderRequestError):
+    """The model returned neither text nor tool calls: a request-shape problem, not downtime,
+    so the provider is not put on cooldown."""
+
+
+class ToolUseRejected(ProviderRequestError):
+    """The provider rejected the call because the model tried to call a tool that is not offered
+    (e.g. Groq ``tool_use_failed`` on a call made with ``tools=()``)."""
+
+
 class ConfigError(LunaError):
     """Invalid or missing configuration."""
 

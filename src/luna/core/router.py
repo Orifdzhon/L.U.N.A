@@ -146,6 +146,11 @@ def parse_open_command(text: str) -> str | None:
     return target
 
 
+def clean_query(text: str) -> str:
+    """Text without the wake word and edge politeness (for search queries)."""
+    return _strip_fillers(_WAKE_RE.sub("", text, count=1))
+
+
 def _strip_fillers(text: str) -> str:
     """Drop politeness words (and punctuation) at both edges of ``text``."""
     prev = None

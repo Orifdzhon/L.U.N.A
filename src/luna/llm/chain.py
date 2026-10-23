@@ -13,6 +13,7 @@ from luna.core.errors import (
     ProviderRequestError,
     ProviderUnavailable,
     RateLimited,
+    ToolUseRejected,
 )
 from luna.core.events import EventBus, ProviderSwitched
 from luna.llm.base import ChatResponse, LLMProvider, Message, ToolSchema
@@ -91,6 +92,7 @@ class LLMChain:
         causes: list[str] = []
         last_error: ProviderError | None = None
         request_error: ProviderError | None = None
+        tool_rejected = False  # a provider rejected a tool call made with tools=()
         rejected: list[str] = []  # providers that raised a request error in this request
 
         for provider in self._providers:
@@ -117,6 +119,7 @@ class LLMChain:
                 causes.append(f"{provider.name}: {type(exc).__name__}")
                 last_error = exc
                 rejected.append(provider.name)
+                tool_rejected = tool_rejected or isinstance(exc, ToolUseRejected)
                 if request_error is not None:
                     break  # second request-class error: stop, do not burn the chain
                 request_error = exc
@@ -127,7 +130,7 @@ class LLMChain:
         summary = "all LLM providers failed (" + "; ".join(causes) + ")"
         error: ProviderError
         if request_error is not None:
-            error = ProviderRequestError(summary)
+            error = ToolUseRejected(summary) if tool_rejected else ProviderRequestError(summary)
         else:
             error = ProviderUnavailable(summary)
         if last_error is not None:

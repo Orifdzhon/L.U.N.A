@@ -111,7 +111,6 @@ same sections (see `luna.example.toml`).
 |---|---|
 | App log (rotating, 2 MB x 5) | `%LOCALAPPDATA%\LUNA\logs\luna.log` |
 | Action log (one JSON line per tool call, monthly files) | `%LOCALAPPDATA%\LUNA\logs\actions-YYYY-MM.jsonl` |
-| Start Menu app cache | `%LOCALAPPDATA%\LUNApps.json` (delete it to force a rescan) |
 | Start Menu app cache | `%LOCALAPPDATA%\LUNA\apps.json` (delete it to force a rescan) |
 | Config | `%APPDATA%\LUNA\luna.toml` (see section 5) |
 

@@ -22,6 +22,19 @@ uv run pytest                   # tests (live/gpu/audio markers are skipped by d
 Copy `.env.example` to `.env` for API keys (gitignored). Config lives in `luna.toml`
 (`--config PATH`, then `%APPDATA%\LUNA\luna.toml`, then `./luna.toml`).
 
+### Text mode
+
+```
+uv run luna --text
+```
+
+Starts the REPL: type `открой ютуб`, `open telegram`, `какой курс доллара?`; `/help`,
+`/providers`, `/clear`; Ctrl+C cancels the running request, `exit` / `выход` / Ctrl+C twice quits.
+Without any API key the router still opens apps and sites; answers need an LLM provider.
+
+To use a local LM Studio model, copy `luna.example.toml` to `%APPDATA%\LUNA\luna.toml` and set
+`[llm.providers.local] model = "<exact model id shown by LM Studio>"`.
+
 ## License
 
 [Apache-2.0](LICENSE)

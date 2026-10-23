@@ -46,9 +46,16 @@ def test_python_dash_m_version():
     assert result.stdout.strip() == f"luna {__version__}"
 
 
-def test_text_mode_not_implemented(isolated, capsys):
-    assert main(["--text"]) == 2
-    assert "not implemented" in capsys.readouterr().err
+def test_text_mode_starts_repl_and_exits(isolated, monkeypatch, capsys):
+    from fakes import FakeAppCatalog, FakeLauncher
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "exit")
+    monkeypatch.setattr("luna.platform.windows.apps.WindowsAppCatalog", FakeAppCatalog)
+    monkeypatch.setattr("luna.platform.windows.apps.WindowsAppLauncher", FakeLauncher)
+    assert main(["--text"]) == 0
+    out = capsys.readouterr().out
+    assert "text mode" in out
+    assert "LLM providers" in out
 
 
 def test_valid_config_file_applies_log_level(isolated):

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from luna import __version__
 from luna.config.loader import load_settings
+from luna.config.settings import Settings
 from luna.core.errors import ConfigError
 from luna.logs.setup import setup_logging
 
@@ -19,6 +20,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_text(settings: Settings) -> int:
+    from luna.app import build_app
+    from luna.ui.cli import configure_console_encoding, run_repl
+
+    configure_console_encoding()
+    app = build_app(settings)
+    try:
+        return run_repl(app)
+    finally:
+        app.close()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -29,8 +42,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     setup_logging(settings.app.log_level, console=args.text, secrets=settings.secret_values())
     if args.text:
-        print("luna: --text mode is not implemented yet", file=sys.stderr)
-        return 2
+        return _run_text(settings)
     parser.print_usage(sys.stderr)
     return 0
 

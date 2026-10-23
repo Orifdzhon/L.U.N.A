@@ -98,6 +98,14 @@ FALLBACKS = {
         "en": "Sorry, I couldn't finish that request. Please try rephrasing it.",
         "ru": "Извини, не получилось выполнить этот запрос. Попробуй сформулировать иначе.",
     },
+    "timeout": {
+        "en": "Sorry, that took too long. Please try again.",
+        "ru": "Извини, это заняло слишком много времени. Попробуй ещё раз.",
+    },
+    "cancelled": {
+        "en": "Okay, cancelled.",
+        "ru": "Хорошо, отменено.",
+    },
 }
 
 

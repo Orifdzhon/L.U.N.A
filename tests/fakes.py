@@ -192,21 +192,29 @@ class FakePlayer:
         self.closed = False
         self.started = threading.Event()  # set when play() begins (to sync tests)
         self._release = threading.Event()
+        self._active = False
 
     def play(self, clip: AudioClip) -> None:
         self.played.append(clip)
+        self._active = True
         self.started.set()
-        if self.block:
-            self._release.wait(timeout=5.0)  # safety net so a broken test cannot hang
+        try:
+            if self.block:
+                self._release.wait(timeout=5.0)  # safety net so a broken test cannot hang
+        finally:
+            self._active = False
             self._release.clear()
 
     def stop(self) -> None:
+        """Like the real player: cuts a running ``play()``, a no-op when idle."""
         self.stop_count += 1
-        self._release.set()
+        if self._active:
+            self._release.set()
 
     def finish(self) -> None:
         """Let a blocked ``play()`` return as if the clip ended naturally."""
-        self._release.set()
+        if self._active:
+            self._release.set()
 
     def close(self) -> None:
         self.closed = True

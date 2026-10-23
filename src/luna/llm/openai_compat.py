@@ -25,6 +25,7 @@ import openai
 from pydantic import SecretStr
 
 from luna.core.errors import (
+    EmptyResponse,
     ProviderError,
     ProviderRequestError,
     ProviderUnavailable,
@@ -170,9 +171,7 @@ class OpenAICompatProvider:
         )
         text = _content_text(message.content)
         if not text and not tool_calls:
-            raise ProviderUnavailable(
-                f"{self.name}: empty response (finish_reason={finish_reason})"
-            )
+            raise EmptyResponse(f"{self.name}: empty response (finish_reason={finish_reason})")
         usage = None
         if getattr(completion, "usage", None) is not None:
             usage = {

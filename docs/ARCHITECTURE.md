@@ -497,6 +497,10 @@ autostart = false
   messages (providers such as Groq reject or hallucinate tools then): this turn's tool summaries
   are collapsed into one system message. A `ToolUseRejected` (Groq `tool_use_failed`) on that call
   is retried once with "Answer in plain text. Tools are not available."
+  That call uses a dedicated answer-only system prompt (no tool descriptions, no search
+  instruction). An empty completion is `EmptyResponse` (a request error: no provider cooldown),
+  and a reply that looks like a pseudo tool call in text (`<search`, `{"name":`, ...) is retried
+  once, then replaced by a graceful "couldn't" reply; it is never shown to the user.
 - Page fetching (`search/fetch.py`) validates every URL and redirect hop against local/private
   addresses. Known residual risk: DNS rebinding between check and connect is not pinned yet
   (ADR 0006, Amendment 1).

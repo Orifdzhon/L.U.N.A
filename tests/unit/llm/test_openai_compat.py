@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from luna.core.errors import (
+    EmptyResponse,
     ProviderRequestError,
     ProviderUnavailable,
     RateLimited,
@@ -434,7 +435,7 @@ def test_arguments_of_unsupported_type_are_rejected() -> None:
 )
 def test_empty_completion_is_unavailable(content: Any, finish_reason: str) -> None:
     respx.post(URL).respond(json=completion(content, finish_reason=finish_reason))
-    with pytest.raises(ProviderUnavailable, match=f"empty response.*{finish_reason}"):
+    with pytest.raises(EmptyResponse, match=f"empty response.*{finish_reason}"):
         ask(make())
 
 

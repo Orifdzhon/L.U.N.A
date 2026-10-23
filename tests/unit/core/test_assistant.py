@@ -6,6 +6,7 @@ import pytest
 from fakes import FakeClock, FakeLLM, FakeTool, ScriptExhausted
 from luna.core.assistant import Assistant
 from luna.core.errors import (
+    EmptyResponse,
     ProviderRequestError,
     ProviderUnavailable,
     RateLimited,
@@ -392,3 +393,58 @@ def test_tool_use_rejected_with_tools_is_not_retried(tmp_path: Path) -> None:
     w = World(tmp_path, [ToolUseRejected("a"), say("never")])
     assert "Sorry" in w.ask("hello").text
     assert len(w.llm.calls) == 1
+
+
+GEMINI_PSEUDO = (
+    "<nocomment>\n<search>\n<query>курс доллара ЦБ РФ на сегодня</query>\n</search>\n</nocomment>"
+)
+
+
+def test_followup_uses_answer_only_prompt(tmp_path: Path) -> None:
+    w = World(tmp_path, [say("from memory"), say("final")])
+    w.ask("what is the dollar rate now", force_search=True)
+    first = w.llm.calls[0].messages[0].content or ""
+    final = w.llm.calls[1].messages[0].content or ""
+    assert "call web_search first" in first
+    assert "web_search" not in final and "Tools:" not in final
+    assert "cannot use tools" in final and "NOW-LINE" in final
+    assert w.llm.calls[1].messages[-1].role == "system"  # results block
+
+
+def test_answer_only_prompt_russian(tmp_path: Path) -> None:
+    w = World(tmp_path, [call("web_search", query="x"), say("ок")])
+    w.ask("курс доллара")
+    final = w.llm.calls[1].messages[0].content or ""
+    assert "не можешь пользоваться инструментами" in final and "web_search" not in final
+
+
+def test_pseudo_tool_call_text_is_retried_then_accepted(tmp_path: Path) -> None:
+    w = World(tmp_path, [call("web_search", query="x"), say(GEMINI_PSEUDO), say("81 rubles")])
+    reply = w.ask("dollar rate")
+    assert reply.text == "81 rubles"
+    assert "Tools are not available" in (w.llm.calls[2].messages[-1].content or "")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [GEMINI_PSEUDO, '{"name": "web_search", "arguments": {}}', "web_search(query='x')", "<tool>x"],
+)
+def test_pseudo_tool_call_twice_gives_graceful_reply(tmp_path: Path, text: str) -> None:
+    w = World(tmp_path, [call("web_search", query="x"), say(text), say(text)])
+    reply = w.ask("dollar rate")
+    assert "couldn't" in reply.text
+    assert "<" not in reply.text and "web_search" not in reply.text
+    assert len(w.llm.calls) == 3
+
+
+def test_groq_rejected_then_empty_is_graceful(tmp_path: Path) -> None:
+    w = World(
+        tmp_path,
+        [call("web_search", query="x"), ToolUseRejected("t"), EmptyResponse("empty")],
+    )
+    assert "couldn't" in w.ask("dollar rate").text
+
+
+def test_plain_answer_mentioning_search_is_not_flagged(tmp_path: Path) -> None:
+    w = World(tmp_path, [call("web_search", query="x"), say("I searched the web: 81 rubles")])
+    assert w.ask("dollar rate").text == "I searched the web: 81 rubles"

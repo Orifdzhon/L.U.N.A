@@ -15,19 +15,21 @@ Provider failures become a short apology ``Reply``; ``BaseException`` (e.g. a te
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
-from luna.core.errors import ProviderError, ToolUseRejected
+from luna.core.errors import EmptyResponse, ProviderError, ProviderRequestError, ToolUseRejected
 from luna.core.models import Reply, Request
 from luna.core.prompts import (
     NO_TOOLS_NOTE,
     SEARCH_TOOL,
     TOOL_RESULTS_HEADER,
     WEB_MARKER,
+    build_answer_prompt,
     build_system_prompt,
     fallback_text,
 )
@@ -68,6 +70,25 @@ def _results_message(results: Sequence[ToolResult]) -> Message:
     for r in results:
         lines.append(r.summary if r.untrusted else f"- {r.tool}: {r.summary}")
     return Message("system", "\n".join(lines))
+
+
+_PSEUDO_CALL_RE = re.compile(
+    r"<\s*/?\s*(?:search|tool|function|query|nocomment)\b|\{\s*\"name\"\s*:|\bweb_search\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_tool_call(text: str | None) -> bool:
+    """A tools-free reply that is really a tool/search invocation written as text."""
+    return bool(text) and _PSEUDO_CALL_RE.search(text or "") is not None
+
+
+def _collapse(
+    messages: list[Message], base: int, results: Sequence[ToolResult], lang: str, now: str
+) -> None:
+    """Prepare the tools-free follow-up: answer-only system prompt + one results message."""
+    messages[0] = Message("system", build_answer_prompt(lang, now))
+    messages[base:] = [_results_message(results)]
 
 
 class _GaveUp(Exception):
@@ -160,7 +181,7 @@ class Assistant:
                     web = web or result.untrusted
                     searched = True
                     tools_off = True
-                    messages[base:] = [_results_message(actions)]
+                    _collapse(messages, base, actions, lang, now)
                     continue
                 text = (response.text or "").strip()
                 if not text:
@@ -185,7 +206,7 @@ class Assistant:
             if tools_off:
                 # Tools-free follow-up: no assistant tool_calls / tool messages (some providers
                 # reject or hallucinate tools then); the results go in one system message.
-                messages[base:] = [_results_message(actions)]
+                _collapse(messages, base, actions, lang, now)
 
     def _chat(
         self,
@@ -194,22 +215,30 @@ class Assistant:
         deadline: float,
         request: Request,
     ) -> ChatResponse:
-        remaining = deadline - self._timer()
-        if remaining <= 0:
-            raise _GaveUp
+        def send(msgs: list[Message], offered: Sequence[ToolSchema]) -> ChatResponse:
+            remaining = deadline - self._timer()
+            if remaining <= 0:
+                raise _GaveUp
+            return self._llm.chat(msgs, offered, timeout_s=remaining, request_id=request.request_id)
+
+        if tools:
+            return send(messages, tools)
+        # Tools-free call: the model may still try a tool (provider 400), return nothing, or
+        # write a pseudo tool call as text. Retry once in plain text, then give up gracefully.
         try:
-            return self._llm.chat(
-                messages, tools, timeout_s=remaining, request_id=request.request_id
-            )
-        except ToolUseRejected:
-            if tools:
-                raise
-        # The model tried to call a tool on a tools-free call: retry once, in plain text.
-        remaining = deadline - self._timer()
-        if remaining <= 0:
+            response = send(messages, ())
+            if not _looks_like_tool_call(response.text):
+                return response
+            logger.warning("tools-free reply looked like a tool call; retrying")
+        except (ToolUseRejected, EmptyResponse):
+            logger.warning("tools-free call rejected or empty; retrying")
+        try:
+            response = send([*messages, Message("system", NO_TOOLS_NOTE)], ())
+        except ProviderRequestError:
+            raise _GaveUp from None
+        if _looks_like_tool_call(response.text):
             raise _GaveUp
-        retry = [*messages, Message("system", NO_TOOLS_NOTE)]
-        return self._llm.chat(retry, (), timeout_s=remaining, request_id=request.request_id)
+        return response
 
     def _execute(self, call: ToolCall, request: Request, provider: str | None) -> ToolResult:
         ctx = ToolContext(

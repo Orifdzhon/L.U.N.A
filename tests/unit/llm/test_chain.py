@@ -8,6 +8,7 @@ import pytest
 from fakes import FakeClock, FakeLLM, ScriptExhausted
 from luna.core.errors import (
     ConfigError,
+    EmptyResponse,
     ProviderError,
     ProviderRequestError,
     ProviderUnavailable,
@@ -349,3 +350,11 @@ def test_tool_use_rejected_is_preserved_when_chain_fails() -> None:
     chain = LLMChain([llm("a", ToolUseRejected("tool_use_failed"))], FakeClock())
     with pytest.raises(ToolUseRejected):
         chat(chain)
+
+
+def test_empty_response_does_not_cool_the_provider_down() -> None:
+    a = llm("a", EmptyResponse("empty"), ok("a"))
+    b = llm("b", ok("b"))
+    chain = LLMChain([a, b], FakeClock())
+    assert chat(chain).provider == "b"  # request error: next provider, no cooldown for a
+    assert chat(chain).provider == "a"  # a is still available for the next request

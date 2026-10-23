@@ -16,6 +16,13 @@ MAX_BYTES = 2 * 1024 * 1024
 BACKUP_COUNT = 4  # luna.log + 4 backups = 5 files of up to 2 MB
 
 
+# Third-party libraries log request URLs (search queries!) at INFO: keep them at WARNING.
+NOISY_LOGGERS = (
+    "primp", "ddgs", "httpx", "httpcore", "openai", "trafilatura", "courlan", "htmldate",
+    "charset_normalizer", "urllib3", "asyncio", "PIL",
+)  # fmt: skip
+
+
 class _LunaStreamHandler(logging.StreamHandler):
     """Marker subclass so repeated setup calls replace only our own handlers."""
 
@@ -64,9 +71,15 @@ def setup_logging(
     if console:
         handlers.append(_LunaStreamHandler())
     formatter = logging.Formatter(LOG_FORMAT)
+    numeric = logging.getLevelName(level.upper())
+    if console:
+        # The REPL console stays quiet: warnings and errors only (DEBUG when explicitly asked).
+        handlers[1].setLevel(numeric if numeric <= logging.DEBUG else max(numeric, logging.WARNING))
     for handler in handlers:
         handler.setFormatter(formatter)
         handler.addFilter(RedactionFilter())
         root.addHandler(handler)
     root.setLevel(level.upper())
+    for noisy in NOISY_LOGGERS:
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     return log_path

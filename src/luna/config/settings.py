@@ -15,10 +15,14 @@ class _Section(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# The Assistant must give up this many seconds before the Orchestrator's overall timeout.
+ASSISTANT_MARGIN_S = 3.0
+
+
 class AppSettings(_Section):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     history_turns: int = Field(default=6, ge=0)
-    request_timeout_s: float = Field(default=20.0, gt=0)
+    request_timeout_s: float = Field(default=20.0, gt=ASSISTANT_MARGIN_S)
 
 
 class ProviderSettings(_Section):

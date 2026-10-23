@@ -36,7 +36,9 @@ api_key_env = "GROQ_API_KEY"
 # base_url = "http://localhost:11434/v1". No key needed.
 [llm.providers.local]
 base_url = "http://localhost:1234/v1"
-model = "qwen3-4b"               # exact model name as shown by LM Studio
+# Set `model` to the exact identifier of the model you loaded, as shown by LM Studio
+# (e.g. "qwen3.5-9b-uncensored-hauhaucs-aggressive@q4_k_m"); the default is only a placeholder.
+model = "qwen3-4b"
 
 [search]
 provider = "ddgs"           # ddgs | searxng | tavily

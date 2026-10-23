@@ -131,6 +131,11 @@ class Assistant:
         self._confirmer = _DenyConfirmer()
         self._lock = threading.Lock()  # guards _history only; never held during an LLM call
 
+    def clear_history(self) -> None:
+        """Forget the dialogue context (the CLI ``/clear`` command)."""
+        with self._lock:
+            self._history.clear()
+
     def answer(
         self,
         request: Request,

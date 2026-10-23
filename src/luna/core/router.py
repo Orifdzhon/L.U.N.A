@@ -12,6 +12,7 @@ It also flags requests that need fresh facts (``force_search``) for the Assistan
 # ruff: noqa: RUF001
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
 import threading
@@ -98,6 +99,67 @@ _TEMPLATES = {
 }
 
 
+DATETIME_TOOL = "get_datetime"
+_RU_WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
+_RU_MONTHS = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)  # fmt: skip
+_EN_MONTHS = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)  # fmt: skip
+_TIME_Q = (
+    r"(?:скажи\s+|подскажи\s+)?(?:сколько\s+(?:сейчас\s+)?времени(?:\s+сейчас)?"
+    r"|который\s+(?:сейчас\s+)?час|какое\s+(?:сейчас\s+)?время(?:\s+сейчас)?"
+    r"|what\s+time\s+is\s+it(?:\s+now)?|what(?:'s|\s+is)\s+the\s+time(?:\s+now)?"
+    r"|tell\s+me\s+the\s+time|what\s+time\s+is\s+it\s+right\s+now)"
+)
+_DATE_Q = (
+    r"(?:скажи\s+|подскажи\s+)?(?:какое\s+(?:сегодня\s+)?число(?:\s+сегодня)?"
+    r"|какой\s+(?:сегодня\s+)?день(?:\s+(?:недели|сегодня))?"
+    r"|какая\s+(?:сегодня\s+)?дата(?:\s+сегодня)?"
+    r"|what(?:'s|\s+is)\s+(?:the\s+|today'?s\s+)?(?:date|day)(?:\s+today)?"
+    r"|what\s+day\s+is\s+it(?:\s+today)?|what\s+is\s+today'?s\s+date)"
+)
+_TIME_Q_RE = re.compile(_TIME_Q, re.IGNORECASE)
+_DATE_Q_RE = re.compile(_DATE_Q, re.IGNORECASE)
+
+
+def parse_datetime_question(text: str) -> str | None:
+    """``"time"`` / ``"date"`` for a plain "what time / date is it" question, else ``None``.
+
+    The whole text must be the question (after the wake word and politeness are removed), so
+    "сколько времени лететь до Москвы" is left to the LLM.
+    """
+    if not text or len(text) > MAX_TEXT_CHARS:
+        return None
+    body = clean_query(text).strip(_TRAIL_PUNCT + "?").strip()
+    if _TIME_Q_RE.fullmatch(body):
+        return "time"
+    if _DATE_Q_RE.fullmatch(body):
+        return "date"
+    return None
+
+
+def _datetime_reply(kind: str, lang: str, result: ToolResult) -> Reply | None:
+    data = result.data
+    try:
+        day = dt.date.fromisoformat(data["date"])
+        clock = str(data["time"])[:5]
+        weekday = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        wd = weekday.index(data["weekday"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    if lang == "ru":
+        when = f"{_RU_WEEKDAYS[wd]}, {day.day} {_RU_MONTHS[day.month - 1]}"
+        text = f"Сейчас {clock}, {when}." if kind == "time" else f"Сегодня {when}."
+    else:
+        when = f"{data['weekday']}, {_EN_MONTHS[day.month - 1]} {day.day}"
+        text = f"It's {clock}, {when}." if kind == "time" else f"Today is {when}."
+    return Reply(text, lang, [result], PROVIDER)
+
+
 @dataclass(frozen=True)
 class RouteResult:
     handled: bool
@@ -172,6 +234,9 @@ class Router:
     def route(self, request: Request, *, cancel: threading.Event | None = None) -> RouteResult:
         text = request.text if isinstance(request.text, str) else ""
         fallthrough = RouteResult(False, force_search=needs_fresh_facts(text))
+        kind = parse_datetime_question(text)
+        if kind is not None:
+            return self._datetime(request, kind, cancel) or fallthrough
         target = parse_open_command(text)
         if target is None:
             return fallthrough
@@ -183,6 +248,27 @@ class Router:
             logger.exception("router fast path failed unexpectedly")
             result = None
         return result or fallthrough
+
+    def _datetime(
+        self, request: Request, kind: str, cancel: threading.Event | None
+    ) -> RouteResult | None:
+        lang = detect_lang(request.text, request.lang)
+        ctx = ToolContext(
+            request_id=request.request_id,
+            source=request.source,
+            confirmer=self._confirmer,
+            user_text=request.text,
+            provider=PROVIDER,
+        )
+        try:
+            result = self._call(DATETIME_TOOL, {}, ctx, 1, cancel)
+        except Abandoned:
+            return None
+        except Exception:
+            logger.exception("router date/time path failed unexpectedly")
+            return None
+        reply = _datetime_reply(kind, lang, result) if result.ok else None
+        return RouteResult(True, reply) if reply is not None else None
 
     def _execute(
         self, request: Request, target: str, cancel: threading.Event | None

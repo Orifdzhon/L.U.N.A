@@ -14,6 +14,7 @@ from luna.tts.speaker import Speaker
 TEXT = "Первое предложение. Второе предложение. Третье предложение."
 FIRST = "Первое предложение."
 WAIT = 3.0
+FAST = 0.2  # a call that "returns immediately"
 
 
 def wait_for(cond, timeout=WAIT):
@@ -23,6 +24,37 @@ def wait_for(cond, timeout=WAIT):
             return True
         time.sleep(0.005)
     return cond()
+
+
+class Events:
+    """Accumulates the StatusChanged events of one subscription (never loses any)."""
+
+    def __init__(self, bus):
+        self.sub = bus.subscribe()
+        self.seen: list[StatusChanged] = []
+
+    def _drain(self):
+        while not self.sub.queue.empty():
+            item = self.sub.queue.get_nowait()
+            if item is not CLOSED and isinstance(item, StatusChanged):
+                self.seen.append(item)
+
+    def all(self):
+        self._drain()
+        return list(self.seen)
+
+    def wait(self, status, request_id=None, timeout=WAIT):
+        def hit():
+            return any(
+                e.status == status and (request_id is None or e.request_id == request_id)
+                for e in self.all()
+            )
+
+        assert wait_for(hit, timeout), f"no {status} {request_id}: {self.all()}"
+        return self.all()
+
+    def pairs(self):
+        return [(e.status, e.request_id) for e in self.all()]
 
 
 class GatedTTS(FakeTTS):
@@ -43,18 +75,31 @@ class GatedTTS(FakeTTS):
         return super().synthesize(text, lang)
 
 
-class ScriptedPlayer(FakePlayer):
-    """Blocking player; optionally raises ``AudioError`` on the n-th clip."""
+class ErrorOnNthPlayer(FakePlayer):
+    """Blocking player that raises ``AudioError`` on the n-th clip."""
 
-    def __init__(self, error_on=None):
+    def __init__(self, error_on):
         super().__init__(block=True)
         self.error_on = error_on
 
     def play(self, clip):
-        if self.error_on is not None and len(self.played) + 1 == self.error_on:
+        if len(self.played) + 1 == self.error_on:
             self.played.append(clip)
             raise AudioError("no device")
         super().play(clip)
+
+
+class StubbornPlayer(FakePlayer):
+    """play() ignores stop() and always takes 0.3 s."""
+
+    def play(self, clip):
+        self.played.append(clip)
+        self.started.set()
+        time.sleep(0.3)
+        self.returned += 1
+
+    def stop(self):
+        self.stop_count += 1
 
 
 @pytest.fixture
@@ -70,26 +115,6 @@ def make(bus, tts=None, player=None):
     return Speaker(tts, player, bus, TTSSettings()), tts, player
 
 
-def statuses(sub):
-    out = []
-    while not sub.queue.empty():
-        item = sub.queue.get_nowait()
-        if item is not CLOSED:
-            out.append(item)
-    return out
-
-
-def wait_status(sub, status, timeout=WAIT):
-    got = []
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        got += [e for e in statuses(sub) if isinstance(e, StatusChanged)]
-        if any(e.status == status for e in got):
-            return got
-        time.sleep(0.005)
-    raise AssertionError(f"no {status}: {got}")
-
-
 def reply(text=TEXT, lang="ru"):
     return Reply(text=text, lang=lang)
 
@@ -98,32 +123,35 @@ def worker_threads():
     return [t for t in threading.enumerate() if t.name.startswith("luna-speaker")]
 
 
+def timed(fn, *args):
+    t0 = time.monotonic()
+    fn(*args)
+    return time.monotonic() - t0
+
+
 def test_chunks_synthesized_and_played_in_order_with_lang(bus):
     sp, tts, player = make(bus)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.speak(reply(lang="ru"), "r1")
-    got = wait_status(sub, Status.IDLE)
+    ev.wait(Status.IDLE)
     assert [c.text for c in tts.calls] == [FIRST, "Второе предложение.", "Третье предложение."]
     assert {c.lang for c in tts.calls} == {"ru"}
     assert len(player.played) == 3
-    assert [(e.status, e.request_id) for e in got] == [
-        (Status.SPEAKING, "r1"),
-        (Status.IDLE, "r1"),
-    ]
+    assert ev.pairs() == [(Status.SPEAKING, "r1"), (Status.IDLE, "r1")]
     sp.close()
 
 
 def test_lang_falls_back_to_detection(bus):
     sp, tts, _ = make(bus)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.speak(reply("Hello there. How are you?", lang=""))
-    wait_status(sub, Status.IDLE)
+    ev.wait(Status.IDLE)
     assert {c.lang for c in tts.calls} == {"en"}
     sp.close()
 
 
 def test_look_ahead_synthesizes_next_chunk_while_current_plays(bus):
-    player = ScriptedPlayer()
+    player = FakePlayer(block=True)
     sp, tts, _ = make(bus, player=player)
     sp.speak(reply())
     assert player.started.wait(WAIT)
@@ -139,135 +167,180 @@ def test_look_ahead_synthesizes_next_chunk_while_current_plays(bus):
 
 def test_speak_returns_immediately_even_when_everything_blocks(bus):
     tts = GatedTTS(gated=[FIRST])
-    sp, _, _ = make(bus, tts=tts, player=ScriptedPlayer())
-    t0 = time.monotonic()
-    sp.speak(reply())
-    assert time.monotonic() - t0 < 0.05
+    sp, _, _ = make(bus, tts=tts, player=FakePlayer(block=True))
+    assert timed(sp.speak, reply()) < FAST
     assert tts.entered[FIRST].wait(WAIT)
-    t0 = time.monotonic()
-    sp.speak(reply("Другое. Ответ."))  # while synthesis blocks
-    assert time.monotonic() - t0 < 0.05
+    assert timed(sp.speak, reply("Другое. Ответ.")) < FAST  # while synthesis blocks
     tts.release(FIRST)
     sp.close()
 
 
-def test_speak_returns_immediately_while_player_blocks(bus):
-    player = ScriptedPlayer()
+def test_speak_and_stop_do_not_wait_for_a_player_that_ignores_stop(bus):
+    player = StubbornPlayer()
     sp, _, _ = make(bus, player=player)
     sp.speak(reply())
     assert player.started.wait(WAIT)
-    t0 = time.monotonic()
-    sp.speak(reply("Другое."))
-    assert time.monotonic() - t0 < 0.05
+    assert timed(sp.speak, reply("Другое.")) < FAST
+    assert timed(sp.stop) < FAST
+    assert timed(sp.set_muted, True) < FAST
     sp.close()
 
 
 def test_stop_mid_sentence_gives_idle_and_no_more_plays(bus):
-    player = ScriptedPlayer()
+    player = FakePlayer(block=True)
     sp, _, _ = make(bus, player=player)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.speak(reply(), "r1")
     assert player.started.wait(WAIT)
     t0 = time.monotonic()
     sp.stop()
-    got = wait_status(sub, Status.IDLE, 0.5)
+    ev.wait(Status.IDLE, timeout=0.5)
     assert time.monotonic() - t0 < 0.5
     time.sleep(0.15)
     assert len(player.played) == 1
-    assert [e.status for e in got] == [Status.SPEAKING, Status.IDLE]
+    assert ev.pairs() == [(Status.SPEAKING, "r1"), (Status.IDLE, "r1")]
     sp.stop()  # idempotent
-    assert statuses(sub) == []
+    time.sleep(0.05)
+    assert len(ev.all()) == 2
     sp.close()
 
 
 def test_stop_when_idle_publishes_nothing(bus):
     sp, _, _ = make(bus)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.stop()
     sp.stop()
-    assert statuses(sub) == []
+    time.sleep(0.05)
+    assert ev.all() == []
     sp.close()
 
 
 def test_stop_during_synthesis_discards_result(bus):
     tts = GatedTTS(gated=[FIRST])
     sp, _, player = make(bus, tts=tts)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.speak(reply(), "r1")
     assert tts.entered[FIRST].wait(WAIT)
     sp.stop()
     tts.release(FIRST)
     time.sleep(0.2)
     assert player.played == []
-    assert statuses(sub) == []  # never spoke: no SPEAKING, no IDLE
+    assert ev.all() == []  # never spoke: no SPEAKING, no IDLE
     sp.close()
 
 
-def test_new_speak_supersedes_old(bus):
-    player = ScriptedPlayer()
+def test_stop_landing_just_before_play_starts_cuts_that_chunk(bus):
+    gate = threading.Event()
+    entered = threading.Event()
+
+    def hold_first_play():
+        if not entered.is_set():
+            entered.set()
+            gate.wait(WAIT)
+
+    player = FakePlayer(block=True, on_enter=hold_first_play)
+    sp, _, _ = make(bus, player=player)
+    ev = Events(bus)
+    sp.speak(reply(), "r1")
+    assert entered.wait(WAIT)  # the worker is about to play; play() is not active yet
+    sp.stop()
+    assert wait_for(lambda: player.stop_count >= 2)  # first stop hit the idle player: retried
+    gate.set()
+    ev.wait(Status.IDLE, timeout=1.0)  # the chunk was cut at once, not played to the end
+    time.sleep(0.1)
+    assert len(player.played) == 1 and player.returned == 1
+    assert len(ev.all()) == 2
+    sp.close()
+
+
+def test_late_stop_never_cuts_the_next_utterance(bus):
+    player = FakePlayer(block=True)
+    sp, _, _ = make(bus, player=player)
+    for i in range(10):
+        before = len(player.played)
+        sp.speak(reply("Раз. Два."), f"a{i}")
+        assert wait_for(lambda n=before: len(player.played) > n)
+        before_b = len(player.played)
+        returned = player.returned
+        sp.speak(reply("Три. Четыре."), f"b{i}")  # old play is cut, the new one must stay
+        assert wait_for(lambda n=before_b: len(player.played) > n)
+        time.sleep(0.05)
+        # exactly the old clip returned; the new utterance's first clip is still playing
+        assert player.returned == returned + 1
+        sp.stop()
+        assert wait_for(lambda n=returned: player.returned == n + 2)
+    sp.close()
+
+
+def test_new_speak_supersedes_old_without_idle_blink(bus):
+    player = FakePlayer(block=True)
     sp, tts, _ = make(bus, player=player)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.speak(reply(), "old")
     assert player.started.wait(WAIT)
     player.started.clear()
     sp.speak(reply("Новый ответ. Ещё один.", "ru"), "new")
     assert player.started.wait(WAIT)
+    ev.wait(Status.SPEAKING, "new")
     player.finish()
     assert wait_for(lambda: len(player.played) == 3)
     player.finish()
-    got = wait_status(sub, Status.IDLE)
-    got += wait_status(sub, Status.IDLE)
-    assert [(e.status, e.request_id) for e in got][:3] == [
+    ev.wait(Status.IDLE, "new")
+    assert ev.pairs() == [
         (Status.SPEAKING, "old"),
-        (Status.IDLE, "old"),
         (Status.SPEAKING, "new"),
+        (Status.IDLE, "new"),
     ]
-    spoken = [c.text for c in tts.calls]
-    assert "Третье предложение." not in spoken
+    assert "Третье предложение." not in [c.text for c in tts.calls]
     sp.close()
 
 
 def test_rapid_speaks_play_only_the_last_utterance_fully(bus):
     sp, tts, _ = make(bus)
-    sub = bus.subscribe()
+    ev = Events(bus)
     for i in range(20):
         sp.speak(reply("Раз. Два."), f"r{i}")
-    got = []
-    end = time.monotonic() + WAIT
-    while time.monotonic() < end and not any(
-        e.request_id == "r19" and e.status == Status.IDLE for e in got
-    ):
-        got += [e for e in statuses(sub) if isinstance(e, StatusChanged)]
-        time.sleep(0.01)
-    assert any(e.request_id == "r19" and e.status == Status.IDLE for e in got)
+    ev.wait(Status.IDLE, "r19")
     assert tts.calls[-1].text == "Два."
+    sp.close()
+
+
+def test_rapid_speaks_never_run_two_syntheses_at_once(bus):
+    tts = FakeTTS(delay=0.02)
+    sp, _, _ = make(bus, tts=tts)
+    ev = Events(bus)
+    for i in range(20):
+        sp.speak(reply("Раз. Два. Три."), f"r{i}")
+        time.sleep(0.005)
+    ev.wait(Status.IDLE, "r19")
+    assert tts.max_concurrent == 1
     sp.close()
 
 
 def test_muted_plays_nothing_and_publishes_nothing(bus):
     sp, tts, player = make(bus)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.set_muted(True)
     assert sp.muted
     sp.speak(reply(), "r1")
     time.sleep(0.15)
     assert tts.calls == [] and player.played == []
-    assert statuses(sub) == []
+    assert ev.all() == []
     sp.set_muted(False)
     sp.speak(reply("Привет."), "r2")
-    wait_status(sub, Status.IDLE)
+    ev.wait(Status.IDLE)
     assert len(player.played) == 1
     sp.close()
 
 
 def test_muting_stops_current_speech(bus):
-    player = ScriptedPlayer()
+    player = FakePlayer(block=True)
     sp, _, _ = make(bus, player=player)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.speak(reply())
     assert player.started.wait(WAIT)
     sp.set_muted(True)
-    wait_status(sub, Status.IDLE, 0.5)
+    ev.wait(Status.IDLE, timeout=0.5)
     time.sleep(0.1)
     assert len(player.played) == 1
     sp.close()
@@ -276,31 +349,31 @@ def test_muting_stops_current_speech(bus):
 def test_provider_error_publishes_error_then_idle_and_recovers(bus):
     tts = FakeTTS(error=ProviderUnavailable("boom"))
     sp, _, player = make(bus, tts=tts)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.speak(reply(), "r1")
-    got = wait_status(sub, Status.IDLE)
-    assert [(e.status, e.request_id, e.detail) for e in got] == [
+    ev.wait(Status.IDLE)
+    assert [(e.status, e.request_id, e.detail) for e in ev.all()] == [
         (Status.ERROR, "r1", "tts_failed"),
         (Status.IDLE, "r1", None),
     ]
     assert player.played == []
     tts.error = None
     sp.speak(reply("Привет."), "r2")
-    got = wait_status(sub, Status.IDLE)
-    assert [e.status for e in got] == [Status.SPEAKING, Status.IDLE]
+    ev.wait(Status.IDLE, "r2")
+    assert [e.status for e in ev.all()][2:] == [Status.SPEAKING, Status.IDLE]
     sp.close()
 
 
 def test_player_error_publishes_error_once_then_idle(bus):
-    player = ScriptedPlayer(error_on=2)
+    player = ErrorOnNthPlayer(error_on=2)
     sp, _, _ = make(bus, player=player)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.speak(reply(), "r1")
     assert player.started.wait(WAIT)
     player.finish()
-    got = wait_status(sub, Status.IDLE)
-    assert [e.status for e in got] == [Status.SPEAKING, Status.ERROR, Status.IDLE]
-    assert got[1].detail == "tts_failed"
+    ev.wait(Status.IDLE)
+    assert [e.status for e in ev.all()] == [Status.SPEAKING, Status.ERROR, Status.IDLE]
+    assert ev.all()[1].detail == "tts_failed"
     assert len(player.played) == 2  # nothing after the failed clip
     sp.close()
 
@@ -313,26 +386,52 @@ def test_error_on_later_chunk_after_speaking(bus):
             return super().synthesize(text, lang)
 
     sp, _, player = make(bus, tts=FlakyTTS())
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.speak(reply())
-    got = wait_status(sub, Status.IDLE)
-    assert [e.status for e in got] == [Status.SPEAKING, Status.ERROR, Status.IDLE]
+    ev.wait(Status.IDLE)
+    assert [e.status for e in ev.all()] == [Status.SPEAKING, Status.ERROR, Status.IDLE]
     assert len(player.played) == 1
+    sp.close()
+
+
+def test_error_of_a_superseded_utterance_is_not_reported(bus):
+    class SlowFailTTS(FakeTTS):
+        def __init__(self):
+            super().__init__()
+            self.entered = threading.Event()
+            self.go = threading.Event()
+
+        def synthesize(self, text, lang):
+            if text == FIRST:
+                self.entered.set()
+                self.go.wait(WAIT)
+                raise ProviderUnavailable("late failure")
+            return super().synthesize(text, lang)
+
+    tts = SlowFailTTS()
+    sp, _, _ = make(bus, tts=tts)
+    ev = Events(bus)
+    sp.speak(reply(), "old")
+    assert tts.entered.wait(WAIT)
+    sp.stop()
+    tts.go.set()
+    time.sleep(0.2)
+    assert ev.all() == []
     sp.close()
 
 
 def test_empty_text_is_silent(bus):
     sp, tts, _ = make(bus)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.speak(reply("   "))
     time.sleep(0.1)
-    assert tts.calls == [] and statuses(sub) == []
+    assert tts.calls == [] and ev.all() == []
     sp.close()
 
 
 def test_close_leaves_no_threads_and_closes_player(bus):
     before = len(worker_threads())
-    player = ScriptedPlayer()
+    player = FakePlayer(block=True)
     sp, _, _ = make(bus, player=player)
     sp.speak(reply())
     assert player.started.wait(WAIT)
@@ -344,20 +443,37 @@ def test_close_leaves_no_threads_and_closes_player(bus):
     assert len(player.played) == 1
 
 
-def test_close_while_synthesis_blocks(bus):
+def test_close_while_synthesis_is_blocked(bus):
+    before = len(worker_threads())
     tts = GatedTTS(gated=[FIRST])
     sp, _, _ = make(bus, tts=tts)
     sp.speak(reply())
     assert tts.entered[FIRST].wait(WAIT)
+    t0 = time.monotonic()
+    sp.close(timeout=0.3)  # synthesis is still blocked: close gives up waiting for it
+    assert time.monotonic() - t0 < 1.0
     tts.release(FIRST)
-    sp.close()
-    assert wait_for(lambda: worker_threads() == [])
+    assert wait_for(lambda: len(worker_threads()) == before)
+
+
+def test_close_from_a_listener_thread_of_the_speaker_does_not_deadlock(bus):
+    holder = {}
+
+    class ClosingPlayer(FakePlayer):
+        def play(self, clip):
+            super().play(clip)
+            holder["sp"].close(timeout=0.5)  # called on the worker thread itself
+
+    sp, _, _ = make(bus, player=ClosingPlayer())
+    holder["sp"] = sp
+    sp.speak(reply("Привет."))
+    assert wait_for(lambda: not sp._worker.is_alive())
 
 
 def test_played_clips_are_audio_clips(bus):
     sp, _, player = make(bus)
-    sub = bus.subscribe()
+    ev = Events(bus)
     sp.speak(reply("Привет."))
-    wait_status(sub, Status.IDLE)
+    ev.wait(Status.IDLE)
     assert isinstance(player.played[0], AudioClip)
     sp.close()

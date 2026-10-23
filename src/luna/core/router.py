@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from luna.core.errors import Abandoned
+from luna.core.lang import detect_lang
 from luna.core.models import Reply, Request
 from luna.llm.base import ToolCall
 from luna.tools.base import ToolContext, ToolResult
@@ -172,15 +173,6 @@ class _DenyConfirmer:
 
     def confirm(self, prompt: str) -> bool:
         return False
-
-
-def detect_lang(text: str, hint: str | None = None) -> str:
-    """Cyrillic text -> "ru", other letters -> "en"; no letters: the hint, else "ru"."""
-    if re.search(r"[а-яё]", text, re.IGNORECASE):
-        return "ru"
-    if re.search(r"[a-z]", text, re.IGNORECASE):
-        return "en"
-    return hint if hint in _TEMPLATES else "ru"
 
 
 def needs_fresh_facts(text: str) -> bool:

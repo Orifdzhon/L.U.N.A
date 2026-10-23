@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import copy
 import threading
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from typing import Any, NamedTuple
 
 from luna.audio.base import AudioClip
@@ -183,38 +184,52 @@ class FakeTool:
 
 
 class FakePlayer:
-    """Records clips. With ``block=True``, ``play()`` waits for ``stop()`` or ``finish()``."""
+    """Records clips. With ``block=True``, ``play()`` waits for ``stop()`` or ``finish()``.
 
-    def __init__(self, block: bool = False) -> None:
+    ``stop()`` / ``finish()`` act only on a ``play()`` that is running (like the real
+    player; a call while idle is a no-op). ``on_enter`` runs at the very start of
+    ``play()``, before the clip counts as playing: tests use it to hold ``play()`` back
+    and let a ``stop()`` land in that window.
+    """
+
+    def __init__(self, block: bool = False, on_enter: Callable[[], None] | None = None) -> None:
         self.block = block
+        self.on_enter = on_enter
         self.played: list[AudioClip] = []
+        self.returned = 0  # number of play() calls that have finished
         self.stop_count = 0
         self.closed = False
         self.started = threading.Event()  # set when play() begins (to sync tests)
-        self._release = threading.Event()
-        self._active = False
+        self._lock = threading.Lock()
+        self._current: threading.Event | None = None  # release flag of the running play()
 
     def play(self, clip: AudioClip) -> None:
-        self.played.append(clip)
-        self._active = True
+        if self.on_enter is not None:
+            self.on_enter()
+        release = threading.Event()
+        with self._lock:
+            self.played.append(clip)
+            self._current = release
         self.started.set()
         try:
             if self.block:
-                self._release.wait(timeout=5.0)  # safety net so a broken test cannot hang
+                release.wait(timeout=5.0)  # safety net so a broken test cannot hang
         finally:
-            self._active = False
-            self._release.clear()
+            with self._lock:
+                self._current = None
+                self.returned += 1
 
     def stop(self) -> None:
-        """Like the real player: cuts a running ``play()``, a no-op when idle."""
-        self.stop_count += 1
-        if self._active:
-            self._release.set()
+        with self._lock:
+            self.stop_count += 1
+            if self._current is not None:
+                self._current.set()
 
     def finish(self) -> None:
         """Let a blocked ``play()`` return as if the clip ended naturally."""
-        if self._active:
-            self._release.set()
+        with self._lock:
+            if self._current is not None:
+                self._current.set()
 
     def close(self) -> None:
         self.closed = True
@@ -226,15 +241,34 @@ class TTSCall(NamedTuple):
 
 
 class FakeTTS:
-    """Returns a short silent clip (or raises ``error``); records every call."""
+    """Returns a short silent clip (or raises ``error``); records every call.
 
-    def __init__(self, error: Exception | None = None, name: str = "fake") -> None:
+    ``delay`` makes each call take that long; ``max_concurrent`` is the highest number of
+    ``synthesize()`` calls that ran at the same time.
+    """
+
+    def __init__(
+        self, error: Exception | None = None, name: str = "fake", delay: float = 0.0
+    ) -> None:
         self.name = name
         self.error = error
+        self.delay = delay
         self.calls: list[TTSCall] = []
+        self.max_concurrent = 0
+        self._active = 0
+        self._lock = threading.Lock()
 
     def synthesize(self, text: str, lang: str) -> AudioClip:
-        self.calls.append(TTSCall(text, lang))
-        if self.error is not None:
-            raise self.error
-        return AudioClip(pcm=b"\x00\x00" * 160, sample_rate=16000)
+        with self._lock:
+            self.calls.append(TTSCall(text, lang))
+            self._active += 1
+            self.max_concurrent = max(self.max_concurrent, self._active)
+        try:
+            if self.delay:
+                time.sleep(self.delay)
+            if self.error is not None:
+                raise self.error
+            return AudioClip(pcm=b"\x00\x00" * 160, sample_rate=16000)
+        finally:
+            with self._lock:
+                self._active -= 1

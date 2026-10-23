@@ -1,15 +1,21 @@
 """Speaker: non-blocking, interruptible, sentence-by-sentence speech with status events.
 
-``speak(reply)`` returns at once. A daemon worker thread cleans and splits the text
-(``prepare_speech``), a per-utterance helper thread synthesizes chunk N+1 while the worker
-plays chunk N (look-ahead of one), and ``StatusChanged`` events are published on the bus:
-``SPEAKING`` when the first audio starts, ``IDLE`` when the utterance ended (done, stopped
-or failed), ``ERROR`` (detail ``"tts_failed"``) on a synthesis or playback failure.
+``speak(reply)`` and ``stop()`` never block the caller. A daemon worker thread cleans and
+splits the text (``prepare_speech``), a per-utterance helper thread synthesizes chunk N+1
+while the worker plays chunk N (look-ahead of one), and ``StatusChanged`` events are
+published on the bus: ``SPEAKING`` when the first audio starts, ``IDLE`` when the utterance
+ended (done, stopped or failed), ``ERROR`` (detail ``"tts_failed"``) on a synthesis or
+playback failure.
 
 Cancellation uses a generation counter: ``stop()`` / a new ``speak()`` / ``close()`` bump it,
 and everything produced under an older generation (queued chunks, a synthesis that was
-running at that moment) is dropped instead of played. The UI calls ``speak(reply)``
-explicitly (ADR 0005); the Speaker does not subscribe to ``ReplyReady``.
+running at that moment) is dropped instead of played. A small canceller thread calls
+``player.stop()`` (repeatedly, until the worker has left ``play()``), so callers never wait
+for the player; the worker starts no new utterance until the canceller is done, so a late
+``stop()`` cannot cut the next one. Only one ``synthesize()`` runs at a time.
+
+The UI calls ``speak(reply)`` explicitly (ADR 0005); the Speaker does not subscribe to
+``ReplyReady``.
 """
 
 from __future__ import annotations
@@ -25,8 +31,8 @@ from luna.config.settings import TTSSettings
 from luna.core.clock import Clock
 from luna.core.errors import LunaError
 from luna.core.events import EventBus, Status, StatusChanged
+from luna.core.lang import SUPPORTED_LANGS, detect_lang
 from luna.core.models import Reply
-from luna.core.router import detect_lang
 from luna.tts.base import TTSProvider
 from luna.tts.text import prepare_speech
 
@@ -38,7 +44,6 @@ ERROR_DETAIL = "tts_failed"
 _POLL_S = 0.05  # how often waiting threads re-check for cancellation
 _STOP_RETRY_S = 0.01
 _STOP_WAIT_S = 0.5
-_LANGS = ("ru", "en")
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,13 @@ class _End:
 _END = _End()
 
 
+class _NotOpen:
+    """Type of ``_NOT_OPEN``: no SPEAKING is waiting for its IDLE."""
+
+
+_NOT_OPEN = _NotOpen()
+
+
 class Speaker:
     def __init__(
         self,
@@ -85,15 +97,21 @@ class Speaker:
         self._gen = 0
         self._pending: _Job | None = None
         self._playing = False  # worker is inside (or about to enter) player.play()
-        self._interrupting = 0  # callers currently inside _interrupt_player()
+        self._cancel_requests = 0  # stop requests the canceller has not finished yet
+        self._open: str | _NotOpen | None = _NOT_OPEN  # request_id of a SPEAKING without IDLE
         self._muted = False
         self._closed = False
+        self._synth_lock = threading.Lock()  # at most one synthesize() at a time
         self._synth_threads: list[threading.Thread] = []
 
         self._worker = threading.Thread(target=self._run, name="luna-speaker", daemon=True)
+        self._canceller = threading.Thread(
+            target=self._cancel_loop, name="luna-speaker-cancel", daemon=True
+        )
         self._worker.start()
+        self._canceller.start()
 
-    # ---- public API (thread-safe, never raises into the caller) -------------------
+    # ---- public API (thread-safe, never blocks on the player, never raises) -------
 
     @property
     def muted(self) -> bool:
@@ -104,45 +122,33 @@ class Speaker:
         with self._cond:
             if self._muted or self._closed:
                 return
-            self._gen += 1
-            self._interrupting += 1
+            self._cancel()
             self._pending = _Job(self._gen, reply, request_id)
-            self._cond.notify_all()
-        self._interrupt_player()
 
     def stop(self) -> None:
         """Cut current speech and drop everything queued. Idempotent."""
         with self._cond:
-            self._gen += 1
-            self._interrupting += 1
-            self._pending = None
-            self._cond.notify_all()
-        self._interrupt_player()
+            self._cancel()
 
     def set_muted(self, muted: bool) -> None:
         with self._cond:
             self._muted = muted
-        if muted:
-            self.stop()
+            if muted:
+                self._cancel()
 
     def close(self, timeout: float = 2.0) -> None:
         """Stop speaking, join the threads and close the player. Idempotent."""
         with self._cond:
-            already = self._closed
+            if self._closed:
+                return
             self._closed = True
-            self._gen += 1
-            self._interrupting += 1
-            self._pending = None
-            self._cond.notify_all()
-        self._interrupt_player()
-        if already:
-            return
+            self._cancel()
+            threads = [self._worker, self._canceller, *self._synth_threads]
         deadline = self._clock() + timeout
-        self._worker.join(timeout)
-        with self._cond:
-            helpers = list(self._synth_threads)
-        for t in helpers:
-            t.join(max(0.0, deadline - self._clock()))
+        me = threading.current_thread()
+        for t in threads:
+            if t is not me:
+                t.join(max(0.0, deadline - self._clock()))
         try:
             self._player.close()
         except Exception:
@@ -150,37 +156,50 @@ class Speaker:
 
     # ---- internals ----------------------------------------------------------------
 
-    def _interrupt_player(self) -> None:
-        """Call ``player.stop()`` until the worker has left ``play()``.
+    def _cancel(self) -> None:
+        """Invalidate everything in flight (call with ``_cond`` held)."""
+        self._gen += 1
+        self._cancel_requests += 1
+        self._pending = None
+        self._cond.notify_all()
 
-        Callers bump ``_interrupting`` together with the generation; the worker starts no new
-        utterance until the count is back to zero, so a late ``stop()`` can never hit the
-        next utterance. The worker decides to play under the lock and calls ``play()``
-        outside it, so a single ``stop()`` could land just before ``play()`` starts and be a
-        no-op; repeating it while the worker is inside that window closes the race.
+    def _cancel_loop(self) -> None:
+        while True:
+            with self._cond:
+                while self._cancel_requests == 0 and not self._closed:
+                    self._cond.wait()
+                if self._cancel_requests == 0:
+                    return
+                handled = self._cancel_requests
+            self._interrupt_player()
+            with self._cond:
+                self._cancel_requests -= handled
+                self._cond.notify_all()
+
+    def _interrupt_player(self) -> None:
+        """Call ``player.stop()`` until the worker has left ``play()`` (bounded wait).
+
+        The worker decides to play under the lock and calls ``play()`` outside it, so a
+        single ``stop()`` could land just before ``play()`` starts and be a no-op;
+        repeating it while the worker is in that window closes the race.
         """
         deadline = time.monotonic() + _STOP_WAIT_S
-        try:
-            while True:
-                try:
-                    self._player.stop()
-                except Exception:
-                    log.exception("stopping the audio player failed")
-                with self._cond:
-                    if not self._playing:
-                        return
-                    self._cond.wait(_STOP_RETRY_S)
-                    if not self._playing or time.monotonic() >= deadline:
-                        return
-        finally:
+        while True:
+            try:
+                self._player.stop()
+            except Exception:
+                log.exception("stopping the audio player failed")
             with self._cond:
-                self._interrupting -= 1
-                self._cond.notify_all()
+                if not self._playing:
+                    return
+                self._cond.wait(_STOP_RETRY_S)
+                if not self._playing or time.monotonic() >= deadline:
+                    return
 
     def _run(self) -> None:
         while True:
             with self._cond:
-                while (self._pending is None or self._interrupting) and not self._closed:
+                while (self._pending is None or self._cancel_requests) and not self._closed:
                     self._cond.wait()
                 if self._closed:
                     return
@@ -191,13 +210,26 @@ class Speaker:
                 self._speak_job(job)
             except Exception:
                 log.exception("unexpected speaker failure")
+            finally:
+                self._finish(failed=False)
 
     def _current(self, job: _Job) -> bool:
         return self._gen == job.gen
 
+    def _finish(self, *, failed: bool) -> None:
+        """Close an open SPEAKING with IDLE, unless a newer utterance is already queued."""
+        with self._cond:
+            rid = self._open
+            if isinstance(rid, _NotOpen):
+                return
+            if self._pending is not None and not failed:
+                return  # superseded: the next SPEAKING replaces it, no IDLE blink
+            self._open = _NOT_OPEN
+            self._bus.publish(StatusChanged(Status.IDLE, rid))
+
     def _speak_job(self, job: _Job) -> None:
         reply = job.reply
-        lang = reply.lang if reply.lang in _LANGS else detect_lang(reply.text, reply.lang)
+        lang = reply.lang if reply.lang in SUPPORTED_LANGS else detect_lang(reply.text, reply.lang)
         chunks = prepare_speech(
             reply.text,
             first_max_chars=self._settings.first_chunk_max_chars,
@@ -221,33 +253,28 @@ class Speaker:
         helper.start()
 
         started = self._clock()
-        speaking = False
-        failed = False
         try:
             while True:
                 item = self._next_result(job, results)
                 if item is None or isinstance(item, _End):
                     break
                 if isinstance(item, _Failed):
-                    failed = True
                     self._report_failure(job, item.error)
                     break
                 with self._cond:
                     if not self._current(job):
                         break
                     self._playing = True
-                    if not speaking:
-                        speaking = True
+                    if isinstance(self._open, _NotOpen) or self._open != job.request_id:
+                        self._open = job.request_id
                         self._bus.publish(StatusChanged(Status.SPEAKING, job.request_id))
                         log.debug("first audio after %.2fs", self._clock() - started)
                 permits.release()
                 try:
                     self._player.play(item.clip)
                 except Exception as e:
-                    if self._current(job):
-                        failed = True
-                        self._report_failure(job, e)
-                        break
+                    self._report_failure(job, e)
+                    break
                 finally:
                     with self._cond:
                         self._playing = False
@@ -256,8 +283,6 @@ class Speaker:
                     break
         finally:
             cancel.set()
-            if speaking or failed:
-                self._bus.publish(StatusChanged(Status.IDLE, job.request_id))
 
     def _next_result(
         self, job: _Job, results: queue.Queue[_Synthesized | _Failed | _End]
@@ -271,12 +296,21 @@ class Speaker:
                 continue
 
     def _report_failure(self, job: _Job, error: BaseException) -> None:
+        """ERROR then IDLE, unless the failure is a side effect of a stop (stale job)."""
+        with self._cond:
+            if not self._current(job):
+                return
         # Never log the reply text at INFO; exception type and message only.
         if isinstance(error, LunaError):
             log.warning("speech failed: %s: %s", type(error).__name__, error)
         else:
             log.error("speech failed", exc_info=error)
-        self._bus.publish(StatusChanged(Status.ERROR, job.request_id, ERROR_DETAIL))
+        with self._cond:
+            if not self._current(job):
+                return
+            self._bus.publish(StatusChanged(Status.ERROR, job.request_id, ERROR_DETAIL))
+            self._open = job.request_id  # IDLE must follow
+        self._finish(failed=True)
 
     def _synthesize_all(
         self,
@@ -287,20 +321,29 @@ class Speaker:
         permits: threading.Semaphore,
         cancel: threading.Event,
     ) -> None:
+        def stale() -> bool:
+            return cancel.is_set() or not self._current(job)
+
         for index, chunk in enumerate(chunks):
             # Look-ahead of one: chunk k is synthesized once the player started chunk k-1.
             while index > 0 and not permits.acquire(timeout=_POLL_S):
-                if cancel.is_set() or not self._current(job):
+                if stale():
                     return
-            if cancel.is_set() or not self._current(job):
-                return
+            while not self._synth_lock.acquire(timeout=_POLL_S):
+                if stale():
+                    return
             try:
-                clip = self._tts.synthesize(chunk, lang)
-            except Exception as e:
-                if self._current(job) and not cancel.is_set():
-                    results.put(_Failed(e))
-                return
-            if cancel.is_set() or not self._current(job):
+                if stale():
+                    return
+                try:
+                    clip = self._tts.synthesize(chunk, lang)
+                except Exception as e:
+                    if not stale():
+                        results.put(_Failed(e))
+                    return
+            finally:
+                self._synth_lock.release()
+            if stale():
                 return  # stopped while synthesizing: discard the result
             results.put(_Synthesized(clip))
         results.put(_END)

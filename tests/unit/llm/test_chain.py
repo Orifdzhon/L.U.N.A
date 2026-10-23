@@ -38,6 +38,21 @@ def test_is_an_llm_provider() -> None:
     assert isinstance(LLMChain([llm("a")], FakeClock()), LLMProvider)
 
 
+def test_exclude_skips_provider_for_one_call_only() -> None:
+    a, b = llm("a", ok("a")), llm("b", ok("b"))
+    chain = LLMChain([a, b], FakeClock())
+    assert chain.chat(MSGS, timeout_s=5, exclude={"a"}).provider == "b"
+    assert a.calls == []
+    a._script.append(ok("a"))
+    assert chat(chain).provider == "a"  # not on cooldown afterwards
+
+
+def test_exclude_everything_raises_unavailable() -> None:
+    chain = LLMChain([llm("a", ok("a"))], FakeClock())
+    with pytest.raises(ProviderUnavailable):
+        chain.chat(MSGS, timeout_s=5, exclude={"a"})
+
+
 def test_rejects_empty_and_duplicate_providers() -> None:
     with pytest.raises(ConfigError):
         LLMChain([], FakeClock())

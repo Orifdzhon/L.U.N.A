@@ -21,6 +21,7 @@ from luna.core.models import Reply, Request
 from luna.core.prompts import fallback_text
 
 PROMPT = "> "
+BOM = chr(0xFEFF)  # PowerShell pipes / editors may prefix a line with a byte order mark
 EXIT_WORDS = frozenset({"exit", "quit", "выход"})
 LOCAL_PROVIDER = "local"
 HELP_TEXT = (
@@ -81,7 +82,7 @@ class Repl:
                     self._say("\n(press Ctrl+C again or type 'exit' to quit)")
                     continue
                 interrupted = False
-                text = line.strip()
+                text = line.replace(BOM, "").strip()
                 if not text:
                     continue
                 if text.lower() in EXIT_WORDS:

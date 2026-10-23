@@ -7,9 +7,11 @@ Import convention: ``pytest`` puts ``tests/`` on ``sys.path`` (see ``pythonpath`
 from __future__ import annotations
 
 import copy
+import threading
 from collections.abc import Sequence
 from typing import Any, NamedTuple
 
+from luna.audio.base import AudioClip
 from luna.core.errors import ToolError
 from luna.llm.base import ChatResponse, Message, ToolSchema
 from luna.platform.base import AppEntry
@@ -178,3 +180,33 @@ class FakeTool:
         if self.error is not None:
             raise self.error
         return self.result
+
+
+class FakePlayer:
+    """Records clips. With ``block=True``, ``play()`` waits for ``stop()`` or ``finish()``."""
+
+    def __init__(self, block: bool = False) -> None:
+        self.block = block
+        self.played: list[AudioClip] = []
+        self.stop_count = 0
+        self.closed = False
+        self.started = threading.Event()  # set when play() begins (to sync tests)
+        self._release = threading.Event()
+
+    def play(self, clip: AudioClip) -> None:
+        self.played.append(clip)
+        self.started.set()
+        if self.block:
+            self._release.wait(timeout=5.0)  # safety net so a broken test cannot hang
+            self._release.clear()
+
+    def stop(self) -> None:
+        self.stop_count += 1
+        self._release.set()
+
+    def finish(self) -> None:
+        """Let a blocked ``play()`` return as if the clip ended naturally."""
+        self._release.set()
+
+    def close(self) -> None:
+        self.closed = True

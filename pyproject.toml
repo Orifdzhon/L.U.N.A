@@ -18,7 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # Declared now, populated by later Issues (voice: STT/TTS/wake word; ui: PySide6).
-voice = []
+voice = [
+    "sounddevice>=0.5",
+]
 ui = []
 
 [project.scripts]

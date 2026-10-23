@@ -8,7 +8,7 @@ import respx
 
 from luna.core.errors import ProviderRequestError, ProviderUnavailable, RateLimited
 from luna.llm.base import LLMProvider, Message, ToolCall, ToolSchema
-from luna.llm.openai_compat import OpenAICompatProvider, Quirks
+from luna.llm.openai_compat import MAX_RETRY_AFTER_S, OpenAICompatProvider, Quirks
 
 BASE = "https://llm.example.test/v1"
 URL = f"{BASE}/chat/completions"
@@ -21,8 +21,12 @@ SEARCH_TOOL = ToolSchema(
 )
 
 
+# Building an SSL context per client costs ~1 s; the mocked tests share one (verify is moot).
+HTTP = httpx.Client(trust_env=False, verify=False)
+
+
 def make(quirks: Quirks | None = None, api_key: str | None = KEY) -> OpenAICompatProvider:
-    return OpenAICompatProvider("groq", BASE, "test-model", api_key, quirks)
+    return OpenAICompatProvider("groq", BASE, "test-model", api_key, quirks, http_client=HTTP)
 
 
 def completion(
@@ -84,11 +88,10 @@ def test_plain_text_completion() -> None:
 
 @respx.mock
 def test_missing_usage_and_null_content() -> None:
-    respx.post(URL).respond(json=completion(None, finish_reason="length"))
+    respx.post(URL).respond(json=completion(None, [tool_call("c1", "get_datetime", "{}")]))
     response = ask(make())
     assert response.text is None
     assert response.usage is None
-    assert response.finish_reason == "length"
 
 
 @respx.mock
@@ -233,7 +236,17 @@ def test_no_choices_is_unavailable() -> None:
 @respx.mock
 @pytest.mark.parametrize(
     ("header", "expected"),
-    [("7", 7.0), ("0", 0.0), ("2.5", 2.5), (None, None), ("soon", None), ("-3", 0.0)],
+    [
+        ("7", 7.0),
+        ("0", 0.0),
+        ("2.5", 2.5),
+        (None, None),
+        ("soon", None),
+        ("-3", 0.0),
+        ("1_0", None),
+        ("86400", 300.0),
+        ("1e9", 300.0),
+    ],
 )
 def test_429_maps_to_rate_limited(header: str | None, expected: float | None) -> None:
     headers = {"Retry-After": header} if header is not None else {}
@@ -254,7 +267,7 @@ def test_429_retry_after_http_date() -> None:
 
 
 @respx.mock
-@pytest.mark.parametrize("status", [500, 502, 503, 504, 408])
+@pytest.mark.parametrize("status", [500, 502, 503, 504, 408, 409])
 def test_server_errors_map_to_unavailable(status: int) -> None:
     respx.post(URL).respond(status, json={"error": {"message": "boom"}})
     with pytest.raises(ProviderUnavailable):
@@ -314,13 +327,13 @@ def test_sdk_does_not_retry() -> None:
 @respx.mock
 def test_timeout_is_passed_to_the_request() -> None:
     route = respx.post(URL).respond(json=completion())
-    OpenAICompatProvider("g", BASE, "m", KEY, connect_timeout_s=3).chat(
+    OpenAICompatProvider("g", BASE, "m", KEY, connect_timeout_s=3, http_client=HTTP).chat(
         [Message("user", "hi")], timeout_s=8
     )
     timeout = route.calls.last.request.extensions["timeout"]
     assert timeout["read"] == 8
     assert timeout["connect"] == 3
-    OpenAICompatProvider("g", BASE, "m", KEY, connect_timeout_s=3).chat(
+    OpenAICompatProvider("g", BASE, "m", KEY, connect_timeout_s=3, http_client=HTTP).chat(
         [Message("user", "hi")], timeout_s=2
     )
     assert route.calls.last.request.extensions["timeout"]["connect"] == 2
@@ -329,7 +342,9 @@ def test_timeout_is_passed_to_the_request() -> None:
 @respx.mock
 def test_local_server_without_api_key() -> None:
     route = respx.post("http://localhost:1234/v1/chat/completions").respond(json=completion("ok"))
-    provider = OpenAICompatProvider("local", "http://localhost:1234/v1", "qwen3-4b")
+    provider = OpenAICompatProvider(
+        "local", "http://localhost:1234/v1", "qwen3-4b", http_client=HTTP
+    )
     assert provider.chat([Message("user", "hi")], timeout_s=5).text == "ok"
     assert route.called
 
@@ -347,3 +362,127 @@ def test_no_key_in_debug_logs(caplog: pytest.LogCaptureFixture) -> None:
         ask(make())
     assert KEY not in caplog.text
     assert KEY not in "".join(r.getMessage() for r in caplog.records)
+
+
+@respx.mock
+def test_retry_after_http_date_far_future_is_capped() -> None:
+    respx.post(URL).respond(429, headers={"Retry-After": "Wed, 21 Oct 2099 07:28:00 GMT"}, json={})
+    with pytest.raises(RateLimited) as info:
+        ask(make())
+    assert info.value.retry_after_s == MAX_RETRY_AFTER_S
+
+
+@respx.mock
+def test_non_json_200_is_unavailable_without_body() -> None:
+    respx.post(URL).respond(
+        200, headers={"content-type": "application/json"}, content=b"<html>SECRET"
+    )
+    with pytest.raises(ProviderUnavailable, match="malformed") as info:
+        ask(make())
+    assert "SECRET" not in str(info.value)
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "body",
+    [
+        {**completion(), "choices": [{"index": 0, "message": None, "finish_reason": "stop"}]},
+        {**completion(), "choices": [{"index": 0, "finish_reason": "stop"}]},
+        {**completion(), "choices": "oops"},
+        {"unexpected": True},
+    ],
+)
+def test_structurally_broken_completion_is_unavailable(body: dict[str, Any]) -> None:
+    respx.post(URL).respond(json=body)
+    with pytest.raises(ProviderUnavailable):
+        ask(make())
+
+
+@respx.mock
+def test_arguments_given_as_object_are_accepted() -> None:
+    call = {
+        "id": "c1",
+        "type": "function",
+        "function": {"name": "web_search", "arguments": {"query": "x"}},
+    }
+    respx.post(URL).respond(json=completion(None, [call]))
+    assert ask(make()).tool_calls == (ToolCall("c1", "web_search", {"query": "x"}),)
+
+
+@respx.mock
+def test_arguments_of_unsupported_type_are_rejected() -> None:
+    call = {"id": "c1", "type": "function", "function": {"name": "web_search", "arguments": 5}}
+    respx.post(URL).respond(json=completion(None, [call]))
+    with pytest.raises(ProviderRequestError):
+        ask(make())
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("content", "finish_reason"),
+    [(None, "content_filter"), ("", "stop"), (None, "length"), ([], "stop")],
+)
+def test_empty_completion_is_unavailable(content: Any, finish_reason: str) -> None:
+    respx.post(URL).respond(json=completion(content, finish_reason=finish_reason))
+    with pytest.raises(ProviderUnavailable, match=f"empty response.*{finish_reason}"):
+        ask(make())
+
+
+@respx.mock
+def test_truncated_tool_arguments_mention_the_token_limit() -> None:
+    call = tool_call("c1", "web_search", '{"query": "abc')
+    respx.post(URL).respond(json=completion(None, [call], finish_reason="length"))
+    with pytest.raises(ProviderRequestError, match="max_tokens"):
+        ask(make())
+
+
+@respx.mock
+def test_content_parts_are_joined() -> None:
+    parts = [
+        {"type": "text", "text": "Hel"},
+        {"type": "refusal", "text": "x"},
+        {"type": "text", "text": "lo"},
+    ]
+    respx.post(URL).respond(json=completion(parts))
+    assert ask(make()).text == "Hello"
+
+
+@respx.mock
+def test_missing_finish_reason_and_bad_usage() -> None:
+    body = completion("hi", usage={"prompt_tokens": "many", "completion_tokens": None})
+    del body["choices"][0]["finish_reason"]
+    respx.post(URL).respond(json=body)
+    response = ask(make())
+    assert response.finish_reason is None
+    assert response.usage is None
+
+
+@respx.mock
+def test_regenerated_ids_are_sent_back_consistently() -> None:
+    route = respx.post(URL)
+    route.respond(json=completion(None, [tool_call("", "get_datetime", "{}")]))
+    first = ask(make())
+    call = first.tool_calls[0]
+    assert call.id
+    route.respond(json=completion("It is noon"))
+    make().chat(
+        [
+            Message("user", "time?"),
+            Message("assistant", first.text, tool_calls=first.tool_calls),
+            Message("tool", "12:00", tool_call_id=call.id),
+        ],
+        timeout_s=5,
+    )
+    messages = sent(route)["messages"]
+    assert messages[1]["tool_calls"][0]["id"] == messages[2]["tool_call_id"] == call.id
+
+
+def test_default_client_ignores_proxy_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    provider = OpenAICompatProvider("g", BASE, "m", KEY)
+    assert provider._client._client._trust_env is False
+
+
+def test_sdk_loggers_are_not_verbose() -> None:
+    for name in ("openai", "httpx"):
+        assert logging.getLogger(name).getEffectiveLevel() >= logging.WARNING

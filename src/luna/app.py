@@ -13,13 +13,13 @@ import logging
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from luna.audio.base import AudioPlayer
-from luna.config.settings import ASSISTANT_MARGIN_S, Settings
+from luna.config.settings import ASSISTANT_MARGIN_S, Settings, TTSSettings
 from luna.core.assistant import Assistant
 from luna.core.clock import Clock
 from luna.core.errors import ProviderUnavailable
@@ -225,6 +225,47 @@ def _check_audio_output() -> str | None:
     return None
 
 
+def _build_tts(
+    conf: TTSSettings,
+    platform: str,
+    warnings: list[str],
+    disabled: Callable[[str], None],
+) -> TTSProvider | None:
+    """The configured TTS provider (Edge with a SAPI fallback, or SAPI alone), or None."""
+    sapi = None
+    if platform == "win32":
+        from luna.tts.sapi import SapiTTS
+
+        sapi = SapiTTS(conf.voice_ru, conf.voice_en, conf.rate, conf.volume)
+        try:
+            voices = sapi.list_voices()
+        except Exception as exc:
+            problem = f"cannot list SAPI voices ({type(exc).__name__})"
+        else:
+            problem = "" if voices else "no SAPI voices are installed"
+        if problem:
+            sapi = None
+    else:
+        problem = "SAPI voices are only available on Windows"
+    if conf.provider == "sapi":
+        if sapi is None:
+            disabled(problem)
+        return sapi
+    from luna.tts.edge import EdgeTTS, FallbackTTS
+
+    edge = EdgeTTS(
+        conf.edge_voice_ru,
+        conf.edge_voice_en,
+        conf.rate,
+        conf.volume,
+        timeout_s=conf.edge_timeout_s,
+    )
+    if sapi is None:
+        warnings.append(f"No offline fallback voice: {problem}. Speech needs the network.")
+        return edge
+    return FallbackTTS(edge, sapi, cooldown_s=conf.fallback_cooldown_s)
+
+
 def _build_speaker(
     settings: Settings,
     bus: EventBus,
@@ -240,21 +281,9 @@ def _build_speaker(
 
     conf = settings.tts
     if tts is None:
-        if platform != "win32":
-            disabled("SAPI voices are only available on Windows")
+        tts = _build_tts(conf, platform, warnings, disabled)
+        if tts is None:
             return None
-        from luna.tts.sapi import SapiTTS
-
-        sapi = SapiTTS(conf.voice_ru, conf.voice_en, conf.rate, conf.volume)
-        try:
-            voices = sapi.list_voices()
-        except Exception as exc:
-            disabled(f"cannot list SAPI voices ({type(exc).__name__})")
-            return None
-        if not voices:
-            disabled("no SAPI voices are installed")
-            return None
-        tts = sapi
     if player is None:
         reason = _check_audio_output()
         if reason is not None:

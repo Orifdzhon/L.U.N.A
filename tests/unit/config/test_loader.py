@@ -112,7 +112,11 @@ def test_example_config_parses_and_equals_defaults(tmp_path):
 def test_tts_defaults():
     tts = Settings().tts
     assert tts.enabled is False
-    assert tts.provider == "sapi"
+    assert tts.provider == "edge"
+    assert (tts.edge_voice_ru, tts.edge_voice_en) == (
+        "ru-RU-SvetlanaNeural",
+        "en-US-JennyNeural",
+    )
     assert (tts.voice_ru, tts.voice_en) == ("Irina", "Zira")
     assert (tts.rate, tts.volume, tts.max_chars, tts.first_chunk_max_chars) == (0, 100, 1500, 200)
 

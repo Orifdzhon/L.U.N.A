@@ -18,8 +18,9 @@ from luna.config.settings import Settings
 from luna.platform.base import AppEntry
 
 
-def build(tmp_path, enabled=True, **kw):
+def build(tmp_path, enabled=True, provider="edge", **kw):
     settings = Settings().with_api_keys({})
+    settings.tts.provider = provider
     settings.tts.enabled = enabled
     settings.search.fetch_pages = 0
     catalog = FakeAppCatalog([AppEntry("Telegram", "Telegram.TelegramDesktop")])
@@ -66,14 +67,14 @@ def test_voice_on_with_fakes_builds_speaker_and_closes_it(tmp_path):
     assert not any(t.name.startswith("luna-speaker") for t in threading.enumerate())
 
 
-def test_voice_on_non_windows_degrades_with_warning(made):
-    app = made(platform="linux")
+def test_sapi_voice_on_non_windows_degrades_with_warning(made):
+    app = made(platform="linux", provider="sapi")
     assert app.speaker is None
     assert any(w.startswith("Voice disabled") for w in app.warnings)
     assert any("Voice disabled" in line for line in app.startup_lines())
 
 
-def test_voice_on_without_sapi_voices_degrades(made, monkeypatch):
+def test_sapi_voice_without_sapi_voices_degrades(made, monkeypatch):
     class NoVoices:
         def __init__(self, *a, **k): ...
 
@@ -81,9 +82,44 @@ def test_voice_on_without_sapi_voices_degrades(made, monkeypatch):
             return ()
 
     monkeypatch.setattr("luna.tts.sapi.SapiTTS", NoVoices)
-    app = made(platform="win32", player=FakePlayer())
+    app = made(platform="win32", player=FakePlayer(), provider="sapi")
     assert app.speaker is None
     assert any("no SAPI voices" in w for w in app.warnings)
+
+
+class _FakeSapi:
+    name = "sapi"
+
+    def __init__(self, *a, **k): ...
+
+    def list_voices(self):
+        return ("Irina",)
+
+
+def test_edge_voice_on_windows_wraps_edge_with_sapi_fallback(made, monkeypatch):
+    monkeypatch.setattr("luna.tts.sapi.SapiTTS", _FakeSapi)
+    app = made(platform="win32", player=FakePlayer())
+    assert app.speaker is not None
+    assert app.speaker._tts.name == "edge+sapi"
+
+
+def test_edge_voice_without_sapi_still_works_with_a_warning(made, monkeypatch):
+    class NoVoices(_FakeSapi):
+        def list_voices(self):
+            return ()
+
+    monkeypatch.setattr("luna.tts.sapi.SapiTTS", NoVoices)
+    app = made(platform="win32", player=FakePlayer())
+    assert app.speaker is not None
+    assert app.speaker._tts.name == "edge"
+    assert any("No offline fallback" in w and "no SAPI voices" in w for w in app.warnings)
+
+
+def test_edge_voice_on_non_windows_has_no_fallback(made):
+    app = made(platform="linux", player=FakePlayer())
+    assert app.speaker is not None
+    assert app.speaker._tts.name == "edge"
+    assert any("No offline fallback" in w for w in app.warnings)
 
 
 def test_voice_on_missing_audio_extra_degrades_with_hint(made, monkeypatch):

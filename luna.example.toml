@@ -58,11 +58,16 @@ margin = 5                  # the best match must beat the runner-up by this muc
 
 [tts]
 enabled = false             # speak replies aloud; `luna --voice` / `--no-voice` override this
-provider = "sapi"           # Windows built-in voices (SAPI)
-voice_ru = "Irina"          # substring of an installed voice name, e.g. "Microsoft Irina Desktop"
+provider = "edge"           # "edge": Microsoft neural voices online (text is sent to Microsoft),
+                            # falls back to SAPI when offline; "sapi": local Windows voices only
+edge_voice_ru = "ru-RU-SvetlanaNeural"  # Edge voices; list: `uv run edge-tts --list-voices`
+edge_voice_en = "en-US-JennyNeural"
+voice_ru = "Irina"          # SAPI voice (fallback): substring of an installed name
 voice_en = "Zira"           # e.g. "Microsoft Zira Desktop"
-rate = 0                    # speech speed, -10 (slow) .. 10 (fast)
+rate = 0                    # speech speed, -10 (slow) .. 10 (fast); Edge: 5 % per step
 volume = 100                # 0..100
+edge_timeout_s = 15         # give up on the online voice after this long (> 0)
+fallback_cooldown_s = 60    # after an Edge failure speak with SAPI this long before retrying
 max_chars = 1500            # longest spoken reply; longer ones are cut at a sentence end (>= 1)
 first_chunk_max_chars = 200 # size limit of the first spoken chunk, for a quick start (>= 1)
 

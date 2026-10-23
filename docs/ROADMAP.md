@@ -4,8 +4,10 @@
 > Requirements: [PRODUCT_SPEC.md](PRODUCT_SPEC.md). Decisions: [docs/adr/](adr/).
 > Status date: 2026-10-23.
 
-**Current focus: slice 0 (skeleton) and slice 1 (text core).** Issues exist only for
-these two slices; later slices are planned when their predecessor is nearly done.
+**Slices 0 (skeleton) and 1 (text core) are done** (Issues #4-#23, plus #43 and #48).
+Later slices are planned when their predecessor is nearly done. Open follow-ups from slice 1:
+#33 (on-screen confirmation for DANGEROUS tools), #35 (redact sensitive tool arguments in the
+action log), #39 (pin the validated IP when fetching web pages).
 
 ## Owner prerequisites (not Issues)
 
@@ -24,15 +26,15 @@ All automated tests need none of these: they run without microphone, GPU, networ
 
 | Slice | Name | Status | Issues |
 |---|---|---|---|
-| 0 | Skeleton | **current** | #4-#8 |
-| 1 | Text core | **current** | #9-#23 |
+| 0 | Skeleton | **done** | #4-#8 |
+| 1 | Text core | **done** | #9-#23, #43, #48 (open follow-ups: #33, #35, #39) |
 | 2 | Voice out | planned | — |
 | 3 | Voice in (push-to-talk) | planned | — |
 | 4 | Wake word | planned | — |
 | 5 | Desktop shell | planned | — |
 | 6 | Hardening | planned | — |
 
-## Slice 0 — Skeleton (current)
+## Slice 0 — Skeleton (done)
 
 **Goal:** a runnable, tested, CI-checked project that every later Issue can extend.
 
@@ -53,7 +55,7 @@ before merging #4. Project license (ARCHITECTURE §13 Q1) is not blocking slice 
 Note: CI file `.github/workflows/ci.yml` already uses `uv`; per CLAUDE.md any change to it needs
 the owner's approval, so #4 only proposes changes if needed.
 
-## Slice 1 — Text core (current)
+## Slice 1 — Text core (done)
 
 **Goal:** `uv run luna --text` understands typed RU/EN requests, opens sites and apps, searches
 the web and answers, with provider fallback Gemini -> Groq -> Ollama.

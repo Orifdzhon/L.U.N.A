@@ -2,10 +2,28 @@
 
 Open-source voice assistant for Windows. Call it by voice ("Луна") to open apps and websites, answer questions and search the web.
 
-**Status:** early development - project skeleton only.
+**Status:** early development. Slice 1 (text mode: `uv run luna --text`) is done; voice, wake word and the tray UI come in later slices (see the [roadmap](docs/ROADMAP.md)).
 
 - Product requirements: [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md)
+- Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), decisions in [docs/adr/](docs/adr/)
+- Setup guide: [docs/SETUP.md](docs/SETUP.md)
+- Manual checks: [docs/MANUAL_CHECKS.md](docs/MANUAL_CHECKS.md)
+- Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md)
 - Development rules for humans and AI agents: [CLAUDE.md](CLAUDE.md)
+
+## Quick start
+
+```
+winget install astral-sh.uv
+git clone https://github.com/Orifdzhon/L.U.N.A.git
+cd L.U.N.A
+uv sync --all-extras --dev
+copy .env.example .env          # add free Gemini / Groq keys (optional, never commit .env)
+uv run luna --text
+```
+
+Without keys the router still opens apps and sites; answers need an LLM provider (cloud keys or
+a local LM Studio model). Details, config files, troubleshooting: [docs/SETUP.md](docs/SETUP.md).
 
 ## Development
 

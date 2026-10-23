@@ -22,7 +22,13 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
-from luna.core.errors import EmptyResponse, ProviderError, ProviderRequestError, ToolUseRejected
+from luna.core.errors import (
+    Abandoned,
+    EmptyResponse,
+    ProviderError,
+    ProviderRequestError,
+    ToolUseRejected,
+)
 from luna.core.models import Reply, Request
 from luna.core.prompts import (
     NO_TOOLS_NOTE,
@@ -41,7 +47,7 @@ from luna.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT_S = 25.0  # overall deadline for one answer()
+DEFAULT_TIMEOUT_S = 15.0  # overall deadline for one answer(); below the Orchestrator's 20 s
 MAX_SEARCH_QUERY_CHARS = 200
 MAX_WEB_HISTORY_CHARS = 500  # stored length of a web-derived answer
 MAX_HISTORY_CHARS = 6000  # total characters kept in the dialog history
@@ -94,6 +100,11 @@ def _collapse(
     messages[base:] = [_results_message(results)]
 
 
+def _check(cancel: threading.Event | None) -> None:
+    if cancel is not None and cancel.is_set():
+        raise Abandoned
+
+
 class _GaveUp(Exception):
     """Internal: the loop cannot produce an answer (rounds or deadline exhausted)."""
 
@@ -120,10 +131,20 @@ class Assistant:
         self._confirmer = _DenyConfirmer()
         self._lock = threading.Lock()  # guards _history only; never held during an LLM call
 
-    def answer(self, request: Request, *, force_search: bool = False) -> Reply:
+    def answer(
+        self,
+        request: Request,
+        *,
+        force_search: bool = False,
+        cancel: threading.Event | None = None,
+    ) -> Reply:
+        """Answer ``request``. If ``cancel`` gets set the turn stops at the next checkpoint
+        (before/after an LLM call, before a tool, before the history write) with no side effects."""
         lang = detect_lang(request.text, request.lang)
         try:
-            reply, web = self._run(request, lang, force_search)
+            reply, web = self._run(request, lang, force_search, cancel)
+        except Abandoned:
+            return Reply(fallback_text("cancelled", lang), lang)
         except ProviderError as exc:
             logger.warning("LLM unavailable: %s", type(exc).__name__)
             return Reply(fallback_text("unavailable", lang), lang)
@@ -134,6 +155,8 @@ class Assistant:
             if web:
                 stored = WEB_MARKER + stored[:MAX_WEB_HISTORY_CHARS]
             with self._lock:
+                if cancel is not None and cancel.is_set():
+                    return Reply(fallback_text("cancelled", lang), lang)
                 self._history.append((request.text, stored))
                 while len(self._history) > 1 and (
                     sum(len(u) + len(a) for u, a in self._history) > MAX_HISTORY_CHARS
@@ -141,7 +164,9 @@ class Assistant:
                     self._history.popleft()
         return reply
 
-    def _run(self, request: Request, lang: str, force_search: bool) -> tuple[Reply, bool]:
+    def _run(
+        self, request: Request, lang: str, force_search: bool, cancel: threading.Event | None
+    ) -> tuple[Reply, bool]:
         deadline = self._timer() + self._timeout_s
         schemas = self._registry.schemas()
         force = force_search and any(s.name == SEARCH_TOOL for s in schemas)
@@ -168,7 +193,7 @@ class Assistant:
         rounds = 0
         while True:
             tools: Sequence[ToolSchema] = () if tools_off else schemas
-            response = self._chat(messages, tools, deadline, request)
+            response = self._chat(messages, tools, deadline, request, cancel)
             calls = response.tool_calls if tools else ()
             if not calls:
                 if force and not searched:
@@ -179,7 +204,7 @@ class Assistant:
                         name=SEARCH_TOOL,
                         arguments={"query": query.strip()},
                     )
-                    result = self._execute(call, request, response.provider)
+                    result = self._execute(call, request, response.provider, cancel)
                     actions.append(result)
                     web = web or result.untrusted
                     searched = True
@@ -200,7 +225,7 @@ class Assistant:
                     # Web content already arrived in this batch: do not act any further.
                     messages.append(Message("tool", _SKIPPED, tool_call_id=call.id))
                     continue
-                result = self._execute(call, request, response.provider)
+                result = self._execute(call, request, response.provider, cancel)
                 actions.append(result)
                 searched = searched or call.name == SEARCH_TOOL
                 tools_off = tools_off or result.untrusted
@@ -217,12 +242,18 @@ class Assistant:
         tools: Sequence[ToolSchema],
         deadline: float,
         request: Request,
+        cancel: threading.Event | None,
     ) -> ChatResponse:
         def send(msgs: list[Message], offered: Sequence[ToolSchema]) -> ChatResponse:
+            _check(cancel)
             remaining = deadline - self._timer()
             if remaining <= 0:
                 raise _GaveUp
-            return self._llm.chat(msgs, offered, timeout_s=remaining, request_id=request.request_id)
+            response = self._llm.chat(
+                msgs, offered, timeout_s=remaining, request_id=request.request_id
+            )
+            _check(cancel)
+            return response
 
         if tools:
             return send(messages, tools)
@@ -243,7 +274,14 @@ class Assistant:
             raise _GaveUp
         return response
 
-    def _execute(self, call: ToolCall, request: Request, provider: str | None) -> ToolResult:
+    def _execute(
+        self,
+        call: ToolCall,
+        request: Request,
+        provider: str | None,
+        cancel: threading.Event | None,
+    ) -> ToolResult:
+        _check(cancel)
         ctx = ToolContext(
             request_id=request.request_id,
             source=request.source,

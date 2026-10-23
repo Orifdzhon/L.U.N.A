@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any
 
+from luna.core.errors import Abandoned
 from luna.core.models import Reply, Request
 from luna.llm.base import ToolCall
 from luna.tools.base import ToolContext, ToolResult
@@ -167,20 +169,24 @@ class Router:
         self._registry = registry
         self._confirmer = _DenyConfirmer()
 
-    def route(self, request: Request) -> RouteResult:
+    def route(self, request: Request, *, cancel: threading.Event | None = None) -> RouteResult:
         text = request.text if isinstance(request.text, str) else ""
         fallthrough = RouteResult(False, force_search=needs_fresh_facts(text))
         target = parse_open_command(text)
         if target is None:
             return fallthrough
         try:
-            result = self._execute(request, target)
+            result = self._execute(request, target, cancel)
+        except Abandoned:
+            return fallthrough  # abandoned before any tool ran
         except Exception:  # the registry does not raise; this keeps the LLM path reachable
             logger.exception("router fast path failed unexpectedly")
             result = None
         return result or fallthrough
 
-    def _execute(self, request: Request, target: str) -> RouteResult | None:
+    def _execute(
+        self, request: Request, target: str, cancel: threading.Event | None
+    ) -> RouteResult | None:
         lang = detect_lang(request.text, request.lang)
         ctx = ToolContext(
             request_id=request.request_id,
@@ -189,7 +195,7 @@ class Router:
             user_text=request.text,
             provider=PROVIDER,
         )
-        site = self._call(SITE_TOOL, {"target": target}, ctx, 1)
+        site = self._call(SITE_TOOL, {"target": target}, ctx, 1, cancel)
         if site.ok:
             return _reply(lang, _display_name(target), [site])
         reason = _reason(site)
@@ -198,7 +204,7 @@ class Router:
         if reason != "no_match":
             return None  # unsafe target, bad arguments, tool missing: let the LLM decide
 
-        app = self._call(APP_TOOL, {"name": target}, ctx, 2)
+        app = self._call(APP_TOOL, {"name": target}, ctx, 2, cancel)
         if app.ok:
             name = app.data.get("app")
             return _reply(lang, name if isinstance(name, str) else target, [site, app])
@@ -213,7 +219,16 @@ class Router:
                 return RouteResult(True, Reply(text, lang, [site, app], PROVIDER))
         return None
 
-    def _call(self, tool: str, args: dict[str, Any], ctx: ToolContext, n: int) -> ToolResult:
+    def _call(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        ctx: ToolContext,
+        n: int,
+        cancel: threading.Event | None,
+    ) -> ToolResult:
+        if cancel is not None and cancel.is_set():
+            raise Abandoned
         call = ToolCall(id=f"router-{ctx.request_id}-{n}", name=tool, arguments=args)
         return self._registry.execute(call, ctx)
 

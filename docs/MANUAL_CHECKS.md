@@ -1,4 +1,4 @@
-# Manual checks (slice 1: text mode)
+# Manual checks (slices 1-2: text mode and voice replies)
 
 These checks need a real Windows desktop, a browser and network access, so CI cannot run them.
 Set up first: [SETUP.md](SETUP.md). Start the REPL with `uv run luna --text`.
@@ -78,7 +78,36 @@ These tests use the built-in defaults (`[llm.providers.*]` in `luna.toml` is not
 local provider is called with the placeholder model `qwen3-4b`; set it to your loaded model id or
 expect the local test to be skipped or fail. Keys are read from `./.env`.
 
-## I. Benchmark
+## I. Voice replies (slice 2)
+
+Needs speakers; setup in [SETUP.md](SETUP.md#voice-text-to-speech).
+Start with `uv run luna --text --voice`; the startup text must say `Voice: on (/mute, /stop, /voice).`
+
+| # | Do | Expected |
+|---|---|---|
+| I1 | `что такое черная дыра?` | The printed reply is read aloud in Irina (Russian) |
+| I2 | `who won the latest Formula 1 race?` | The reply is read aloud in Zira (English) |
+| I3 | Note the time from Enter to the first sound for I1/I2 | First sound in about 1 s or less for a short reply (record the number) |
+| I4 | Ask for a long answer (`расскажи подробно про черную дыру`), press Ctrl+C while it speaks | Speech stops within about 0.5 s, `(speech stopped)`, prompt stays; a second Ctrl+C at the prompt then asks to repeat |
+| I5 | While a long reply is spoken, press Enter after typing a new request | The old speech stops at once; the new reply is spoken |
+| I6 | During speech type `/stop` (use the prompt before the reply ends) | Speech stops; `/stop` while idle prints `Nothing is being spoken.` |
+| I7 | `/mute`, then ask anything; `/mute` again | `Voice muted.`, replies are only printed; `Voice unmuted.`, speech returns. `/voice` shows `muted` / `on` |
+| I8 | `открой ютуб` | The router's short confirmation is spoken too |
+| I9 | Ask something with a link or markdown (`дай ссылку на сайт python`) | Links, `*`, `#` and emoji are not read aloud |
+| I10 | Ctrl+C during a running request (as D1), and a request that times out | `(cancelled)` / the timeout apology is printed but not spoken |
+| I11 | Without speakers/output device (disable the playback device in Windows Sound settings) run with `--voice` | `Voice disabled: no audio output device found. Continuing in text mode.`; the REPL still works |
+| I12 | `uv run luna --text --no-voice` with `[tts] enabled = true` | `Voice: off ...`, nothing is spoken |
+
+Real-device automated checks (use the speakers; skipped by default):
+
+```powershell
+uv run pytest -m audio tests/integration -s
+```
+
+They list the voices, synthesize RU/EN phrases, play them, and check that `Speaker.stop()` goes
+idle in under 0.5 s. A test that finds no audio output device is skipped.
+
+## J. Benchmark
 
 Compares providers on latency and tool-call correctness (input for ADR 0002). Nothing is
 launched or opened; only the LLM providers use the network.

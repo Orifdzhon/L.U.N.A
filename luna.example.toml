@@ -57,7 +57,7 @@ margin = 5                  # the best match must beat the runner-up by this muc
 # "ютуб" = "https://www.youtube.com"
 
 [tts]
-enabled = false             # speak replies aloud; `luna --voice` / `--no-voice` override this (needs `uv sync --extra voice`)
+enabled = false             # speak replies aloud; `luna --voice` / `--no-voice` override this
 provider = "sapi"           # Windows built-in voices (SAPI)
 voice_ru = "Irina"          # substring of an installed voice name, e.g. "Microsoft Irina Desktop"
 voice_en = "Zira"           # e.g. "Microsoft Zira Desktop"

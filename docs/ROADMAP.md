@@ -4,7 +4,7 @@
 > Requirements: [PRODUCT_SPEC.md](PRODUCT_SPEC.md). Decisions: [docs/adr/](adr/).
 > Status date: 2026-10-23.
 
-**Slices 0 (skeleton) and 1 (text core) are done** (Issues #4-#23, plus #43 and #48).
+**Slices 0 (skeleton), 1 (text core) and 2 (voice out) are done** (Issues #4-#23, #43, #48 and #55-#62).
 Later slices are planned when their predecessor is nearly done. Open follow-ups from slice 1:
 #33 (on-screen confirmation for DANGEROUS tools), #35 (redact sensitive tool arguments in the
 action log), #39 (pin the validated IP when fetching web pages).
@@ -28,7 +28,7 @@ All automated tests need none of these: they run without microphone, GPU, networ
 |---|---|---|---|
 | 0 | Skeleton | **done** | #4-#8 |
 | 1 | Text core | **done** | #9-#23, #43, #48 (open follow-ups: #33, #35, #39) |
-| 2 | Voice out | planned (Issues written) | #55-#62 (+ #63 later/optional) |
+| 2 | Voice out | **done** | #55-#62 (#63 Piper: later/optional) |
 | 3 | Voice in (push-to-talk) | planned | — |
 | 4 | Wake word | planned | — |
 | 5 | Desktop shell | planned | — |
@@ -42,7 +42,7 @@ All automated tests need none of these: they run without microphone, GPU, networ
 config loader, logging, action log, protocols and fakes exist.
 
 **Owner decisions:** ADR 0001 (Python 3.13 + uv + ruff + pytest, proposed) must be accepted
-before merging #4. Project license (ARCHITECTURE §13 Q1) is not blocking slice 0.
+before merging #4. The project license (Apache-2.0) has been decided since.
 
 | Issue | Title | Depends on | Parallel with |
 |---|---|---|---|
@@ -100,7 +100,7 @@ Planning notes (not decisions):
 - Because slice 0 already contains `tests/fakes.py` (#8), slice-1 Issues need no mic, GPU,
   network or API keys; real-provider checks are manual steps for the owner.
 
-## Slice 2 — Voice out (planned)
+## Slice 2 — Voice out (done)
 
 **Goal:** CLI replies are spoken in Russian and English.
 **Contents:** `SapiTTS` (Windows built-in voices), speech text clean-up and sentence splitting,
@@ -132,8 +132,8 @@ Suggested order: (`#55`, `#56`, `#57`, `#58` in parallel) -> `#59` -> `#60` -> `
 touching `app.py`, `cli.py` and `__main__.py`.
 
 Planning notes (not decisions):
-- The Speaker is driven by an explicit `speak(reply)` call from the UI, not by a bus subscription,
-  so the fallback text of a cancelled turn is not spoken. Architect to object if a subscription is preferred.
+- Decided: the Speaker is driven by an explicit `speak(reply)` call from the UI, not by a bus
+  subscription, so the fallback text of a cancelled turn is not spoken.
 - Whether SAPI output can be captured as PCM (`AudioClip`, ARCHITECTURE §3) or must `Speak` directly
   is decided by the developer's comparison in #59; if the sketch does not fit, flag "needs architect".
 - Default English voice: planner proposes Zira (female, matches Irina); owner may choose David.
@@ -179,5 +179,4 @@ provider status in tray, custom wake-word model if it beats Vosk, PyInstaller pa
 2. Where target resolution (site alias / app fuzzy match) lives is only implied by ADR 0008. The
    Issues place it inside the tools (`open_website`, `open_app`) so the Router stays thin. Architect
    to confirm.
-3. Project license (ARCHITECTURE §13 Q1) is not blocking slice 0/1 but should be decided before the
-   repository is made public and before slice 2.
+3. Project license: decided, Apache-2.0 (see `LICENSE`).

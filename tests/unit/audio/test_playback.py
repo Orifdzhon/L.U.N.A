@@ -202,7 +202,7 @@ def test_missing_backend_gives_install_hint():
     def factory(rate: int) -> FakeStream:
         raise ImportError("No module named sounddevice")
 
-    with pytest.raises(AudioError, match=r"uv sync --extra voice"):
+    with pytest.raises(AudioError, match=r"uv sync"):
         SoundDevicePlayer(factory).play(clip(0.1))
 
 

@@ -2,7 +2,7 @@
 
 Open-source voice assistant for Windows. Call it by voice ("Луна") to open apps and websites, answer questions and search the web.
 
-**Status:** early development. Slice 1 (text mode: `uv run luna --text`) is done; voice, wake word and the tray UI come in later slices (see the [roadmap](docs/ROADMAP.md)).
+**Status:** early development. Slices 1 (text mode: `uv run luna --text`) and 2 (voice replies: `--voice`) are done; voice input, wake word and the tray UI come in later slices (see the [roadmap](docs/ROADMAP.md)).
 
 - Product requirements: [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md)
 - Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), decisions in [docs/adr/](docs/adr/)
@@ -24,7 +24,7 @@ uv run luna --text
 
 Without keys the router still opens apps and sites; answers need an LLM provider (cloud keys or
 a local LM Studio model). Add `--voice` (`uv run luna --text --voice`) to hear replies in Irina/Zira
-voices (`/mute`, `/stop`, Ctrl+C silences them; needs `uv sync --extra voice`). Details, config files, troubleshooting: [docs/SETUP.md](docs/SETUP.md).
+voices (`/mute`, `/stop`, Ctrl+C silences them). Details, config files, troubleshooting: [docs/SETUP.md](docs/SETUP.md).
 
 ## Development
 

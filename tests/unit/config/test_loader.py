@@ -142,6 +142,21 @@ def test_tts_invalid_values_rejected(tmp_path, body, key):
         _load_text(tmp_path, f"[tts]\n{body}\n")
 
 
+def test_old_piper_provider_error_has_hint(tmp_path):
+    with pytest.raises(ConfigError) as info:
+        _load_text(tmp_path, '[tts]\nprovider = "piper"\nvoice_ru = "ru_RU-dmitri-medium"\n')
+    message = str(info.value)
+    assert "tts.provider" in message
+    assert 'Piper is not supported yet; use provider = "sapi"' in message
+    assert "docs/SETUP.md#voice-text-to-speech" in message
+
+
+def test_other_tts_errors_have_no_piper_hint(tmp_path):
+    with pytest.raises(ConfigError) as info:
+        _load_text(tmp_path, "[tts]\nrate = 11\n")
+    assert "Piper" not in str(info.value)
+
+
 # --- secrets -----------------------------------------------------------------------------
 
 

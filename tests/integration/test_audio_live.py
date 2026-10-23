@@ -1,4 +1,4 @@
-"""Plays a real tone (manual: ``uv sync --extra voice`` then ``uv run pytest -m audio``)."""
+"""Plays a real tone (manual: ``uv sync`` then ``uv run pytest -m audio``)."""
 
 import math
 import struct

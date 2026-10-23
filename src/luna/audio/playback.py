@@ -67,9 +67,7 @@ class SoundDevicePlayer:
                 try:
                     stream = self._factory(clip.sample_rate)
                 except ImportError as e:
-                    raise AudioError(
-                        "audio backend missing: install with `uv sync --extra voice`"
-                    ) from e
+                    raise AudioError("audio backend missing: run `uv sync` to install it") from e
                 except Exception as e:
                     raise AudioError(f"cannot open audio output: {e}") from e
                 with self._state_lock:

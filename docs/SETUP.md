@@ -1,8 +1,8 @@
-# L.U.N.A. setup guide (slice 1: text mode)
+# L.U.N.A. setup guide (slices 1-2: text mode with spoken replies)
 
-Slice 1 runs as a text REPL: you type requests, L.U.N.A. opens apps and sites, searches the web
-and answers. Voice comes in later slices. For the checks after setup see
-[MANUAL_CHECKS.md](MANUAL_CHECKS.md).
+L.U.N.A. runs as a text REPL: you type requests, it opens apps and sites, searches the web and
+answers, optionally out loud (see [Voice](#voice-text-to-speech)). Voice input and the wake word
+come in later slices. For the checks after setup see [MANUAL_CHECKS.md](MANUAL_CHECKS.md).
 
 ## 1. Prerequisites
 
@@ -136,6 +136,71 @@ On start it prints the active providers and any skipped ones. REPL commands:
 
 Example requests: `открой ютуб`, `open telegram`, `какой курс доллара?`, `что такое черная дыра?`.
 
+## Voice (text-to-speech)
+
+Replies can be spoken with the Windows built-in SAPI voices (ADR 0005). Voice is off by default.
+
+**Audio backend:** `sounddevice` is a normal dependency on Windows, so the `uv sync` from section 2
+installs it. (Do not rely on an optional extra: a plain `uv run` re-syncs without extras and would
+uninstall it.)
+
+**Turn it on** for one run with `--voice`, or permanently with `[tts] enabled = true`:
+
+```powershell
+uv run luna --text --voice
+```
+
+`--voice` and `--no-voice` override `tts.enabled` in both directions and cannot be combined.
+Without either flag the config decides.
+
+### `[tts]` settings
+
+| Key | Default | Range / meaning |
+|---|---|---|
+| `enabled` | `false` | speak replies |
+| `provider` | `"sapi"` | only `sapi` exists so far |
+| `voice_ru` | `"Irina"` | case-insensitive part of an installed voice name, used for Russian replies |
+| `voice_en` | `"Zira"` | same, for English replies |
+| `rate` | `0` | -10 (slow) .. 10 (fast) |
+| `volume` | `100` | 0 .. 100 |
+| `max_chars` | `1500` | >= 1; longer replies are cut at a sentence end for speech (the text is still printed in full) |
+| `first_chunk_max_chars` | `200` | >= 1; size limit of the first spoken chunk, smaller means sound starts sooner |
+
+The voice follows the language of the whole reply. If no installed voice matches the name, any
+voice of that language is used, and failing that the Windows default voice (a warning with the
+installed voices goes to `luna.log`).
+
+### Commands while speaking
+
+| Input | Effect |
+|---|---|
+| `/stop` | stop speaking (`Nothing is being spoken.` if idle) |
+| `/mute` | toggle mute; muting also cuts the current speech and replies are only printed |
+| `/voice` | show state and settings (`Voice on: ru=Irina, en=Zira, rate=0, volume=100`) |
+| Ctrl+C while a reply is spoken | only silences the speech (`(speech stopped)`); the next Ctrl+C acts as usual |
+| any new input | stops the old speech first |
+
+Apologies for a cancelled or timed-out request are printed but never spoken. Markdown, URLs and
+emoji are removed before speaking.
+
+### Windows voices
+
+SAPI voices come from `System.Speech`, which sees the **Desktop (SAPI5)** voices: typically
+Microsoft **Irina** (Russian), **Zira** and **David** (English). The newer "OneCore" voices used by
+Narrator (for example Pavel) are **not visible** to it and cannot be used. List what L.U.N.A. can
+use:
+
+```powershell
+powershell -NoProfile -Command "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).GetInstalledVoices() | % { $_.VoiceInfo.Name + ' ' + $_.VoiceInfo.Culture.Name }"
+```
+
+To add a voice: Windows Settings -> Time & language -> Speech -> Manage voices -> Add voices (or
+install the language pack). A voice added there may be OneCore-only; if it does not show up in the
+list above it cannot be used. Then set `voice_ru` / `voice_en` to part of its name.
+
+Known limits: the SAPI voices sound robotic, and this is Windows-only. Piper (more natural voices)
+is planned as an optional provider later.
+
 ## 8. Troubleshooting
 
 - **Gemini: "User location is not supported".** Google blocks the free API in some regions. L.U.N.A.
@@ -160,5 +225,37 @@ Example requests: `открой ютуб`, `open telegram`, `какой курс
   once but the first app lookup may wait a few seconds. If the scan fails (PowerShell blocked by
   group policy, timeout), a warning goes to `luna.log` and `open <app>` finds nothing; sites and
   answers still work.
+- **`config error: ... tts.provider: Input should be 'sapi'`.** Your `luna.toml` was copied from an
+  older `luna.example.toml` that had `provider = "piper"` and a Piper voice such as
+  `voice_ru = "ru_RU-dmitri-medium"`. Piper is not supported yet. Replace the whole `[tts]` block
+  in `%APPDATA%\LUNA\luna.toml` (or delete it, the defaults are the same apart from `enabled`):
+
+  ```toml
+  [tts]
+  enabled = true
+  provider = "sapi"
+  voice_ru = "Irina"
+  voice_en = "Zira"
+  ```
+
+- **`Voice disabled: ... Continuing in text mode.`** Printed at start when `--voice` / `enabled`
+  is on but voice cannot start; text mode keeps working. By reason:
+  - `audio backend is not installed; run `uv sync` to install it` (or `audio backend failed to
+    load (...)`): run `uv sync`.
+  - `no audio output device found`: connect or enable a speaker/headphones in Windows Sound
+    settings, then restart.
+  - `SAPI voices are only available on Windows`: other systems are not supported yet.
+  - `cannot list SAPI voices (...)` or `no SAPI voices are installed`: PowerShell or
+    `System.Speech` is blocked or has no voices; see "Windows voices" above.
+- **Voice is on but there is no sound, or it plays on the wrong device.** Audio goes to the
+  Windows default output device; change it in Windows Sound settings and restart L.U.N.A. Check
+  that `/voice` does not say `muted` and that the volume mixer is not muting Python. Speech errors
+  are logged in `luna.log` (`speech failed: ...`).
+- **The wrong voice or language is used.** A name in `voice_ru` / `voice_en` that matches no
+  installed voice falls back to any voice of that language (see "Windows voices"); check the
+  warning in `luna.log`.
+- **The first sentence starts late.** Each sentence is synthesized by a short-lived PowerShell
+  process, so sound starts about 0.6 s after the reply appears (more on a cold start). A lower
+  `first_chunk_max_chars` can help for long first sentences.
 - **Search says it is unavailable.** Only `provider = "ddgs"` exists so far; `searxng` and
   `tavily` print a "not available yet" warning at start and disable web search.

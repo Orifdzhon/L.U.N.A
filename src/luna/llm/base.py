@@ -22,10 +22,11 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
-    # Opaque provider-specific data (e.g. Gemini's ``thought_signature``). The provider that
-    # produced it sends it back verbatim on the assistant message; others ignore it.
-    # Kept out of ``repr`` so it never ends up in logs.
-    provider_extra: Mapping[str, Any] | None = field(default=None, repr=False)
+    # Opaque provider-specific data (e.g. Gemini's ``thought_signature``), shaped
+    # ``{"provider": <name of the producing provider>, "data": {...}}``. Only that provider sends
+    # ``data`` back, verbatim, on the assistant message; others ignore it. Excluded from
+    # ``repr`` (never logged) and from equality.
+    provider_extra: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.provider_extra is not None:

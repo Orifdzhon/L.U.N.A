@@ -23,7 +23,8 @@ uv run luna --text
 ```
 
 Without keys the router still opens apps and sites; answers need an LLM provider (cloud keys or
-a local LM Studio model). Details, config files, troubleshooting: [docs/SETUP.md](docs/SETUP.md).
+a local LM Studio model). Add `--voice` (`uv run luna --text --voice`) to hear replies in Irina/Zira
+voices (`/mute`, `/stop`, Ctrl+C silences them; needs `uv sync --extra voice`). Details, config files, troubleshooting: [docs/SETUP.md](docs/SETUP.md).
 
 ## Development
 

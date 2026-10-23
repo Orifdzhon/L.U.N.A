@@ -16,8 +16,9 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from luna.audio.base import AudioPlayer
 from luna.config.settings import ASSISTANT_MARGIN_S, Settings
 from luna.core.assistant import Assistant
 from luna.core.clock import Clock
@@ -37,8 +38,14 @@ from luna.tools.builtin.open_app import OpenAppTool
 from luna.tools.builtin.open_website import OpenWebsiteTool
 from luna.tools.builtin.web_search import WebSearchTool
 from luna.tools.registry import ToolRegistry
+from luna.tts.base import TTSProvider
+
+if TYPE_CHECKING:
+    from luna.tts.speaker import Speaker
 
 logger = logging.getLogger(__name__)
+
+VOICE_EXTRA_HINT = "install with `uv sync --extra voice`"
 
 ACTION_LOG_NAME = "actions.jsonl"
 _CATALOG_JOIN_S = 1.0
@@ -75,6 +82,7 @@ class App:
     missing_keys: dict[str, str] = field(default_factory=dict)  # provider -> env variable name
     warnings: list[str] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
+    speaker: Speaker | None = None  # None: voice is off (text mode only)
     _closers: list[LLMProvider] = field(default_factory=list, repr=False)
     _catalog_thread: threading.Thread | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
@@ -121,6 +129,10 @@ class App:
         for name, env_name in self.missing_keys.items():
             lines.append(f"Missing key for '{name}' ({env_name}): provider skipped.")
         lines.extend(self.warnings)
+        if self.speaker is not None:
+            lines.append("Voice: on (/mute, /stop, /voice).")
+        elif not any(w.startswith("Voice disabled") for w in self.warnings):
+            lines.append("Voice: off (start with --voice to speak replies).")
         return lines
 
     def close(self) -> None:
@@ -128,6 +140,8 @@ class App:
             return
         self._closed = True
         self.orchestrator.close(_ORCHESTRATOR_CLOSE_S)
+        if self.speaker is not None:
+            self.speaker.close()  # before the bus: it publishes its final IDLE there
         self.bus.close()
         thread = self._catalog_thread
         if thread is not None and thread.is_alive():
@@ -196,6 +210,64 @@ def _close_providers(providers: Sequence[LLMProvider]) -> None:
                 logger.debug("provider close failed", exc_info=True)
 
 
+def _check_audio_output() -> str | None:
+    """Reason why audio output is unusable, or None. Imports ``sounddevice`` lazily."""
+    try:
+        import sounddevice as sd
+    except ImportError:
+        return f"audio backend is not installed; {VOICE_EXTRA_HINT}"
+    except Exception as exc:  # e.g. OSError: PortAudio library not found
+        return f"audio backend failed to load ({type(exc).__name__}); {VOICE_EXTRA_HINT}"
+    try:
+        sd.query_devices(kind="output")
+    except Exception:
+        return "no audio output device found"
+    return None
+
+
+def _build_speaker(
+    settings: Settings,
+    bus: EventBus,
+    tts: TTSProvider | None,
+    player: AudioPlayer | None,
+    platform: str,
+    warnings: list[str],
+) -> Speaker | None:
+    """Speaker for the enabled voice, or None plus a "Voice disabled" warning (section 8)."""
+
+    def disabled(reason: str) -> None:
+        warnings.append(f"Voice disabled: {reason}. Continuing in text mode.")
+
+    conf = settings.tts
+    if tts is None:
+        if platform != "win32":
+            disabled("SAPI voices are only available on Windows")
+            return None
+        from luna.tts.sapi import SapiTTS
+
+        sapi = SapiTTS(conf.voice_ru, conf.voice_en, conf.rate, conf.volume)
+        try:
+            voices = sapi.list_voices()
+        except Exception as exc:
+            disabled(f"cannot list SAPI voices ({type(exc).__name__})")
+            return None
+        if not voices:
+            disabled("no SAPI voices are installed")
+            return None
+        tts = sapi
+    if player is None:
+        reason = _check_audio_output()
+        if reason is not None:
+            disabled(reason)
+            return None
+        from luna.audio.playback import SoundDevicePlayer
+
+        player = SoundDevicePlayer()
+    from luna.tts.speaker import Speaker
+
+    return Speaker(tts, player, bus, conf)
+
+
 def _assemble(
     settings: Settings,
     closers: list[LLMProvider],
@@ -208,6 +280,8 @@ def _assemble(
     log_dir: Path | None = None,
     platform: str | None = None,
     clock: Clock | None = None,
+    tts: TTSProvider | None = None,
+    player: AudioPlayer | None = None,
 ) -> App:
     """Secrets must already be registered for log redaction."""
     clock = clock or time.monotonic
@@ -278,8 +352,6 @@ def _assemble(
             f"Search provider '{settings.search.provider}' is not available yet: "
             "web search is disabled."
         )
-    for text in warnings:
-        logger.warning(text)
 
     assistant = Assistant(
         chat,
@@ -290,6 +362,11 @@ def _assemble(
     orchestrator = Orchestrator(
         Router(registry), assistant, bus, settings.app.request_timeout_s, timer=clock
     )
+    speaker = None
+    if settings.tts.enabled:
+        speaker = _build_speaker(settings, bus, tts, player, platform, warnings)
+    for text in warnings:
+        logger.warning(text)
     return App(
         settings=settings,
         orchestrator=orchestrator,
@@ -301,6 +378,7 @@ def _assemble(
         missing_keys=missing,
         warnings=warnings,
         tool_names=sorted(s.name for s in registry.schemas()),
+        speaker=speaker,
         _closers=closers,
         _catalog_thread=thread,
     )

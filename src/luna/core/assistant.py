@@ -21,11 +21,12 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
-from luna.core.errors import ProviderError
+from luna.core.errors import ProviderError, ToolUseRejected
 from luna.core.models import Reply, Request
 from luna.core.prompts import (
-    SEARCH_CONTEXT_HEADER,
+    NO_TOOLS_NOTE,
     SEARCH_TOOL,
+    TOOL_RESULTS_HEADER,
     WEB_MARKER,
     build_system_prompt,
     fallback_text,
@@ -59,6 +60,14 @@ class _Chat(Protocol):
 class _DenyConfirmer:
     def confirm(self, prompt: str) -> bool:
         return False
+
+
+def _results_message(results: Sequence[ToolResult]) -> Message:
+    """One system message with this turn's tool summaries (never ``ToolResult.data``)."""
+    lines = [TOOL_RESULTS_HEADER]
+    for r in results:
+        lines.append(r.summary if r.untrusted else f"- {r.tool}: {r.summary}")
+    return Message("system", "\n".join(lines))
 
 
 class _GaveUp(Exception):
@@ -127,6 +136,7 @@ class Assistant:
             messages.append(Message("assistant", reply_text))
         messages.append(Message("user", request.text))
 
+        base = len(messages)  # system + history + the user message
         actions: list[ToolResult] = []
         web = False  # any untrusted content was used this turn
         tools_off = False  # set after untrusted content / a forced search
@@ -138,8 +148,7 @@ class Assistant:
             calls = response.tool_calls if tools else ()
             if not calls:
                 if force and not searched:
-                    # The model skipped the search: run it ourselves and hand the wrapped
-                    # summary over as context (no fabricated assistant tool call).
+                    # The model skipped the search: run it ourselves.
                     query = clean_query(request.text)[:MAX_SEARCH_QUERY_CHARS] or request.text
                     call = ToolCall(
                         id=f"assistant-{request.request_id}-search",
@@ -147,11 +156,11 @@ class Assistant:
                         arguments={"query": query.strip()},
                     )
                     result = self._execute(call, request, response.provider)
-                    messages.append(Message("system", f"{SEARCH_CONTEXT_HEADER}\n{result.summary}"))
                     actions.append(result)
                     web = web or result.untrusted
                     searched = True
                     tools_off = True
+                    messages[base:] = [_results_message(actions)]
                     continue
                 text = (response.text or "").strip()
                 if not text:
@@ -173,6 +182,10 @@ class Assistant:
                 tools_off = tools_off or result.untrusted
                 web = web or result.untrusted
                 messages.append(Message("tool", result.summary, tool_call_id=call.id))
+            if tools_off:
+                # Tools-free follow-up: no assistant tool_calls / tool messages (some providers
+                # reject or hallucinate tools then); the results go in one system message.
+                messages[base:] = [_results_message(actions)]
 
     def _chat(
         self,
@@ -184,7 +197,19 @@ class Assistant:
         remaining = deadline - self._timer()
         if remaining <= 0:
             raise _GaveUp
-        return self._llm.chat(messages, tools, timeout_s=remaining, request_id=request.request_id)
+        try:
+            return self._llm.chat(
+                messages, tools, timeout_s=remaining, request_id=request.request_id
+            )
+        except ToolUseRejected:
+            if tools:
+                raise
+        # The model tried to call a tool on a tools-free call: retry once, in plain text.
+        remaining = deadline - self._timer()
+        if remaining <= 0:
+            raise _GaveUp
+        retry = [*messages, Message("system", NO_TOOLS_NOTE)]
+        return self._llm.chat(retry, (), timeout_s=remaining, request_id=request.request_id)
 
     def _execute(self, call: ToolCall, request: Request, provider: str | None) -> ToolResult:
         ctx = ToolContext(

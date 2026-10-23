@@ -12,6 +12,7 @@ from luna.core.errors import (
     ProviderRequestError,
     ProviderUnavailable,
     RateLimited,
+    ToolUseRejected,
 )
 from luna.core.events import EventBus, ProviderSwitched
 from luna.llm.base import ChatResponse, LLMProvider, Message, ToolSchema
@@ -342,3 +343,9 @@ def test_concurrent_stale_failure_does_not_double_backoff() -> None:
     clock.advance(61)
     assert chain._state["racy"].failures == 1
     assert not chain._cooling_down("racy", clock())
+
+
+def test_tool_use_rejected_is_preserved_when_chain_fails() -> None:
+    chain = LLMChain([llm("a", ToolUseRejected("tool_use_failed"))], FakeClock())
+    with pytest.raises(ToolUseRejected):
+        chat(chain)

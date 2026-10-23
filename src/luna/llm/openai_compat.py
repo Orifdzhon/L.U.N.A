@@ -24,7 +24,13 @@ import httpx
 import openai
 from pydantic import SecretStr
 
-from luna.core.errors import ProviderError, ProviderRequestError, ProviderUnavailable, RateLimited
+from luna.core.errors import (
+    ProviderError,
+    ProviderRequestError,
+    ProviderUnavailable,
+    RateLimited,
+    ToolUseRejected,
+)
 from luna.llm.base import ChatResponse, Message, ToolCall, ToolSchema
 from luna.logs.redact import redact_text
 
@@ -251,7 +257,22 @@ class OpenAICompatProvider:
             )
         detail = redact_text(str(getattr(exc, "message", "") or ""))[:_MAX_DETAIL_CHARS]
         suffix = f": {detail}" if detail else ""
+        if _error_code(exc) == "tool_use_failed":
+            return ToolUseRejected(f"{self.name}: request rejected (HTTP {status}){suffix}")
         return ProviderRequestError(f"{self.name}: request rejected (HTTP {status}){suffix}")
+
+
+def _error_code(exc: openai.APIStatusError) -> str | None:
+    """Error ``code`` from the API error body (flat or nested under ``error``), if any."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("error")
+        for source in (body, inner if isinstance(inner, dict) else {}):
+            code = source.get("code")
+            if isinstance(code, str):
+                return code
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, str) else None
 
 
 def _content_text(content: Any) -> str:

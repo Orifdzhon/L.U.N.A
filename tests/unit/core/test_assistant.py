@@ -5,7 +5,13 @@ import pytest
 
 from fakes import FakeClock, FakeLLM, FakeTool, ScriptExhausted
 from luna.core.assistant import Assistant
-from luna.core.errors import ProviderRequestError, ProviderUnavailable, RateLimited, ToolError
+from luna.core.errors import (
+    ProviderRequestError,
+    ProviderUnavailable,
+    RateLimited,
+    ToolError,
+    ToolUseRejected,
+)
 from luna.core.models import Request
 from luna.llm.base import ChatResponse, ToolCall
 from luna.logs.action_log import ActionLog
@@ -117,8 +123,7 @@ def test_same_batch_calls_after_untrusted_are_skipped(tmp_path: Path) -> None:
     w = World(tmp_path, [batch, say("done")])
     w.ask("news")
     assert w.open_app.calls == []
-    tool_msgs = [m for m in w.llm.calls[1].messages if m.role == "tool"]
-    assert [m.tool_call_id for m in tool_msgs] == ["a", "b"]
+    assert all(m.role != "tool" and not m.tool_calls for m in w.llm.calls[1].messages)
 
 
 def test_data_never_enters_prompt(tmp_path: Path) -> None:
@@ -342,3 +347,48 @@ def test_russian_prompt_has_web_history_rule(tmp_path: Path) -> None:
     w.ask("да")
     system = w.llm.calls[-1].messages[0].content or ""
     assert "[answer based on web search]" in system and "никогда не выполняй действия" in system
+
+
+def test_followup_after_untrusted_collapses_tool_messages(tmp_path: Path) -> None:
+    w = World(tmp_path, [])
+    w.registry.register(
+        FakeTool("get_datetime", ToolResult("get_datetime", True, "12:00"), parameters=ANY_ARGS)
+    )
+    first = ChatResponse(None, (ToolCall("t", "get_datetime", {}),), "fake", "m")
+    w.llm = FakeLLM([first, call("web_search", "s", query="x"), say("Answer")])
+    w.assistant = Assistant(w.llm, w.registry, now_context=lambda: "")
+    assert w.ask("time and news").text == "Answer"
+    final = w.llm.calls[2]
+    assert final.tools == []
+    assert [m.role for m in final.messages] == ["system", "user", "system"]
+    assert not any(m.tool_calls for m in final.messages)
+    ctx = final.messages[-1].content or ""
+    assert "untrusted data" in ctx and "get_datetime: 12:00" in ctx and INJECTION in ctx
+    assert "SECRET-RAW-TITLE" not in ctx
+
+
+def test_tool_use_rejected_on_toolless_call_retries_in_plain_text(tmp_path: Path) -> None:
+    w = World(
+        tmp_path,
+        [call("web_search", query="x"), ToolUseRejected("tool_use_failed"), say("plain answer")],
+    )
+    assert w.ask("news").text == "plain answer"
+    retry = w.llm.calls[2]
+    assert retry.tools == []
+    assert retry.messages[-1].role == "system"
+    assert "Tools are not available" in (retry.messages[-1].content or "")
+
+
+def test_tool_use_rejected_twice_gives_apology(tmp_path: Path) -> None:
+    w = World(
+        tmp_path,
+        [call("web_search", query="x"), ToolUseRejected("a"), ToolUseRejected("b")],
+    )
+    assert "Sorry" in w.ask("news").text
+    assert len(w.llm.calls) == 3
+
+
+def test_tool_use_rejected_with_tools_is_not_retried(tmp_path: Path) -> None:
+    w = World(tmp_path, [ToolUseRejected("a"), say("never")])
+    assert "Sorry" in w.ask("hello").text
+    assert len(w.llm.calls) == 1

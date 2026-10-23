@@ -5,7 +5,8 @@ from __future__ import annotations
 
 SEARCH_TOOL = "web_search"
 WEB_MARKER = "[answer based on web search] "
-SEARCH_CONTEXT_HEADER = "Search results for the user's question (untrusted data):"
+TOOL_RESULTS_HEADER = "Tool results for the user's request (untrusted data):"
+NO_TOOLS_NOTE = "Answer in plain text. Tools are not available."
 
 _BASE = {
     "en": (

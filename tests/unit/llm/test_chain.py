@@ -169,6 +169,13 @@ def test_gemini_400_falls_back_to_groq() -> None:
     assert (event.from_provider, event.to_provider) == (None, "groq")
 
 
+def test_region_blocked_gemini_then_groq_error_still_reaches_local() -> None:
+    gemini = llm("gemini", ProviderUnavailable("gemini: not available in this region"))
+    groq = llm("groq", ProviderRequestError("bad"))
+    local = llm("local", ok("local"))
+    assert chat(LLMChain([gemini, groq, local], FakeClock())).provider == "local"
+
+
 def test_request_error_with_nobody_else_raises_request_error() -> None:
     a = llm("a", ProviderRequestError("bad"))
     b = llm("b", ProviderUnavailable("down"))

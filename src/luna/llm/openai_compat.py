@@ -254,6 +254,10 @@ class OpenAICompatProvider:
             return ProviderRequestError(
                 f"{self.name}: authentication failed (HTTP {status}); check the API key and access"
             )
+        if status == 400 and _is_region_block(exc):
+            # Not our request's fault: this provider will not work from here, so let LLMChain
+            # cool it down and keep the single request-error retry for a real bad request.
+            return ProviderUnavailable(f"{self.name}: not available in this region (HTTP 400)")
         detail = redact_text(str(getattr(exc, "message", "") or ""))[:_MAX_DETAIL_CHARS]
         suffix = f": {detail}" if detail else ""
         if _error_code(exc) == "tool_use_failed":
@@ -272,6 +276,23 @@ def _error_code(exc: openai.APIStatusError) -> str | None:
                 return code
     code = getattr(exc, "code", None)
     return code if isinstance(code, str) else None
+
+
+def _is_region_block(exc: openai.APIStatusError) -> bool:
+    """Gemini's ``FAILED_PRECONDITION`` "User location is not supported" (body may be a list)."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, list) and len(body) == 1:
+        body = body[0]
+    if not isinstance(body, dict):
+        return False
+    error = body.get("error")
+    error = error if isinstance(error, dict) else body
+    message = error.get("message")
+    return (
+        error.get("status") == "FAILED_PRECONDITION"
+        and isinstance(message, str)
+        and "location is not supported" in message.lower()
+    )
 
 
 def _content_text(content: Any) -> str:

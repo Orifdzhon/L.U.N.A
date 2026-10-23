@@ -635,3 +635,38 @@ def test_other_400_is_plain_request_error() -> None:
     with pytest.raises(ProviderRequestError) as info:
         ask(make())
     assert not isinstance(info.value, ToolUseRejected)
+
+
+_REGION_ERROR = {
+    "code": 400,
+    "message": "User location is not supported for the API use.",
+    "status": "FAILED_PRECONDITION",
+}
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "body",
+    [[{"error": _REGION_ERROR}], {"error": _REGION_ERROR}, _REGION_ERROR],
+    ids=["list-wrapped", "dict", "flat"],
+)
+def test_region_block_maps_to_provider_unavailable(body: object) -> None:
+    respx.post(URL).respond(400, json=body)
+    with pytest.raises(ProviderUnavailable) as info:
+        ask(make())
+    assert "region" in str(info.value)
+    assert "FAILED_PRECONDITION" not in str(info.value)
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "error",
+    [
+        {**_REGION_ERROR, "message": "Billing is not enabled"},
+        {**_REGION_ERROR, "status": "INVALID_ARGUMENT"},
+    ],
+)
+def test_other_failed_precondition_stays_request_error(error: dict) -> None:
+    respx.post(URL).respond(400, json=[{"error": error}])
+    with pytest.raises(ProviderRequestError):
+        ask(make())

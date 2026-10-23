@@ -1,7 +1,11 @@
 # ADR 0005 — Text-to-speech
 
-- Status: **proposed**
-- Date: 2026-10-22
+- Status: **accepted (with amendment of 2026-10-23)**
+- Date: 2026-10-22 (amended 2026-10-23)
+
+> The Amendment below replaces the default-voice part of the original Decision:
+> **SAPI is the default, Piper is a later optional provider.** The original text is kept
+> for history.
 
 ## Context
 
@@ -71,9 +75,74 @@ combination subject to GPL terms. Options:
 
 ## Owner decisions needed
 
-- Project license (MIT / Apache-2.0 / GPL-3.0) — affects nothing in code thanks to the
-  process boundary, but must be chosen before publishing.
-- Voice choice (see Consequences).
+- ~~Project license~~ — **decided: Apache-2.0** (owner, 2026-10-23). Piper, when added,
+  stays in a separate process (see "The GPL question", option 2).
+- ~~Voice choice~~ — **decided** in the Amendment: SAPI "Irina" (RU) and "Zira" (EN).
+
+## Amendment (2026-10-23)
+
+### Context
+
+The owner wants a female voice now and a slice 2 that works with zero downloads. No
+female Russian Piper voice has a clear license (see the table above), while the Windows
+voice "Microsoft Irina Desktop" (ru-RU, female) is already installed on the reference
+machine.
+
+### Decision
+
+1. **Default provider: `SapiTTS`** (Windows built-in SAPI voices), `[tts] provider = "sapi"`.
+   - Russian: "Microsoft Irina Desktop"; English: "Microsoft Zira Desktop" (female, matches
+     Irina; "Microsoft David Desktop" is the alternative).
+   - Voices are selected by a **case-insensitive substring** of the installed voice name
+     (`voice_ru = "Irina"`, `voice_en = "Zira"`). Fallback order: substring match → any
+     installed voice whose culture matches the language (`ru` / `en`) → the system default
+     voice, with a logged warning that lists the installed voices.
+   - Settings (`[tts]`, already on `main`): `enabled`, `provider`, `voice_ru`, `voice_en`,
+     `rate` (−10..10, SAPI scale), `volume` (0..100), `max_chars`, `first_chunk_max_chars`.
+   - The whole reply is spoken in the voice of `Reply.lang`; per-sentence language
+     switching is out of scope for slice 2.
+2. **Piper is later and optional** (Issue #63), not part of slice 2. When it is added, the
+   original Decision applies unchanged: separate worker process (GPL-3.0 boundary), male CC0
+   voices `ru_RU-dmitri-medium` / `ru_RU-denis-medium`, `en_US-ljspeech-medium`, downloaded on
+   first use. `provider` gains the value `"piper"` then.
+3. **Playback: `sounddevice`** (PortAudio, MIT; bundled in the Windows wheel) in the `voice`
+   optional extra, behind the `AudioPlayer` protocol (`luna.audio`). `winsound` was rejected
+   (measured in PR #67): `SND_MEMORY | SND_ASYNC` raises `RuntimeError`, and `SND_PURGE` does
+   not stop a synchronous in-memory sound, so in-memory playback cannot be interrupted.
+   `sounddevice` is needed for the microphone in slice 3 anyway.
+4. **The UI drives speech explicitly.** A `Speaker` worker (own thread) is called by the UI
+   with `speak(reply)`; it does **not** subscribe to `ReplyReady`. So the fallback text of a
+   cancelled or timed-out turn is not spoken unless the UI decides to speak it. The Speaker
+   emits `StatusChanged(SPEAKING)` / `StatusChanged(IDLE)` and stops within ~0.5 s on
+   `stop()` (Ctrl+C, `/stop`, a new request).
+5. **SAPI integration approach stays open** and is decided, with measurements, in #59.
+   Candidates: a PowerShell `System.Speech` subprocess (no new dependency) or in-process COM
+   via `comtypes` / `pywin32` (`SAPI.SpVoice`, possibly rendering to a memory stream so the
+   result is an `AudioClip`). Criteria, in order:
+   - **No injection through the reply text**: the text must never be interpolated into a
+     command line or script; pass it as data (stdin, a COM argument), and SSML/XML must not
+     be interpreted from LLM output (plain-text speak flags).
+   - **Time to first audio** for a typical first sentence (measured; target fits spec N4).
+   - **Interruptibility**: stop within ~0.5 s.
+   - **Dependencies and licensing**: prefer none; any new package must be permissively
+     licensed, and Windows-only imports stay inside the SAPI provider module (`luna.tts`).
+   - **Output as PCM** (`AudioClip`) so the shared `AudioPlayer` does playback and stopping.
+   If SAPI cannot return PCM, or speaking directly is clearly better, #59 stops and flags
+   "needs architect" instead of changing the `TTSProvider` protocol (ARCHITECTURE §3).
+
+### Rationale
+
+- Zero download and zero setup: the voices ship with Windows.
+- No GPL boundary and no voice-dataset license questions in the default configuration.
+- A female voice, as the owner wants.
+
+### Consequences
+
+- Quality is noticeably more robotic than Piper or neural cloud voices.
+- Windows-only: Linux/macOS need another provider (Piper, #63, is the natural candidate).
+- SAPI voices are part of Windows and are **not redistributed** by us; a user without the
+  Russian voice must install the Windows Russian speech pack (to be documented in #62).
+- No ~200 MB RAM for a Piper process in the default budget (ARCHITECTURE §11).
 
 ## Sources (accessed 2026-10-22)
 
@@ -87,3 +156,5 @@ combination subject to GPL terms. Options:
 - Silero license (mirrors): https://gitee.com/nauch/silero-models
 - Gemini TTS free tier: https://ai.google.dev/gemini-api/docs/pricing
 - Local check: installed Windows voices listed via `System.Speech` (2026-10-22): Irina (ru-RU), David, Zira (en-US); OneCore: Irina, Pavel, David, Mark, Zira.
+- PR #67 (winsound vs sounddevice measurement, 2026-10-23): https://github.com/Orifdzhon/L.U.N.A/pull/67
+- sounddevice on PyPI (0.5.6, MIT, Python >=3.7; accessed 2026-10-23): https://pypi.org/pypi/sounddevice/json

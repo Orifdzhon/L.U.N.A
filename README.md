@@ -30,6 +30,8 @@ uv run luna --text
 
 Starts the REPL: type `открой ютуб`, `open telegram`, `какой курс доллара?`; `/help`,
 `/providers`, `/clear`; Ctrl+C cancels the running request, `exit` / `выход` / Ctrl+C twice quits.
+The first start may take a few seconds longer for "open <app>" while the Start Menu app list
+is scanned in the background (the prompt appears at once; the list is cached afterwards).
 Without any API key the router still opens apps and sites; answers need an LLM provider.
 
 To use a local LM Studio model, copy `luna.example.toml` to `%APPDATA%\LUNA\luna.toml` and set

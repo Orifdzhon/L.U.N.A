@@ -16,8 +16,9 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from luna.config.settings import Settings
+from luna.config.settings import ASSISTANT_MARGIN_S, Settings
 from luna.core.assistant import Assistant
 from luna.core.clock import Clock
 from luna.core.errors import ProviderUnavailable
@@ -82,11 +83,36 @@ class App:
     def llm_available(self) -> bool:
         return bool(self.active_providers)
 
+    def describe_providers(self) -> list[str]:
+        """``name (model)`` for every active provider (just ``name`` for an injected LLM)."""
+        models = {n: p.model for n, p in self.settings.llm.providers.items()}
+        return [f"{n} ({models[n]})" if n in models else n for n in self.active_providers]
+
+    def model_notes(self) -> list[str]:
+        """Hint when a provider still uses the built-in default model name."""
+        defaults = Settings().llm.providers
+        notes = []
+        for name in self.active_providers:
+            conf = self.settings.llm.providers.get(name)
+            # Local servers (no key): the model name must match what is loaded.
+            if (
+                conf is not None
+                and not conf.api_key_env
+                and name in defaults
+                and conf.model == defaults[name].model
+            ):
+                notes.append(
+                    f"Note: '{name}' uses the default model '{conf.model}'. "
+                    "Set the exact model name in luna.toml ([llm.providers.local] model)."
+                )
+        return notes
+
     def startup_lines(self) -> list[str]:
         """Human-readable startup summary. Names only, never key values."""
         lines: list[str] = []
         if self.active_providers:
-            lines.append("LLM providers: " + " -> ".join(self.active_providers))
+            lines.append("LLM providers: " + " -> ".join(self.describe_providers()))
+            lines.extend(self.model_notes())
         else:
             lines.append(
                 "LLM providers: none. Answers are unavailable; "
@@ -106,13 +132,7 @@ class App:
         thread = self._catalog_thread
         if thread is not None and thread.is_alive():
             thread.join(_CATALOG_JOIN_S)
-        for provider in self._closers:
-            closer = getattr(provider, "close", None)
-            if callable(closer):
-                try:
-                    closer()
-                except Exception:
-                    logger.debug("provider close failed", exc_info=True)
+        _close_providers(self._closers)
 
 
 def _build_providers(settings: Settings) -> tuple[list[OpenAICompatProvider], dict[str, str]]:
@@ -142,6 +162,13 @@ def _build_providers(settings: Settings) -> tuple[list[OpenAICompatProvider], di
     return providers, missing
 
 
+def assistant_timeout(settings: Settings) -> float:
+    """Assistant deadline: the LLM timeout, but ASSISTANT_MARGIN_S under the request timeout."""
+    return max(
+        1.0, min(settings.llm.timeout_s, settings.app.request_timeout_s - ASSISTANT_MARGIN_S)
+    )
+
+
 def _warm_catalog(catalog: AppCatalog) -> None:
     try:
         catalog.list_apps()  # reads the on-disk cache or scans Start Menu apps once
@@ -149,8 +176,29 @@ def _warm_catalog(catalog: AppCatalog) -> None:
         logger.warning("app catalog scan failed: %s", type(exc).__name__)
 
 
-def build_app(
+def build_app(settings: Settings, **overrides: Any) -> App:
+    """Build the whole object graph; providers created before a failure are closed again."""
+    created: list[LLMProvider] = []
+    try:
+        return _assemble(settings, created, **overrides)
+    except BaseException:
+        _close_providers(created)
+        raise
+
+
+def _close_providers(providers: Sequence[LLMProvider]) -> None:
+    for provider in providers:
+        closer = getattr(provider, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                logger.debug("provider close failed", exc_info=True)
+
+
+def _assemble(
     settings: Settings,
+    closers: list[LLMProvider],
     *,
     llm: LLMProvider | None = None,
     search: SearchProvider | None = None,
@@ -161,7 +209,7 @@ def build_app(
     platform: str | None = None,
     clock: Clock | None = None,
 ) -> App:
-    """Build the whole object graph. Secrets must already be registered for log redaction."""
+    """Secrets must already be registered for log redaction."""
     clock = clock or time.monotonic
     platform = platform or sys.platform
     warnings: list[str] = []
@@ -171,7 +219,6 @@ def build_app(
     registry = ToolRegistry(action_log)
 
     # LLM
-    closers: list[LLMProvider] = []
     missing: dict[str, str] = {}
     active: list[str] = []
     chat: LLMProvider
@@ -179,7 +226,7 @@ def build_app(
         chat, active = llm, [llm.name]
     else:
         providers, missing = _build_providers(settings)
-        closers = list(providers)
+        closers.extend(providers)
         active = [p.name for p in providers]
         chat = LLMChain(providers, clock, bus) if providers else _NoLLM()
 
@@ -234,7 +281,12 @@ def build_app(
     for text in warnings:
         logger.warning(text)
 
-    assistant = Assistant(chat, registry, history_turns=settings.app.history_turns)
+    assistant = Assistant(
+        chat,
+        registry,
+        history_turns=settings.app.history_turns,
+        timeout_s=assistant_timeout(settings),
+    )
     orchestrator = Orchestrator(
         Router(registry), assistant, bus, settings.app.request_timeout_s, timer=clock
     )

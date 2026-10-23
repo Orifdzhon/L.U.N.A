@@ -7,7 +7,7 @@ from luna.config.settings import Settings
 from luna.core.events import ProviderSwitched
 from luna.llm.base import ChatResponse
 from luna.platform.base import AppEntry
-from luna.ui.cli import PROMPT, CliConfirmer, Repl, configure_console_encoding
+from luna.ui.cli import PROMPT, Repl, configure_console_encoding
 
 
 def say(text: str) -> ChatResponse:
@@ -169,17 +169,6 @@ def test_provider_switch_notice(tmp_path):
     assert "offline mode" in out.getvalue()
 
 
-def test_confirmer():
-    assert CliConfirmer(lambda p: "да").confirm("ok?") is True
-    assert CliConfirmer(lambda p: "n").confirm("ok?") is False
-    assert CliConfirmer(lambda p: "").confirm("ok?") is False
-
-    def eof(p):
-        raise EOFError
-
-    assert CliConfirmer(eof).confirm("ok?") is False
-
-
 def test_configure_console_encoding_reconfigures(monkeypatch):
     class Stream:
         def __init__(self):
@@ -199,3 +188,33 @@ def test_configure_console_encoding_reconfigures(monkeypatch):
     configure_console_encoding()
     assert a.calls == [{"encoding": "utf-8", "errors": "replace"}]
     assert b.calls == a.calls
+
+
+def test_providers_command_shows_model_and_default_note(tmp_path):
+    s = Settings().with_api_keys({})
+    app = build_app(s, browser=FakeBrowser(), platform="linux", log_dir=tmp_path)
+    out = io.StringIO()
+    try:
+        Repl(app, Script("/providers", "exit"), out).run()
+    finally:
+        app.close()
+    text = out.getvalue()
+    assert "local (qwen3-4b)" in text
+    assert "default model" in text
+    assert "luna.toml" in text
+
+
+def test_ctrl_c_in_command_has_no_traceback(tmp_path):
+    app, _ = make_app(tmp_path)
+    out = io.StringIO()
+
+    def boom():
+        raise KeyboardInterrupt
+
+    app.assistant.clear_history = boom
+    try:
+        code = Repl(app, Script("/clear", "exit"), out).run()
+    finally:
+        app.close()
+    assert code == 0
+    assert "(interrupted)" in out.getvalue()

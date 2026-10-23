@@ -39,20 +39,6 @@ def configure_console_encoding() -> None:
                 reconfigure(encoding="utf-8", errors="replace")
 
 
-class CliConfirmer:
-    """``Confirmer`` that asks y/n on the terminal. Anything but y/yes/д/да is a refusal."""
-
-    def __init__(self, input_fn: InputFn | None = None) -> None:
-        self._input = input_fn if input_fn is not None else builtins.input
-
-    def confirm(self, prompt: str) -> bool:
-        try:
-            answer = self._input(f"{prompt} [y/N] ")
-        except (EOFError, KeyboardInterrupt):
-            return False
-        return answer.strip().lower() in {"y", "yes", "д", "да"}
-
-
 class Repl:
     def __init__(
         self, app: App, input_fn: InputFn | None = None, out: TextIO | None = None
@@ -89,10 +75,13 @@ class Repl:
                     continue
                 if text.lower() in EXIT_WORDS:
                     return 0
-                if text.startswith("/"):
-                    self._command(text)
-                    continue
-                self._request(text, events)
+                try:
+                    if text.startswith("/"):
+                        self._command(text)
+                    else:
+                        self._request(text, events)
+                except KeyboardInterrupt:  # Ctrl+C while printing / between steps: no traceback
+                    self._say("\n(interrupted)")
 
     def _command(self, text: str) -> None:
         name = text.split(maxsplit=1)[0].lower()
@@ -100,7 +89,10 @@ class Repl:
             self._say(HELP_TEXT)
         elif name == "/providers":
             active = self._app.active_providers
-            self._say("Active LLM providers: " + (" -> ".join(active) if active else "none"))
+            described = self._app.describe_providers()
+            self._say("Active LLM providers: " + (" -> ".join(described) if active else "none"))
+            for note in self._app.model_notes():
+                self._say(note)
             for provider, env_name in self._app.missing_keys.items():
                 self._say(f"Skipped: {provider} ({env_name})")
         elif name == "/clear":

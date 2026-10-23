@@ -49,7 +49,7 @@ def test_settings_secret_values_reach_the_log(tmp_path):
 
 def test_console_handler_is_redacted_and_optional(tmp_path, capsys):
     setup_logging("INFO", tmp_path, console=True)
-    logging.getLogger("luna.test").info("key %s", FAKE_GROQ)
+    logging.getLogger("luna.test").warning("key %s", FAKE_GROQ)
     err = capsys.readouterr().err
     assert FAKE_GROQ not in err
     assert MASK in err
@@ -92,3 +92,26 @@ def test_real_localappdata_is_not_touched_when_dir_given(tmp_path, monkeypatch):
     setup_logging("INFO", tmp_path / "logs", console=False)
     logging.getLogger("luna.test").info("x")
     assert not (tmp_path / "must-stay-empty").exists()
+
+
+def test_console_is_quiet_but_file_keeps_info(tmp_path, capsys):
+    path = setup_logging("INFO", tmp_path, console=True)
+    logging.getLogger("luna.test").info("routine note")
+    logging.getLogger("luna.test").warning("real warning")
+    flush_all()
+    err = capsys.readouterr().err
+    assert "routine note" not in err
+    assert "real warning" in err
+    assert "routine note" in path.read_text(encoding="utf-8")
+
+
+def test_third_party_info_is_dropped_everywhere(tmp_path, capsys):
+    path = setup_logging("INFO", tmp_path, console=True)
+    logging.getLogger("primp").info("response: https://search.example/?q=secret+query")
+    logging.getLogger("httpx").info("HTTP Request: POST https://x")
+    logging.getLogger("trafilatura.core").info("noise")
+    logging.getLogger("luna.test").info("own record")  # creates the (lazily opened) file
+    flush_all()
+    assert "secret+query" not in capsys.readouterr().err
+    assert "secret+query" not in path.read_text(encoding="utf-8")
+    assert logging.getLogger("primp").getEffectiveLevel() == logging.WARNING

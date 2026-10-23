@@ -180,3 +180,59 @@ def test_secrets_not_in_logs_or_startup(made, tmp_path, caplog):
     for path in (tmp_path / "logs").glob("*"):
         out += path.read_text(encoding="utf-8")
     assert SECRET not in out
+
+
+def test_system_prompt_contains_current_datetime(made):
+    llm = FakeLLM([say("ok")])
+    app = made(llm)
+    app.orchestrator.handle(Request("что такое черная дыра?", "text"))
+    system = llm.calls[0].messages[0]
+    assert system.role == "system"
+    assert "Current local date and time: " in system.content
+
+
+def test_time_question_is_answered_by_router_without_llm(made):
+    llm = FakeLLM([])
+    app = made(llm)
+    reply = app.orchestrator.handle(Request("Луна, сколько сейчас времени?", "text"))
+    assert reply.provider == "router"
+    assert reply.text.startswith("Сейчас ")
+    assert llm.calls == []
+
+
+def test_assistant_timeout_follows_settings():
+    from luna.app import assistant_timeout
+
+    s = Settings()
+    assert assistant_timeout(s) == 17.0  # request 20 - margin 3, llm 20
+    s.llm.timeout_s = 8.0
+    assert assistant_timeout(s) == 8.0
+    s.app.request_timeout_s = 6.0
+    assert assistant_timeout(s) == 3.0
+
+
+def test_request_timeout_must_exceed_margin():
+    from pydantic import ValidationError
+
+    from luna.config.settings import AppSettings
+
+    with pytest.raises(ValidationError):
+        AppSettings(request_timeout_s=3.0)
+    assert AppSettings(request_timeout_s=3.5).request_timeout_s == 3.5
+
+
+def test_failed_build_closes_created_providers(tmp_path, monkeypatch):
+    closed = []
+
+    class P:
+        name = "local"
+        model = "m"
+
+        def close(self):
+            closed.append(1)
+
+    monkeypatch.setattr("luna.app._build_providers", lambda s: ([P()], {}))
+    monkeypatch.setattr("luna.app.GetDatetimeTool", lambda: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        build_app(settings(), browser=FakeBrowser(), platform="linux", log_dir=tmp_path)
+    assert closed == [1]

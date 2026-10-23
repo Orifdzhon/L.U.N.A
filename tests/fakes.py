@@ -45,6 +45,7 @@ class FakeLLM:
         tools: Sequence[ToolSchema] = (),
         *,
         timeout_s: float,
+        request_id: str | None = None,
     ) -> ChatResponse:
         self.calls.append(
             LLMCall(copy.deepcopy(list(messages)), copy.deepcopy(list(tools)), timeout_s)

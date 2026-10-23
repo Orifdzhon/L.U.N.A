@@ -19,7 +19,7 @@ added in later slices.
 | LLM | One OpenAI-compatible client; chain Gemini `gemini-3.5-flash-lite` → Groq `openai/gpt-oss-120b` → local LM Studio (~4B Qwen) | native `google-genai` SDK if the compat layer breaks | [0002](adr/0002-llm-providers-and-tool-calling.md) |
 | STT | `faster-whisper` `large-v3-turbo` on GPU (int8_float16) | Groq `whisper-large-v3-turbo`; CPU `small` int8 | [0003](adr/0003-speech-to-text.md) |
 | Wake word | Hotkey first; then Vosk `small-ru` grammar spotter ("луна"); then a custom ONNX model | Porcupine rejected (free tier closed) | [0004](adr/0004-wake-word.md) |
-| TTS | Piper (`piper-tts`, out-of-process), CC0 voices | Windows SAPI voices (Irina ru-RU) | [0005](adr/0005-text-to-speech.md) |
+| TTS | Windows SAPI voices: Irina (ru-RU), Zira (en-US); playback via `sounddevice` | Piper (`piper-tts`, out-of-process, CC0 voices) later/optional (#63) | [0005](adr/0005-text-to-speech.md) + amendment |
 | Web search | `ddgs` metasearch + `trafilatura` extraction | self-hosted SearXNG; Tavily free key | [0006](adr/0006-web-search.md) |
 | Desktop shell | PySide6 (tray + window), Win32 `RegisterHotKey`, HKCU `Run` autostart | tkinter + pystray | [0007](adr/0007-desktop-shell.md) |
 | Open apps/sites | `Get-StartApps` index + aliases + `rapidfuzz`; `webbrowser` for sites | `.lnk` scan | [0008](adr/0008-opening-apps-and-websites.md) |
@@ -44,7 +44,7 @@ added in later slices.
 │ Reply(text, lang, actions) ──► ActionLog (JSONL) · EventBus (status events)        │
 └───────────────────────────────────────┬───────────────────────────────────────────┘
                                          ▼
-                 Output adapters: CLI print · TTS (Piper) · Qt window/tray
+                 Output adapters: CLI print · Speaker (SAPI TTS) · Qt window/tray
 ```
 
 | Component | Package | Responsibility |
@@ -58,9 +58,9 @@ added in later slices.
 | Tools | `luna.tools` | `Tool` protocol, `ToolRegistry`, safety levels, built-in tools: `open_app`, `open_website`, `web_search`, `get_datetime`. |
 | Search | `luna.search` | `SearchProvider` protocol, `DdgsSearch`, `SearxngSearch`, page fetch + extraction. |
 | Platform | `luna.platform` | OS adapters behind protocols: app catalog/launcher, browser, hotkey, autostart. `luna.platform.windows` implements them. |
-| Audio | `luna.audio` | Microphone capture (`sounddevice`), ring buffer, VAD, playback. |
+| Audio | `luna.audio` | `AudioClip`, `AudioPlayer` protocol + interruptible `sounddevice` playback (slice 2); microphone capture, ring buffer, VAD (slice 3). |
 | STT | `luna.stt` | `STTProvider` protocol, `FasterWhisperSTT`, `GroqWhisperSTT`. |
-| TTS | `luna.tts` | `TTSProvider` protocol, `PiperTTS` (subprocess worker), `SapiTTS`. |
+| TTS | `luna.tts` | `TTSProvider` protocol, `SapiTTS` (default), speech text preparation (`text`), `Speaker` worker (explicit `speak(reply)` from the UI); `PiperTTS` (subprocess worker) later/optional. |
 | Wake word | `luna.wakeword` | `WakeWordDetector` protocol, `VoskKeywordSpotter`, `OnnxWakeWord`. |
 | Voice front-end | `luna.voice` | State machine IDLE → LISTENING → TRANSCRIBING → (core) → SPEAKING; glues audio, wake word, VAD, STT, TTS. |
 | UI | `luna.ui` | `cli` (REPL, slice 1) and `qt` (tray, popup window, status indicator, slice 5). |
@@ -111,11 +111,16 @@ src/luna/
     capture.py            # sounddevice InputStream → frames queue
     ringbuffer.py
     vad.py                # Silero VAD (onnx) endpointing
-    playback.py
+    base.py               # AudioClip, AudioPlayer protocol
+    playback.py           # SoundDevicePlayer: RawOutputStream, chunked writes, abort() on stop
   stt/
     base.py, faster_whisper_stt.py, groq_stt.py
   tts/
-    base.py, piper_tts.py (subprocess worker), sapi_tts.py
+    base.py               # TTSProvider
+    sapi.py               # SapiTTS (Windows built-in voices; integration chosen in #59)
+    text.py               # speech text clean-up + sentence chunks
+    speaker.py            # Speaker worker thread
+    piper_tts.py          # later/optional (#63): subprocess worker
   wakeword/
     base.py, vosk_spotter.py, onnx_wakeword.py
   voice/
@@ -138,7 +143,7 @@ docs/
   manual-checks.md        # owner's manual checklist (mic, GPU, tray) — added in slice 3
 ```
 
-Rule: only `luna.platform.windows.*` (and `luna.tts.sapi_tts`) may import Windows-only
+Rule: only `luna.platform.windows.*` (and `luna.tts.sapi`) may import Windows-only
 modules (`winreg`, `ctypes.windll`). Everything else is OS-neutral.
 
 ## 3. Key interfaces (sketches)
@@ -228,6 +233,27 @@ class TTSProvider(Protocol):
     name: str
     def synthesize(self, text: str, lang: str) -> AudioClip: ...  # pcm16 + sample_rate
     # Playback is separate (luna.audio.playback) so it can be interrupted.
+
+# luna/audio/base.py
+@dataclass(frozen=True)
+class AudioClip:
+    pcm: bytes                # int16 mono
+    sample_rate: int
+
+class AudioPlayer(Protocol):
+    def play(self, clip: AudioClip) -> None: ...   # blocks until done or stopped
+    def stop(self) -> None: ...                    # thread-safe, idempotent
+    def close(self) -> None: ...
+
+# luna/tts/speaker.py — called explicitly by the UI, NOT subscribed to ReplyReady,
+# so the fallback text of a cancelled/timed-out turn is spoken only if the UI asks.
+class Speaker:
+    def __init__(self, provider: TTSProvider, player: AudioPlayer,
+                 bus: EventBus, settings: TTSSettings) -> None: ...
+    def speak(self, reply: Reply, request_id: str | None = None) -> None: ...  # non-blocking
+    def stop(self) -> None: ...                    # speech ends within ~0.5 s
+    def set_muted(self, muted: bool) -> None: ...
+    def close(self, timeout: float = 2.0) -> None: ...
 ```
 
 ```python
@@ -355,7 +381,7 @@ mic (sounddevice callback, 16 kHz mono, 30 ms frames)
                       VAD endpointing: stop at 700 ms silence or 10 s max
           ──────────► TRANSCRIBING: STTProvider.transcribe(...)
           ──────────► Request(text, source="voice", lang=transcript.lang) → Orchestrator
-          ──────────► SPEAKING: TTS synthesize per sentence → playback (interruptible)
+          ──────────► SPEAKING: UI calls Speaker.speak(reply): synthesize per chunk → playback (interruptible)
           ──────────► IDLE (optionally a follow-up window, owner decision Q3)
 ```
 
@@ -378,10 +404,11 @@ receives them via a `QObject` bridge that re-emits them as Qt signals on the GUI
 |---|---|
 | Main | Qt event loop (slice 5) or the CLI REPL (slice 1–4) |
 | PortAudio callback | copies frames to a queue only (never blocks) |
-| `voice` | wake word + VAD + STT + TTS playback state machine |
+| `voice` | wake word + VAD + STT state machine (slice 3+) |
+| `speaker` | `Speaker` worker: synthesize chunk N+1 while chunk N plays (slice 2) |
 | `worker` | orchestrator: router, LLM calls, tools (single-threaded → no races on dialog state) |
 | `hotkey` | Win32 message loop for `RegisterHotKey` |
-| Piper subprocess | separate **process** (license boundary, ADR 0005) |
+| Piper subprocess | later/optional: separate **process** (license boundary, ADR 0005) |
 
 Why not asyncio:
 - The heavy work is blocking C/C++ code (CTranslate2, ONNX Runtime, Vosk, PortAudio)
@@ -427,10 +454,15 @@ model = "large-v3-turbo"
 device = "cuda"                 # "cpu" → model "small", compute_type "int8"
 compute_type = "int8_float16"
 
-[tts]
-provider = "piper"              # or "sapi"
-voice_ru = "ru_RU-dmitri-medium"
-voice_en = "en_US-ljspeech-medium"
+[tts]                           # ADR 0005 amendment
+enabled = false                 # speak replies aloud
+provider = "sapi"               # Windows built-in voices; "piper" later (#63)
+voice_ru = "Irina"              # case-insensitive substring of "Microsoft Irina Desktop"
+voice_en = "Zira"               # "Microsoft Zira Desktop" (or "David")
+rate = 0                        # -10 .. 10
+volume = 100                    # 0 .. 100
+max_chars = 1500                # longest spoken reply, cut at a sentence end
+first_chunk_max_chars = 200     # short first chunk → quick first audio
 
 [wakeword]
 engine = "vosk"                 # "vosk" | "onnx" | "off"
@@ -471,7 +503,8 @@ autostart = false
   "offline mode". Errors that are our fault (400 bad request, schema errors) are not
   retried on other providers more than once.
 - The same `FallbackChain` helper is reused for STT (local ↔ Groq) and search
-  (ddgs ↔ SearXNG/Tavily). TTS falls back Piper → SAPI.
+  (ddgs ↔ SearXNG/Tavily). TTS has one provider in slice 2 (SAPI); a TTS failure is logged,
+  `StatusChanged(ERROR)` is emitted and the reply stays visible as text.
 - Per-stage timeouts (defaults): STT 5 s, LLM call 8 s, search 5 s, page fetch 4 s
   each, total request 20 s. On timeout the user hears a short apology instead of silence.
 - Tool failures are returned to the LLM as `ToolResult(ok=False, summary=...)`; the
@@ -529,7 +562,8 @@ stays fast; voice-module unit tests import them lazily and use fakes.
 | faster-whisper `large-v3-turbo` int8_float16 | GPU | ~1.0–1.5 GB | ~1 GB | **estimate, measure in slice 3**; loaded once, kept warm |
 | Wake word (Vosk small-ru, 45 MB) or ONNX | CPU | 0 | ~150 MB | ~5–10 % of one core (to measure) |
 | Silero VAD | CPU | 0 | ~20 MB | |
-| Piper medium voices (2) | CPU | 0 | ~200 MB | separate process |
+| SAPI voice (Windows built-in) | CPU | 0 | ~20–50 MB (est.) | default TTS |
+| Piper medium voices (2) — optional, later | CPU | 0 | ~200 MB | separate process, not in the default total |
 | Qt UI | CPU | ~0 | ~100 MB | |
 | **Default total (cloud LLM)** | | **~1.5 GB** | ~1.5 GB | leaves >4 GB for games/other apps |
 | Ollama `qwen3:4b` (2.5 GB Q4 + KV cache 8k) | GPU | ~3–3.5 GB | | only when cloud is unavailable or `offline=true` |
@@ -549,7 +583,7 @@ Each slice ends in something the owner can run. Later slices only add adapters.
 |---|---|---|---|
 | 0 | Skeleton | `uv` project, src layout, ruff/pytest, CI on windows-latest, config loader, logging, action log, fakes | `uv run luna --version`; CI green |
 | 1 | **Text core** | CLI REPL `uv run luna --text`; router; `open_website`, `open_app` (Get-StartApps), `web_search` (ddgs + trafilatura); Assistant with `LLMChain` (Gemini → Groq → Ollama); small latency/accuracy benchmark script over ~20 RU/EN prompts | typing "открой ютуб", "open telegram", "какой курс доллара?", "что такое черная дыра?" gives correct actions/answers; tests pass |
-| 2 | Voice out | `PiperTTS` worker + `SapiTTS` fallback; sentence splitting; language-based voice choice; interruptible playback | CLI replies are spoken in RU/EN |
+| 2 | Voice out | `SapiTTS` (Irina / Zira); speech text clean-up and sentence splitting; voice by `Reply.lang`; `sounddevice` interruptible playback; `Speaker` worker; CLI `--voice`, `/mute`, `/stop`. Piper later/optional (#63) | CLI replies are spoken in RU/EN |
 | 3 | Voice in (push-to-talk) | audio capture, VAD endpointing, `FasterWhisperSTT` + `GroqWhisperSTT`, global hotkey | hotkey → speak → action + spoken reply; latency spans logged |
 | 4 | Wake word | always-on capture, `VoskKeywordSpotter` for "луна", one-breath commands; parallel spike: custom ONNX model (ADR 0004) | "Луна, открой YouTube" works; false accepts/hour measured over a 2-hour session |
 | 5 | Desktop shell | PySide6 tray, popup reply window with text input, status indicator, autostart toggle, settings file shortcut | MVP definition of done (spec §6) |
@@ -560,9 +594,8 @@ Each slice ends in something the owner can run. Later slices only add adapters.
 See the decision list in each ADR. Summary:
 1. ~~Project license~~ — **decided: Apache-2.0** (owner, 2026-10-23). Piper (GPL-3.0) stays in a separate process (ADR 0005).
 2. Default LLM order and models after the slice-1 benchmark (ADR 0002).
-3. Voice: Russian CC0 Piper voices are male (`dmitri`, `denis`); the female `irina`
-   has an unknown dataset license; the female Windows voice "Irina" (SAPI) is free to
-   use locally. Which voice? (ADR 0005)
+3. ~~Voice~~ — **decided** (owner, 2026-10-23): SAPI "Irina" (RU) and "Zira" (EN) by default;
+   Piper with male CC0 voices later/optional (ADR 0005 amendment).
 4. Dialog: one command per wake word vs. a short follow-up window; "Луна, стоп".
 5. Hotkey combination (default `Ctrl+Alt+Space`).
 6. Game mode / unloading models while gaming.

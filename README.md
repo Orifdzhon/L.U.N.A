@@ -2,7 +2,7 @@
 
 Open-source voice assistant for Windows. Call it by voice ("Луна") to open apps and websites, answer questions and search the web.
 
-**Status:** early development. Slice 1 (text mode: `uv run luna --text`) is done; voice, wake word and the tray UI come in later slices (see the [roadmap](docs/ROADMAP.md)).
+**Status:** early development. Slices 1 (text mode: `uv run luna --text`) and 2 (voice replies: `--voice`) are done; voice input, wake word and the tray UI come in later slices (see the [roadmap](docs/ROADMAP.md)).
 
 - Product requirements: [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md)
 - Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), decisions in [docs/adr/](docs/adr/)

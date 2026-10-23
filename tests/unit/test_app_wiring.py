@@ -97,7 +97,7 @@ def test_providers_skipped_without_keys(made):
 
 def test_providers_with_keys_in_chain_order(made):
     app = made(env={"GEMINI_API_KEY": SECRET, "GROQ_API_KEY": SECRET + "2"})
-    assert app.active_providers == ["gemini", "groq", "local"]
+    assert app.active_providers == ["groq", "gemini", "local"]
     assert app.missing_keys == {}
     assert SECRET not in "\n".join(app.startup_lines())
 

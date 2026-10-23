@@ -218,3 +218,16 @@ def test_ctrl_c_in_command_has_no_traceback(tmp_path):
         app.close()
     assert code == 0
     assert "(interrupted)" in out.getvalue()
+
+
+def test_bom_prefixed_exit_quits_without_llm(tmp_path):
+    llm = FakeLLM([])
+    code, _, _ = run(tmp_path, Script(chr(0xFEFF) + "exit"), llm)
+    assert code == 0
+    assert llm.calls == []
+
+
+def test_bom_and_spaces_stripped_from_commands(tmp_path):
+    code, _, browser = run(tmp_path, Script(chr(0xFEFF) + "открой ютуб  ", "exit"))
+    assert code == 0
+    assert any("youtube" in u for u in browser.urls)

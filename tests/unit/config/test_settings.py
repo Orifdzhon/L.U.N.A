@@ -6,7 +6,7 @@ from luna.config.settings import ProviderSettings, SearchSettings, Settings
 
 def test_default_chain_and_local_provider():
     s = Settings()
-    assert s.llm.chain == ["gemini", "groq", "local"]
+    assert s.llm.chain == ["groq", "gemini", "local"]
     local = s.llm.providers["local"]
     assert local.base_url == "http://localhost:1234/v1"
     assert local.api_key_env is None
@@ -22,7 +22,7 @@ def test_without_keys_only_local_available():
 
 def test_available_providers_follow_chain_order():
     s = Settings().with_api_keys({"GROQ_API_KEY": "k", "GEMINI_API_KEY": "k2"})
-    assert s.available_providers() == ["gemini", "groq", "local"]
+    assert s.available_providers() == ["groq", "gemini", "local"]
     s = Settings().with_api_keys({"GROQ_API_KEY": "k"})
     assert s.available_providers() == ["groq", "local"]
 

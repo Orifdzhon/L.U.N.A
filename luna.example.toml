@@ -14,7 +14,7 @@ request_timeout_s = 20.0    # overall limit for one user request, seconds (> 0)
 
 [llm]
 # Providers are tried in this order; a provider whose key is missing is skipped.
-chain = ["gemini", "groq", "local"]
+chain = ["groq", "gemini", "local"]
 timeout_s = 20.0            # per-request read timeout, seconds (> 0)
 connect_timeout_s = 5.0     # connection timeout, seconds (> 0)
 

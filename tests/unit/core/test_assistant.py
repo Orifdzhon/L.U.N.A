@@ -1,3 +1,4 @@
+# ruff: noqa: RUF001
 import threading
 from pathlib import Path
 
@@ -494,3 +495,57 @@ def test_prompts_have_datetime_and_no_copy_rules(tmp_path: Path) -> None:
     w2.ask("кто президент")
     assert "используй время, указанное выше" in (w2.llm.calls[0].messages[0].content or "")
     assert "никогда не копируй теги" in (w2.llm.calls[1].messages[0].content or "")
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        "К сожалению, у меня нет доступа к актуальной информации.",
+        "Я не имею доступа к интернету.",
+        "I don't have access to real-time information.",
+        "I cannot access the internet right now.",
+    ],
+)
+def test_no_internet_claim_retries_on_next_provider(tmp_path: Path, refusal: str) -> None:
+    w = World(tmp_path, [call("web_search", query="x"), say(refusal), say("Курс 80 рублей")])
+    reply = w.ask("курс доллара")
+    assert reply.text == "Курс 80 рублей"
+    assert len(w.llm.calls) == 3
+    assert w.llm.calls[1].exclude == frozenset()
+    assert w.llm.calls[2].exclude == {"fake"}  # the provider that refused is skipped
+    assert w.llm.calls[2].tools == []
+
+
+def test_no_internet_claim_twice_gives_up_gracefully(tmp_path: Path) -> None:
+    refusal = "У меня нет доступа к интернету."
+    w = World(tmp_path, [call("web_search", query="x"), say(refusal), say(refusal)])
+    reply = w.ask("курс доллара")
+    assert refusal not in reply.text
+    assert reply.text.startswith("Извини")
+
+
+def test_no_internet_retry_with_no_other_provider_gives_up(tmp_path: Path) -> None:
+    w = World(
+        tmp_path,
+        [
+            call("web_search", query="x"),
+            say("I don't have access to the internet."),
+            ProviderUnavailable("all LLM providers failed"),
+        ],
+    )
+    reply = w.ask("dollar rate")
+    assert "internet" not in reply.text
+    assert reply.text.startswith("Sorry")
+
+
+def test_normal_answer_with_the_word_internet_is_not_retried(tmp_path: Path) -> None:
+    w = World(tmp_path, [call("web_search", query="x"), say("According to example.com: 80.")])
+    assert w.ask("dollar rate").text == "According to example.com: 80."
+    assert len(w.llm.calls) == 2
+
+
+def test_answer_prompt_forbids_claiming_no_internet() -> None:
+    from luna.core.prompts import build_answer_prompt
+
+    assert "never say you lack internet" in build_answer_prompt("en", "NOW")
+    assert "никогда не говори" in build_answer_prompt("ru", "NOW")

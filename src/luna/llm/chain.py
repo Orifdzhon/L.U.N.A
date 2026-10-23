@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
 from luna.core.clock import Clock
@@ -87,7 +87,9 @@ class LLMChain:
         *,
         timeout_s: float,
         request_id: str | None = None,
+        exclude: Collection[str] = (),
     ) -> ChatResponse:
+        """``exclude`` names providers to skip for this call only (no state change)."""
         deadline = self._clock() + timeout_s
         causes: list[str] = []
         last_error: ProviderError | None = None
@@ -96,6 +98,9 @@ class LLMChain:
         rejected: list[str] = []  # providers that raised a request error in this request
 
         for provider in self._providers:
+            if provider.name in exclude:
+                causes.append(f"{provider.name}: excluded")
+                continue
             now = self._clock()
             if self._cooling_down(provider.name, now):
                 causes.append(f"{provider.name}: cooldown")

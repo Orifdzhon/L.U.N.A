@@ -13,7 +13,7 @@ def test_defaults_when_no_file(tmp_path):
     settings = load_settings(env={}, cwd=tmp_path)
     assert settings == Settings()
     assert settings.app.log_level == "INFO"
-    assert settings.llm.chain == ["gemini", "groq", "local"]
+    assert settings.llm.chain == ["groq", "gemini", "local"]
 
 
 def test_explicit_path_is_read(tmp_path):

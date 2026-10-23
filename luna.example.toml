@@ -56,17 +56,22 @@ margin = 5                  # the best match must beat the runner-up by this muc
 # [router.site_aliases]
 # "ютуб" = "https://www.youtube.com"
 
+[tts]
+enabled = false             # speak replies aloud (off until voice output is wired in)
+provider = "sapi"           # Windows built-in voices (SAPI)
+voice_ru = "Irina"          # substring of an installed voice name, e.g. "Microsoft Irina Desktop"
+voice_en = "Zira"           # e.g. "Microsoft Zira Desktop"
+rate = 0                    # speech speed, -10 (slow) .. 10 (fast)
+volume = 100                # 0..100
+max_chars = 1500            # longest spoken reply; longer ones are cut at a sentence end (>= 1)
+first_chunk_max_chars = 200 # size limit of the first spoken chunk, for a quick start (>= 1)
+
 # The sections below are accepted but not validated yet; they are owned by later Issues.
 [stt]
 provider = "faster_whisper"   # or "groq"
 model = "large-v3-turbo"
 device = "cuda"               # "cpu" -> model "small", compute_type "int8"
 compute_type = "int8_float16"
-
-[tts]
-provider = "piper"            # or "sapi"
-voice_ru = "ru_RU-dmitri-medium"
-voice_en = "en_US-ljspeech-medium"
 
 [wakeword]
 engine = "vosk"               # "vosk" | "onnx" | "off"

@@ -244,8 +244,8 @@ def test_lone_surrogate_does_not_crash():
 def test_default_argv_is_fixed_and_uses_full_powershell_path():
     argv = sapi._argv("x")
     assert argv[0].lower().endswith("powershell.exe") and "\\" in argv[0]
-    assert argv[1:4] == ["-NoProfile", "-NonInteractive", "-ExecutionPolicy"]
-    assert "-EncodedCommand" in argv
+    assert argv[1:4] == ["-NoProfile", "-NonInteractive", "-EncodedCommand"]
+    assert "-ExecutionPolicy" not in argv
 
 
 def test_non_windows_default_runner_is_unavailable(monkeypatch):
@@ -260,3 +260,70 @@ def test_fake_tts_records_and_raises():
     assert f.calls[0].lang == "ru"
     with pytest.raises(ProviderUnavailable):
         FakeTTS(error=ProviderUnavailable("x")).synthesize("a", "ru")
+
+
+class FailingListRunner(FakeRunner):
+    def __call__(self, argv, stdin, timeout_s):
+        script = base64.b64decode(argv[-1]).decode("utf-16-le")
+        if "GetInstalledVoices" in script:
+            self.calls.append((list(argv), stdin, timeout_s))
+            raise subprocess.TimeoutExpired("powershell", timeout_s)
+        return super().__call__(argv, stdin, timeout_s)
+
+
+def test_voice_list_failure_uses_default_voice_and_is_cached(caplog):
+    now = [0.0]
+    runner = FailingListRunner()
+    t = tts(runner, clock=lambda: now[0])
+    with caplog.at_level(logging.WARNING, logger="luna.tts.sapi"):
+        assert t.synthesize("Hi", "en").pcm
+        assert t.synthesize("Hi again", "en").pcm
+    assert [r["voice"] for r in runner.speak_requests()] == [None, None]
+    assert (
+        sum(
+            "GetInstalledVoices" in base64.b64decode(c[0][-1]).decode("utf-16-le")
+            for c in runner.calls
+        )
+        == 1
+    )
+    assert len([r for r in caplog.records if "Cannot list" in r.message]) == 1
+    now[0] = sapi.VOICE_RETRY_S + 1  # retried after the back-off
+    t.synthesize("Hi", "en")
+    assert (
+        sum(
+            "GetInstalledVoices" in base64.b64decode(c[0][-1]).decode("utf-16-le")
+            for c in runner.calls
+        )
+        == 2
+    )
+
+
+def test_oversized_output_is_rejected(monkeypatch):
+    monkeypatch.setattr(sapi, "MAX_OUTPUT_BYTES", 10)
+    with pytest.raises(ProviderUnavailable, match="large"):
+        tts(FakeRunner(wav=make_wav([1] * 50))).synthesize("Hi", "en")
+
+
+def test_zero_sample_rate_and_odd_length_are_mapped():
+    zero_rate = bytearray(make_wav())
+    zero_rate[24:28] = b"\x00\x00\x00\x00"
+    with pytest.raises(ProviderUnavailable):
+        tts(FakeRunner(wav=bytes(zero_rate))).synthesize("Hi", "en")
+    odd = bytearray(make_wav([1, 2]))
+    odd = bytes(odd[:-1])
+    with pytest.raises(ProviderUnavailable):
+        tts(FakeRunner(wav=odd)).synthesize("Hi", "en")
+
+
+def test_default_runner_uses_minimal_environment(monkeypatch):
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setenv("GROQ_API_KEY", "secret")
+    monkeypatch.setattr(sapi.subprocess, "run", fake_run)
+    sapi._default_runner(["x"], b"", 1.0)
+    assert "GROQ_API_KEY" not in seen["env"]
+    assert "PATH" not in seen["env"]

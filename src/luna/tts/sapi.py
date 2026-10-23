@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import wave
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -33,6 +34,8 @@ log = logging.getLogger(__name__)
 
 MAX_TEXT_CHARS = 20_000  # hard cap (ConvertFrom-Json in PS 5.1 is limited to 2 MB)
 _STDERR_TAIL = 300
+MAX_OUTPUT_BYTES = 64 * 1024 * 1024  # cap on what we accept back from the child process
+VOICE_RETRY_S = 300.0  # after a failed voice query use the default voice for this long
 
 _PREAMBLE = (
     "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; "
@@ -43,7 +46,9 @@ _PREAMBLE = (
 _LIST_SCRIPT = (
     _PREAMBLE + "$v = @($s.GetInstalledVoices() | Where-Object { $_.Enabled } | ForEach-Object { "
     "@{ name = $_.VoiceInfo.Name; culture = $_.VoiceInfo.Culture.Name } }); "
-    "[Console]::Out.Write((ConvertTo-Json -InputObject $v -Compress))"
+    "$j = [System.Text.UTF8Encoding]::new($false)"
+    ".GetBytes((ConvertTo-Json -InputObject $v -Compress)); "
+    "$o = [Console]::OpenStandardOutput(); $o.Write($j, 0, $j.Length); $o.Flush()"
 )
 
 _SPEAK_SCRIPT = (
@@ -81,8 +86,6 @@ def _argv(script: str) -> list[str]:
         _powershell_path(),
         "-NoProfile",
         "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
         "-EncodedCommand",
         encoded,
     ]
@@ -91,8 +94,11 @@ def _argv(script: str) -> list[str]:
 def _default_runner(
     argv: Sequence[str], stdin: bytes, timeout_s: float
 ) -> subprocess.CompletedProcess[bytes]:
+    # Minimal environment: the child needs nothing from ours (no PATH, no secrets/API keys).
+    env = {k: v for k in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP") if (v := os.environ.get(k))}
     return subprocess.run(
         list(argv),  # fixed argv, no shell, no untrusted input
+        env=env,
         input=stdin,
         capture_output=True,
         timeout=timeout_s,  # subprocess.run kills the child on timeout
@@ -126,7 +132,7 @@ def _wav_to_clip(data: bytes) -> AudioClip:
         with wave.open(io.BytesIO(data), "rb") as w:
             channels, width, rate = w.getnchannels(), w.getsampwidth(), w.getframerate()
             frames = w.readframes(w.getnframes())
-    except (wave.Error, EOFError) as e:
+    except (wave.Error, EOFError, ValueError, OverflowError) as e:
         raise ProviderUnavailable(f"SAPI returned invalid audio: {e}") from e
     if width != SAMPLE_WIDTH_BYTES:
         raise ProviderUnavailable(f"SAPI returned {width * 8}-bit audio, expected 16-bit")
@@ -135,7 +141,10 @@ def _wav_to_clip(data: bytes) -> AudioClip:
         frames = b"".join(frames[i : i + width] for i in range(0, len(frames) - step + 1, step))
     if not frames:
         raise ProviderUnavailable("SAPI produced no audio")
-    return AudioClip(pcm=frames, sample_rate=rate)
+    try:
+        return AudioClip(pcm=frames, sample_rate=rate)
+    except ValueError as e:
+        raise ProviderUnavailable(f"SAPI returned unusable audio: {e}") from e
 
 
 class SapiTTS:
@@ -150,6 +159,7 @@ class SapiTTS:
         *,
         timeout_s: float = 30.0,
         runner: Runner | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._voices_pref = {"ru": voice_ru, "en": voice_en}
         self._rate = max(-10, min(10, int(rate)))
@@ -158,6 +168,8 @@ class SapiTTS:
         self._runner = runner or _default_runner
         self._lock = threading.Lock()
         self._voices: tuple[VoiceInfo, ...] | None = None
+        self._clock = clock
+        self._voices_failed_at: float | None = None
 
     def list_voices(self) -> tuple[VoiceInfo, ...]:
         """Installed, enabled SAPI voices (cached after the first call). For diagnostics."""
@@ -187,7 +199,18 @@ class SapiTTS:
         return _wav_to_clip(out)
 
     def _choose_voice(self, lang: str) -> VoiceInfo | None:
-        voices = self.list_voices()
+        with self._lock:
+            failed_at = self._voices_failed_at
+            recently_failed = failed_at is not None and self._clock() - failed_at < VOICE_RETRY_S
+        if recently_failed:
+            return None  # already warned; do not wait for another timeout on every reply
+        try:
+            voices = self.list_voices()
+        except ProviderUnavailable as e:
+            with self._lock:
+                self._voices_failed_at = self._clock()
+            log.warning("Cannot list SAPI voices (%s); using the system default voice", e)
+            return None
         voice = select_voice(voices, self._voices_pref[lang], lang)
         if voice is None:
             log.warning(
@@ -226,4 +249,6 @@ class SapiTTS:
         if proc.returncode != 0:
             tail = proc.stderr.decode("utf-8", "replace").strip()[-_STDERR_TAIL:]
             raise ProviderUnavailable(f"SAPI synthesis failed (exit {proc.returncode}): {tail}")
+        if len(proc.stdout) > MAX_OUTPUT_BYTES:
+            raise ProviderUnavailable("SAPI output is unreasonably large")
         return proc.stdout

@@ -28,7 +28,7 @@ uv run luna --version
 
 ## 3. API keys (free tiers)
 
-L.U.N.A. tries LLM providers in order Gemini, Groq, local. Any subset works. Get keys here:
+L.U.N.A. tries LLM providers in order Groq, Gemini, local. Any subset works. Get keys here:
 
 - Gemini: Google AI Studio, <https://aistudio.google.com/apikey>
 - Groq: <https://console.groq.com/keys>
@@ -95,7 +95,7 @@ exits with code 2. API keys never go into the TOML.
 
 ```toml
 [llm]
-chain = ["gemini", "groq", "local"]   # tried left to right
+chain = ["groq", "gemini", "local"]   # tried left to right
 ```
 
 A provider without its key is skipped (shown at startup and by `/providers`); the local provider

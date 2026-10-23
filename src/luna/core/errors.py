@@ -46,3 +46,7 @@ class ConfigError(LunaError):
 
 class ToolError(LunaError):
     """A tool failed in a way that is not a normal ``ToolResult(ok=False)``."""
+
+
+class Abandoned(LunaError):
+    """The turn was abandoned (timeout / cancel): stop at once, with no further side effects."""

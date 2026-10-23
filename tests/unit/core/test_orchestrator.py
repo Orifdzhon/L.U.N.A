@@ -2,11 +2,16 @@ import threading
 
 import pytest
 
-from fakes import FakeClock, ScriptExhausted
+from fakes import FakeClock, FakeLLM, FakeTool, ScriptExhausted
+from luna.core.assistant import Assistant
 from luna.core.events import CLOSED, EventBus, ReplyReady, Status, StatusChanged
 from luna.core.models import Reply, Request
 from luna.core.orchestrator import Orchestrator
-from luna.core.router import RouteResult
+from luna.core.router import Router, RouteResult
+from luna.llm.base import ChatResponse, ToolCall
+from luna.logs.action_log import ActionLog
+from luna.tools.base import ToolResult
+from luna.tools.registry import ToolRegistry
 
 
 class FakeRouter:
@@ -14,7 +19,7 @@ class FakeRouter:
         self.result = result
         self.calls = 0
 
-    def route(self, request: Request) -> RouteResult:
+    def route(self, request: Request, *, cancel: threading.Event | None = None) -> RouteResult:
         self.calls += 1
         return self.result
 
@@ -27,7 +32,13 @@ class FakeAssistant:
         self.started = threading.Event()
         self.release: threading.Event | None = None  # when set, answer() blocks until released
 
-    def answer(self, request: Request, *, force_search: bool = False) -> Reply:
+    def answer(
+        self,
+        request: Request,
+        *,
+        force_search: bool = False,
+        cancel: threading.Event | None = None,
+    ) -> Reply:
         self.calls.append((request, force_search))
         self.started.set()
         if self.release is not None:
@@ -123,8 +134,10 @@ def test_cancel_aborts_early() -> None:
     assistant.release.set()
     assert not t.is_alive()
     assert result[0].lang == "ru"
-    assert drain(sub) == [
+    events = drain(sub)
+    assert events == [
         StatusChanged(Status.THINKING, request.request_id),
+        ReplyReady(request.request_id, result[0]),
         StatusChanged(Status.IDLE, request.request_id),
     ]
 
@@ -143,7 +156,7 @@ def test_unexpected_exception_becomes_apology() -> None:
 def test_router_exception_becomes_apology() -> None:
     orch, router, _, _ = make()
 
-    def boom(request: Request) -> RouteResult:
+    def boom(request: Request, *, cancel: threading.Event | None = None) -> RouteResult:
         raise ValueError("x")
 
     router.route = boom  # type: ignore[method-assign]
@@ -158,8 +171,115 @@ def test_base_exception_is_not_swallowed() -> None:
     assert drain(sub)[-1].status is Status.IDLE
 
 
-def test_already_cancelled_event_discards_result() -> None:
-    orch, _, _, _ = make()
+def test_cancel_after_completion_keeps_real_reply() -> None:
+    orch, _, assistant, _ = make()
     cancel = threading.Event()
-    cancel.set()
-    assert orch.handle(Request("hi", "text"), cancel).text != "answer"
+    assistant.started = threading.Event()
+    orig = assistant.answer
+
+    def answer_then_cancel(*a, **kw):
+        reply = orig(*a, **kw)
+        cancel.set()
+        return reply
+
+    assistant.answer = answer_then_cancel  # type: ignore[method-assign]
+    assert orch.handle(Request("hi", "text"), cancel).text == "answer"
+
+
+def test_close_without_turns_is_noop() -> None:
+    make()[0].close()
+
+
+# --- real Router/Assistant: an abandoned turn must have no side effects ---------------------
+
+
+class BlockingLLM:
+    """Wraps FakeLLM; the first call announces itself and blocks until released."""
+
+    def __init__(self, script) -> None:
+        self.inner = FakeLLM(script)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self._first = True
+        self._lock = threading.Lock()
+        self.active = 0
+        self.max_active = 0
+
+    def chat(self, messages, tools=(), *, timeout_s, request_id=None):
+        with self._lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            block, self._first = self._first, False
+        try:
+            if block:
+                self.entered.set()
+                assert self.release.wait(10)
+            return self.inner.chat(messages, tools, timeout_s=timeout_s, request_id=request_id)
+        finally:
+            with self._lock:
+                self.active -= 1
+
+
+class Real:
+    def __init__(self, tmp_path, script, timeout=20.0) -> None:
+        self.llm = BlockingLLM(script)
+        registry = ToolRegistry(ActionLog(tmp_path / "actions.jsonl"))
+        self.tool = FakeTool(
+            "open_app",
+            ToolResult("open_app", True, "Opened"),
+            parameters={"type": "object", "additionalProperties": True},
+        )
+        registry.register(self.tool)
+        self.assistant = Assistant(self.llm, registry, now_context=lambda: "")
+        self.clock = FakeClock()
+        self.bus = EventBus()
+        self.orch = Orchestrator(
+            Router(registry), self.assistant, self.bus, timeout, timer=self.clock
+        )
+
+    def start(self, text="hello", cancel=None):
+        return run_in_thread(self.orch, Request(text, "text"), cancel)
+
+
+def tool_call() -> ChatResponse:
+    return ChatResponse(None, (ToolCall("c1", "open_app", {"name": "x"}),), "fake", "m")
+
+
+def say(text: str) -> ChatResponse:
+    return ChatResponse(text, (), "fake", "m", "stop")
+
+
+@pytest.mark.parametrize("how", ["timeout", "cancel"])
+def test_abandoned_turn_runs_no_tool_and_writes_no_history(tmp_path, how: str) -> None:
+    w = Real(tmp_path, [tool_call(), say("done")])
+    cancel = threading.Event()
+    t, _ = w.start(cancel=cancel)
+    assert w.llm.entered.wait(10)
+    if how == "timeout":
+        w.clock.advance(100)
+    else:
+        cancel.set()
+    t.join(10)
+    assert not t.is_alive()
+    w.llm.release.set()  # the LLM now returns a tool call to the abandoned turn
+    w.orch.close(10)
+    assert w.tool.calls == []
+    assert len(w.assistant._history) == 0
+    assert len(w.llm.inner.calls) == 1  # no further LLM round either
+
+
+def test_next_request_waits_for_orphan(tmp_path) -> None:
+    w = Real(tmp_path, [say("orphan"), say("second")])
+    t1, _ = w.start("first")
+    assert w.llm.entered.wait(10)
+    w.clock.advance(100)
+    t1.join(10)
+    t2, result2 = w.start("second")  # its worker queues behind the orphan's turn lock
+    w.llm.release.set()
+    t2.join(10)
+    w.orch.close(10)
+    assert not t2.is_alive()
+    assert w.llm.max_active == 1
+    assert len(w.llm.inner.calls) == 2
+    assert result2[0].text == "second"
+    assert [text for text, _ in w.assistant._history] == ["second"]

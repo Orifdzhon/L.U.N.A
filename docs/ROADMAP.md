@@ -28,7 +28,7 @@ All automated tests need none of these: they run without microphone, GPU, networ
 |---|---|---|---|
 | 0 | Skeleton | **done** | #4-#8 |
 | 1 | Text core | **done** | #9-#23, #43, #48 (open follow-ups: #33, #35, #39) |
-| 2 | Voice out | planned | — |
+| 2 | Voice out | planned (Issues written) | #55-#62 (+ #63 later/optional) |
 | 3 | Voice in (push-to-talk) | planned | — |
 | 4 | Wake word | planned | — |
 | 5 | Desktop shell | planned | — |
@@ -103,12 +103,41 @@ Planning notes (not decisions):
 ## Slice 2 — Voice out (planned)
 
 **Goal:** CLI replies are spoken in Russian and English.
-**Contents:** `PiperTTS` worker + `SapiTTS` fallback, sentence splitting, voice by language,
-interruptible playback ([ADR 0005](adr/0005-text-to-speech.md)).
-**Exit criteria:** replies in `uv run luna --text` are spoken in RU/EN.
-**Owner decisions:** project license (Piper is GPL-3.0, ARCHITECTURE §13 Q1); which voice
-(CC0 male Piper voices vs. Windows SAPI "Irina", Q3).
-**Issues:** to be written after slice 1 is stable.
+**Contents:** `SapiTTS` (Windows built-in voices), speech text clean-up and sentence splitting,
+voice by reply language, a non-blocking interruptible `Speaker`, CLI wiring
+([ADR 0005](adr/0005-text-to-speech.md)).
+**Exit criteria:** replies in `uv run luna --text --voice` are spoken in RU (Irina) and EN;
+markdown, URLs and emoji are not read aloud; Ctrl+C, `/stop` or a new request stops speech within
+~0.5 s; `/mute` works; all automated tests pass with fakes (no audio device); manual checks done by the owner.
+
+**Owner decision (2026-10-23):** default TTS is the Windows SAPI voice **"Irina"** (ru-RU, female);
+English uses a SAPI English voice (David/Zira installed). **Piper** (GPL-3.0, separate process,
+male CC0 voices) comes later as an optional provider (#63), outside the slice 2 exit criteria.
+Recorded as an Amendment in ADR 0005 (#55).
+
+| Issue | Title | Depends on | Parallel with |
+|---|---|---|---|
+| #55 | Docs: ADR 0005 amendment (SAPI Irina default, Piper optional), accept ADR | — (architect) | all |
+| #56 | Validated `[tts]` settings section and `luna.example.toml` keys | — | #55, #57, #58 |
+| #57 | Speech text preparation: markdown/URL/emoji clean-up, U+202F, sentence splitting | — | #55, #56, #58 |
+| #58 | `AudioClip` and interruptible `AudioPlayer` (Windows backend + fake) | — | #55, #56, #57 |
+| #59 | `SapiTTS` provider (options compared in the PR, time to first audio measured) | #58, #56 (soft: #55) | #57 |
+| #60 | `Speaker` worker: non-blocking, interruptible, SPEAKING -> IDLE events | #56, #57, #58, #59 | — |
+| #61 | Wire TTS into the CLI: `--voice`, `/mute`, `/stop`, cancel on new request | #56, #58, #59, #60 | — |
+| #62 | Docs: voice setup and slice-2 manual checks | #61 | — |
+| #63 | **Later/optional:** `PiperTTS` in a separate process | slice 2 done | not scheduled |
+
+Suggested order: (`#55`, `#56`, `#57`, `#58` in parallel) -> `#59` -> `#60` -> `#61` -> `#62`.
+`#58` and `#59` both touch `tests/fakes.py` (trivial merge). `#61` is the only Issue in this slice
+touching `app.py`, `cli.py` and `__main__.py`.
+
+Planning notes (not decisions):
+- The Speaker is driven by an explicit `speak(reply)` call from the UI, not by a bus subscription,
+  so the fallback text of a cancelled turn is not spoken. Architect to object if a subscription is preferred.
+- Whether SAPI output can be captured as PCM (`AudioClip`, ARCHITECTURE §3) or must `Speak` directly
+  is decided by the developer's comparison in #59; if the sketch does not fit, flag "needs architect".
+- Default English voice: planner proposes Zira (female, matches Irina); owner may choose David.
+- Voice follows `Reply.lang` for the whole reply; per-sentence language switching is out of scope.
 
 ## Slice 3 — Voice in, push-to-talk (planned)
 

@@ -35,7 +35,15 @@ _VERB_RE = re.compile(
     r"^(?:открой|открыть|запусти|запустить|включи|open|launch|start)(?!\w)\s*(.*)$",
     re.IGNORECASE | re.DOTALL,
 )
-_FILLER_RE = re.compile(r"[,;]?\s*(?<!\w)(?:пожалуйста|плиз|please|pls)(?!\w)[,;]?", re.IGNORECASE)
+_FILLERS = r"(?:пожалуйста|плиз|please|pls)"
+# Politeness is removed only at the edges (start/end of the text and of the target), never
+# inside a name, so an app called "... Please ..." is not mangled.
+_LEAD_FILLER_RE = re.compile(rf"^{_FILLERS}(?!\w)[\s,;]*", re.IGNORECASE)
+_TRAIL_FILLER_RE = re.compile(rf"[\s,;]*(?<!\w){_FILLERS}$", re.IGNORECASE)
+_ANY_VERB_RE = re.compile(
+    r"(?<!\w)(?:открой|открыть|запусти|запустить|включи|open|launch|start)(?!\w)", re.IGNORECASE
+)
+_CONTRACTED_NEGATION_RE = re.compile(r"n['’]t(?!\w)", re.IGNORECASE)  # don't, can't ...
 _LEAD_NOISE_RE = re.compile(
     r"^(?:мне|для\s+меня|сайт|приложение|программу|the|app|application|website|site)(?!\w)\s*",
     re.IGNORECASE,
@@ -44,11 +52,14 @@ _WORD_RE = re.compile(r"[\w\-]+")
 _TRAIL_PUNCT = " \t\r\n.!…,;:\"'«»"
 
 # Tokens that mean "this is not a plain command": negation, questions, vague or multiple
-# requests. Matched as whole words anywhere in the text.
+# requests. Matched as whole words anywhere in the text (contractions such as "don't" are
+# caught by _CONTRACTED_NEGATION_RE, the word tokenizer splits them). Side effect: an app whose
+# name contains one of these words ("Stop Motion Studio") never takes the fast path; it goes
+# to the LLM, which is the safe direction.
 _NOT_A_COMMAND = frozenset(
     {
         # negation / cancel
-        "не", "ни", "нет", "никогда", "без", "no", "not", "dont", "don't", "never", "without",
+        "не", "ни", "нет", "никогда", "без", "no", "not", "never", "without",
         # questions
         "что", "кто", "как", "какой", "какая", "какое", "какие", "где", "когда", "почему",
         "зачем", "сколько", "куда", "откуда", "what", "who", "how", "which", "where", "when",
@@ -109,7 +120,8 @@ def detect_lang(text: str, hint: str | None = None) -> str:
 
 
 def needs_fresh_facts(text: str) -> bool:
-    return _FRESH_FACTS_RE.search(text) is not None
+    """Fresh-facts keywords present and no open/launch verb ("сейчас открой хром" is a command)."""
+    return _FRESH_FACTS_RE.search(text) is not None and _ANY_VERB_RE.search(text) is None
 
 
 def parse_open_command(text: str) -> str | None:
@@ -117,19 +129,32 @@ def parse_open_command(text: str) -> str | None:
     if not text or len(text) > MAX_TEXT_CHARS or "?" in text:
         return None
     body = _WAKE_RE.sub("", text, count=1)
-    body = _FILLER_RE.sub(" ", body).strip(_TRAIL_PUNCT)
+    body = _strip_fillers(body)
     match = _VERB_RE.match(body)
     if match is None:
         return None
-    target = match.group(1).strip(_TRAIL_PUNCT)
+    target = _strip_fillers(match.group(1))
     while (noise := _LEAD_NOISE_RE.match(target)) is not None and noise.end() > 0:
-        target = target[noise.end() :].strip(_TRAIL_PUNCT)
+        target = _strip_fillers(target[noise.end() :])
     if not target or "," in target or ";" in target:
         return None
     words = [w.casefold() for w in _WORD_RE.findall(body)]
-    if any(w in _NOT_A_COMMAND for w in words) or len(target.split()) > MAX_TARGET_WORDS:
+    if _CONTRACTED_NEGATION_RE.search(body) or any(w in _NOT_A_COMMAND for w in words):
+        return None
+    if len(target.split()) > MAX_TARGET_WORDS:
         return None
     return target
+
+
+def _strip_fillers(text: str) -> str:
+    """Drop politeness words (and punctuation) at both edges of ``text``."""
+    prev = None
+    text = text.strip(_TRAIL_PUNCT)
+    while prev != text:
+        prev = text
+        text = _LEAD_FILLER_RE.sub("", text).strip(_TRAIL_PUNCT)
+        text = _TRAIL_FILLER_RE.sub("", text).strip(_TRAIL_PUNCT)
+    return text
 
 
 class Router:
@@ -198,8 +223,25 @@ def _reason(result: ToolResult) -> str | None:
     return reason if isinstance(reason, str) else None
 
 
+_SITE_NAMES = {
+    **dict.fromkeys(["youtube", "ютуб", "ютюб"], "YouTube"),
+    **dict.fromkeys(["github", "гитхаб", "гитхап"], "GitHub"),
+    **dict.fromkeys(["google", "гугл"], "Google"),
+    **dict.fromkeys(["habr", "хабр", "хабрахабр"], "Habr"),
+    **dict.fromkeys(["vk", "вк", "вконтакте"], "VK"),
+    **dict.fromkeys(["wikipedia", "википедия"], "Wikipedia"),
+    **dict.fromkeys(["yandex", "яндекс"], "Yandex"),
+    **dict.fromkeys(["gmail", "гмейл"], "Gmail"),
+    **dict.fromkeys(["twitch", "твич"], "Twitch"),
+    **dict.fromkeys(["reddit"], "Reddit"),
+}
+
+
 def _display_name(target: str) -> str:
-    """Capitalize a plain lowercase name ("youtube" -> "Youtube"); leave domains/URLs alone."""
+    """Canonical name for known site aliases, else the target (first letter capitalized)."""
+    known = _SITE_NAMES.get(target.casefold().replace("ё", "е"))
+    if known:
+        return known
     if target.islower() and "." not in target and "/" not in target:
         return target[:1].upper() + target[1:]
     return target

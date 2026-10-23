@@ -117,6 +117,22 @@ CASES: list[tuple[str, tuple[str, str] | None]] = [
     ("открой ютуб там смешные котики", None),
     ("open youtube and play some music", None),
     ("открой хром или эдж", None),
+    # --- handled: quoted targets
+    ('open "youtube"', ("site", YT)),
+    ("открой «ютуб»", ("site", YT)),
+    # --- not handled: look-alike verbs/targets that must never launch something
+    ("включи свет", None),
+    ("включи музыку", None),
+    ("включи режим", None),
+    ("включи игровой режим", None),
+    ("open the door", None),
+    ("start a timer", None),
+    ("открой глаза", None),
+    ("открой для себя новое", None),
+    ("сейчас открой хром", None),
+    ("oткрой ютуб", None),  # Latin "o" homoglyph
+    ("открой ю​туб", None),  # zero-width space in the target
+    ("open ｙoutube", None),  # fullwidth letter
     # --- not handled: unknown / unsafe targets, no verb, empty
     ("открой что-то непонятное", None),
     ("открой фотошоп", None),
@@ -154,7 +170,7 @@ def test_phrase_table(world: World, text: str, expected: tuple[str, str] | None)
     assert res.reply.provider == "router"
     kind, value = expected
     if kind == "site":
-        assert world.browser.urls == [value + "/"] or world.browser.urls == [value]
+        assert world.browser.urls == [value]
         assert world.launched() == []
     else:
         assert world.launched() == [value]
@@ -182,12 +198,14 @@ def test_app_after_site_no_match_is_logged_twice(world: World) -> None:
 @pytest.mark.parametrize(
     ("text", "reply", "lang"),
     [
-        ("открой ютуб", "Открываю Ютуб.", "ru"),
+        ("открой ютуб", "Открываю YouTube.", "ru"),
         ("open YouTube", "Opening YouTube.", "en"),
         ("запусти хром", "Открываю Google Chrome.", "ru"),
         ("open telegram", "Opening Telegram.", "en"),
         ("Луна, открой калькулятор", "Открываю Калькулятор.", "ru"),
         ("open habr.com", "Opening habr.com.", "en"),
+        ("open github please", "Opening GitHub.", "en"),
+        ("открой гитхаб", "Открываю GitHub.", "ru"),
     ],
 )
 def test_reply_text_and_language(world: World, text: str, reply: str, lang: str) -> None:
@@ -221,6 +239,9 @@ def test_handled_requests_never_force_search(world: World) -> None:
         ("what is a pirate", False),
         ("the corporate rates", True),
         ("rating of movies", False),
+        ("сейчас открой хром", False),
+        ("открой хром сейчас", False),
+        ("open the weather app", False),
         ("расскажи про цензуру", False),
         ("", False),
     ],

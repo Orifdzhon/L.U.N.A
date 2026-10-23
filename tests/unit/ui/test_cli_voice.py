@@ -200,6 +200,16 @@ def test_voice_command_shows_settings(voice):
     _, out = run(make(), Script("/voice", "exit"))
     assert "Irina" in out
     assert "Zira" in out
+    assert "edge ru=ru-RU-SvetlanaNeural, en=en-US-JennyNeural (fallback: sapi Irina/Zira)" in out
+
+
+def test_voice_command_shows_sapi_provider(voice):
+    make, *_ = voice
+    app = make()
+    app.settings.tts.provider = "sapi"
+    _, out = run(app, Script("/voice", "exit"))
+    assert "sapi ru=Irina, en=Zira" in out
+    assert "edge" not in out.replace("Voice", "")
 
 
 def test_close_leaves_no_speaker_threads(voice):

@@ -170,10 +170,14 @@ class Repl:
             return
         conf = self._app.settings.tts
         state = "muted" if self._app.speaker.muted else "on"
-        self._say(
-            f"Voice {state}: ru={conf.voice_ru}, en={conf.voice_en}, "
-            f"rate={conf.rate}, volume={conf.volume}"
-        )
+        if conf.provider == "edge":
+            voices = (
+                f"edge ru={conf.edge_voice_ru}, en={conf.edge_voice_en} "
+                f"(fallback: sapi {conf.voice_ru}/{conf.voice_en})"
+            )
+        else:
+            voices = f"sapi ru={conf.voice_ru}, en={conf.voice_en}"
+        self._say(f"Voice {state}: {voices}, rate={conf.rate}, volume={conf.volume}")
 
     def _drain(self, events: Subscription) -> None:
         """Print status notes (provider switches) queued during the request."""

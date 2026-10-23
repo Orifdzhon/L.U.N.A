@@ -488,6 +488,11 @@ autostart = false
   app catalog (never a raw path or command line from the LLM).
 - Web content isolation: search/page text is wrapped as quoted data in the tool
   message, marked `untrusted`, and the following LLM call has no tools (§4.1).
+- A turn that used web content is stored in the dialog history with a
+  `[answer based on web search]` prefix (truncated), and the system prompt tells the model never
+  to act on requests originating from such messages; only the user's current request is acted on.
+- Forced search (`force_search`): the assistant runs `web_search` itself and passes the wrapped
+  summary as a system message (no fabricated assistant tool call), then calls the LLM with no tools.
 - Page fetching (`search/fetch.py`) validates every URL and redirect hop against local/private
   addresses. Known residual risk: DNS rebinding between check and connect is not pinned yet
   (ADR 0006, Amendment 1).

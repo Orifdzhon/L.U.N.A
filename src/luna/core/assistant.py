@@ -15,6 +15,7 @@ Provider failures become a short apology ``Reply``; ``BaseException`` (e.g. a te
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -22,8 +23,14 @@ from typing import Protocol
 
 from luna.core.errors import ProviderError
 from luna.core.models import Reply, Request
-from luna.core.prompts import SEARCH_TOOL, build_system_prompt, fallback_text
-from luna.core.router import detect_lang
+from luna.core.prompts import (
+    SEARCH_CONTEXT_HEADER,
+    SEARCH_TOOL,
+    WEB_MARKER,
+    build_system_prompt,
+    fallback_text,
+)
+from luna.core.router import clean_query, detect_lang
 from luna.llm.base import ChatResponse, Message, ToolCall, ToolSchema
 from luna.tools.base import ToolContext, ToolResult
 from luna.tools.builtin.datetime import current_datetime_context
@@ -32,7 +39,9 @@ from luna.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S = 25.0  # overall deadline for one answer()
-MAX_SEARCH_QUERY_CHARS = 300
+MAX_SEARCH_QUERY_CHARS = 200
+MAX_WEB_HISTORY_CHARS = 500  # stored length of a web-derived answer
+MAX_HISTORY_CHARS = 6000  # total characters kept in the dialog history
 _SKIPPED = "skipped: not executed after web content was received"
 
 
@@ -76,21 +85,30 @@ class Assistant:
         self._timer = timer
         self._history: deque[tuple[str, str]] = deque(maxlen=max(0, history_turns))
         self._confirmer = _DenyConfirmer()
+        self._lock = threading.Lock()  # guards _history only; never held during an LLM call
 
     def answer(self, request: Request, *, force_search: bool = False) -> Reply:
         lang = detect_lang(request.text, request.lang)
         try:
-            reply = self._run(request, lang, force_search)
+            reply, web = self._run(request, lang, force_search)
         except ProviderError as exc:
             logger.warning("LLM unavailable: %s", type(exc).__name__)
             return Reply(fallback_text("unavailable", lang), lang)
         except _GaveUp:
             return Reply(fallback_text("gave_up", lang), lang)
         if self._history.maxlen:
-            self._history.append((request.text, reply.text))
+            stored = reply.text
+            if web:
+                stored = WEB_MARKER + stored[:MAX_WEB_HISTORY_CHARS]
+            with self._lock:
+                self._history.append((request.text, stored))
+                while len(self._history) > 1 and (
+                    sum(len(u) + len(a) for u, a in self._history) > MAX_HISTORY_CHARS
+                ):
+                    self._history.popleft()
         return reply
 
-    def _run(self, request: Request, lang: str, force_search: bool) -> Reply:
+    def _run(self, request: Request, lang: str, force_search: bool) -> tuple[Reply, bool]:
         deadline = self._timer() + self._timeout_s
         schemas = self._registry.schemas()
         force = force_search and any(s.name == SEARCH_TOOL for s in schemas)
@@ -102,12 +120,15 @@ class Assistant:
         messages: list[Message] = [
             Message("system", build_system_prompt(lang, now, force_search=force))
         ]
-        for user_text, reply_text in self._history:
+        with self._lock:
+            history = list(self._history)
+        for user_text, reply_text in history:
             messages.append(Message("user", user_text))
             messages.append(Message("assistant", reply_text))
         messages.append(Message("user", request.text))
 
         actions: list[ToolResult] = []
+        web = False  # any untrusted content was used this turn
         tools_off = False  # set after untrusted content / a forced search
         searched = False
         rounds = 0
@@ -117,23 +138,25 @@ class Assistant:
             calls = response.tool_calls if tools else ()
             if not calls:
                 if force and not searched:
-                    # The model skipped the search: run it ourselves, then answer without tools.
+                    # The model skipped the search: run it ourselves and hand the wrapped
+                    # summary over as context (no fabricated assistant tool call).
+                    query = clean_query(request.text)[:MAX_SEARCH_QUERY_CHARS] or request.text
                     call = ToolCall(
                         id=f"assistant-{request.request_id}-search",
                         name=SEARCH_TOOL,
-                        arguments={"query": request.text.strip()[:MAX_SEARCH_QUERY_CHARS]},
+                        arguments={"query": query.strip()},
                     )
-                    messages.append(Message("assistant", None, (call,)))
                     result = self._execute(call, request, response.provider)
-                    messages.append(Message("tool", result.summary, tool_call_id=call.id))
+                    messages.append(Message("system", f"{SEARCH_CONTEXT_HEADER}\n{result.summary}"))
                     actions.append(result)
+                    web = web or result.untrusted
                     searched = True
                     tools_off = True
                     continue
                 text = (response.text or "").strip()
                 if not text:
                     raise _GaveUp
-                return Reply(text, lang, actions, response.provider)
+                return Reply(text, lang, actions, response.provider), web
 
             rounds += 1
             if rounds > self._max_rounds:
@@ -148,6 +171,7 @@ class Assistant:
                 actions.append(result)
                 searched = searched or call.name == SEARCH_TOOL
                 tools_off = tools_off or result.untrusted
+                web = web or result.untrusted
                 messages.append(Message("tool", result.summary, tool_call_id=call.id))
 
     def _chat(

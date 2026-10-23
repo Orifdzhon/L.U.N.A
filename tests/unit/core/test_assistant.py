@@ -1,10 +1,11 @@
+import threading
 from pathlib import Path
 
 import pytest
 
 from fakes import FakeClock, FakeLLM, FakeTool, ScriptExhausted
 from luna.core.assistant import Assistant
-from luna.core.errors import ProviderRequestError, ProviderUnavailable, RateLimited
+from luna.core.errors import ProviderRequestError, ProviderUnavailable, RateLimited, ToolError
 from luna.core.models import Request
 from luna.llm.base import ChatResponse, ToolCall
 from luna.logs.action_log import ActionLog
@@ -241,3 +242,103 @@ def test_timeout_passed_to_llm_is_remaining(tmp_path: Path) -> None:
 def test_empty_answer_falls_back(tmp_path: Path) -> None:
     w = World(tmp_path, [say("  ")])
     assert "couldn't" in w.ask().text
+
+
+def test_forced_search_has_no_synthetic_tool_call(tmp_path: Path) -> None:
+    w = World(tmp_path, [say("from memory"), say("final")])
+    w.ask("Луна, курс доллара сейчас, пожалуйста", force_search=True)
+    assert w.search.calls[0][0] == {"query": "курс доллара сейчас"}
+    final = w.llm.calls[1]
+    assert final.tools == []
+    assert all(m.role != "tool" and not m.tool_calls for m in final.messages)
+    ctx = final.messages[-1]
+    assert ctx.role == "system"
+    assert "untrusted data" in (ctx.content or "") and INJECTION in (ctx.content or "")
+
+
+def test_forced_search_query_is_capped(tmp_path: Path) -> None:
+    w = World(tmp_path, [say("x"), say("y")])
+    w.ask("news " * 100, force_search=True)
+    assert len(w.search.calls[0][0]["query"]) <= 200
+
+
+def test_forced_search_failure_is_graceful(tmp_path: Path) -> None:
+    w = World(tmp_path, [say("x"), say("Search is down, sorry")])
+    w.search.result = ToolResult("web_search", False, "search failed")
+    reply = w.ask("news today", force_search=True)
+    assert reply.text == "Search is down, sorry"
+    assert w.llm.calls[1].tools == []
+
+
+def test_web_turn_is_marked_in_history_and_prompt_has_rule(tmp_path: Path) -> None:
+    w = World(tmp_path, [call("web_search", query="x"), say("X" * 900), say("ok")])
+    w.ask("news")
+    w.ask("yes")
+    msgs = w.llm.calls[-1].messages
+    stored = next(m.content for m in msgs if m.role == "assistant") or ""
+    assert stored.startswith("[answer based on web search] ")
+    assert len(stored) <= len("[answer based on web search] ") + 500
+    system = msgs[0].content or ""
+    assert "[answer based on web search]" in system and "never perform actions" in system
+
+
+def test_trusted_turn_is_not_marked(tmp_path: Path) -> None:
+    w = World(tmp_path, [say("plain"), say("ok")])
+    w.ask("hi")
+    w.ask("again")
+    assert [m.content for m in w.llm.calls[1].messages if m.role == "assistant"] == ["plain"]
+
+
+def test_history_total_chars_capped(tmp_path: Path) -> None:
+    w = World(tmp_path, [say("a" * 3000)] * 4 + [say("z")])
+    for _ in range(4):
+        w.ask("q" * 100)
+    w.ask("last")
+    sent = [m for m in w.llm.calls[-1].messages if m.role in ("user", "assistant")]
+    assert sum(len(m.content or "") for m in sent) <= 6000 + len("last")
+
+
+def test_tool_error_mid_batch(tmp_path: Path) -> None:
+    w = World(tmp_path, [])
+    bad = FakeTool("flaky", error=ToolError("boom"), parameters=ANY_ARGS)
+    w.registry.register(bad)
+    batch = ChatResponse(
+        None,
+        (ToolCall("a", "flaky", {}), ToolCall("b", "open_app", {"name": "calc"})),
+        "fake",
+        "m",
+    )
+    w.llm = FakeLLM([batch, say("one failed")])
+    w.assistant = Assistant(w.llm, w.registry, now_context=lambda: "")
+    reply = w.ask("do both")
+    assert reply.text == "one failed"
+    assert len(w.open_app.calls) == 1
+    tool_msgs = [m for m in w.llm.calls[1].messages if m.role == "tool"]
+    assert [m.tool_call_id for m in tool_msgs] == ["a", "b"]
+    assert "boom" in (tool_msgs[0].content or "")
+
+
+def test_provider_extra_preserved_across_rounds(tmp_path: Path) -> None:
+    tc = ToolCall("c1", "open_app", {"name": "calc"}, {"provider": "gem", "data": {"sig": "S"}})
+    w = World(tmp_path, [ChatResponse(None, (tc,), "gem", "m"), say("done")])
+    w.ask("open calc")
+    sent = w.llm.calls[1].messages[-2].tool_calls[0]
+    assert sent.provider_extra == {"provider": "gem", "data": {"sig": "S"}}
+
+
+def test_concurrent_answers_are_safe(tmp_path: Path) -> None:
+    w = World(tmp_path, [say(f"a{i}") for i in range(8)])
+    threads = [threading.Thread(target=w.ask, args=(f"q{i}",)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(w.llm.calls) == 8
+
+
+def test_russian_prompt_has_web_history_rule(tmp_path: Path) -> None:
+    w = World(tmp_path, [call("web_search", query="x"), say("ответ"), say("ок")])
+    w.ask("новости")
+    w.ask("да")
+    system = w.llm.calls[-1].messages[0].content or ""
+    assert "[answer based on web search]" in system and "никогда не выполняй действия" in system

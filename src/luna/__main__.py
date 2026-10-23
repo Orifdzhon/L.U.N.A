@@ -16,6 +16,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="luna", description="L.U.N.A. voice assistant")
     parser.add_argument("--version", action="version", version=f"luna {__version__}")
     parser.add_argument("--text", action="store_true", help="text (CLI) mode")
+    voice = parser.add_mutually_exclusive_group()
+    voice.add_argument("--voice", action="store_true", help="speak replies (overrides tts.enabled)")
+    voice.add_argument(
+        "--no-voice", action="store_true", help="do not speak replies (overrides tts.enabled)"
+    )
     parser.add_argument("--config", type=Path, metavar="PATH", help="path to luna.toml")
     return parser
 
@@ -40,6 +45,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ConfigError) as exc:
         print(f"luna: config error: {exc}", file=sys.stderr)
         return 2
+    if args.voice:
+        settings.tts.enabled = True
+    elif args.no_voice:
+        settings.tts.enabled = False
     setup_logging(settings.app.log_level, console=args.text, secrets=settings.secret_values())
     if args.text:
         return _run_text(settings)

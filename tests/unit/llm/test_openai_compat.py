@@ -8,7 +8,12 @@ import respx
 
 from luna.core.errors import ProviderRequestError, ProviderUnavailable, RateLimited
 from luna.llm.base import LLMProvider, Message, ToolCall, ToolSchema
-from luna.llm.openai_compat import MAX_RETRY_AFTER_S, OpenAICompatProvider, Quirks
+from luna.llm.openai_compat import (
+    MAX_PROVIDER_EXTRA_BYTES,
+    MAX_RETRY_AFTER_S,
+    OpenAICompatProvider,
+    Quirks,
+)
 
 BASE = "https://llm.example.test/v1"
 URL = f"{BASE}/chat/completions"
@@ -486,3 +491,119 @@ def test_default_client_ignores_proxy_environment(monkeypatch: pytest.MonkeyPatc
 def test_sdk_loggers_are_not_verbose() -> None:
     for name in ("openai", "httpx"):
         assert logging.getLogger(name).getEffectiveLevel() >= logging.WARNING
+
+
+GEMINI_EXTRA = {"google": {"thought_signature": "SIG-abc=="}}
+
+
+def gemini_extra(provider: str) -> dict[str, Any]:
+    return {"provider": provider, "data": {"extra_content": GEMINI_EXTRA}}
+
+
+def tool_calls_sent(extra: Any, provider_name: str = "groq") -> list[dict[str, Any]]:
+    route = respx.post(URL).respond(json=completion("Done"))
+    calls = (
+        ToolCall("c1", "web_search", {"query": "x"}, extra),
+        ToolCall("c2", "web_search", {"query": "y"}),
+    )
+    history = [Message("user", "q"), Message("assistant", None, tool_calls=calls)]
+    provider = OpenAICompatProvider(provider_name, BASE, "m", KEY, http_client=HTTP)
+    provider.chat(history, [SEARCH_TOOL], timeout_s=5)
+    return sent(route)["messages"][1]["tool_calls"]
+
+
+@respx.mock
+def test_extra_from_another_provider_is_not_sent() -> None:
+    wire = tool_calls_sent(gemini_extra("gemini"), "groq")
+    assert all("extra_content" not in c for c in wire)
+
+
+@respx.mock
+def test_parallel_calls_only_first_carries_extra_content() -> None:
+    wire = tool_calls_sent(gemini_extra("gemini"), "gemini")
+    assert wire[0]["extra_content"] == GEMINI_EXTRA
+    assert "extra_content" not in wire[1]
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"provider": "groq", "data": "oops"},
+        {"provider": "groq", "data": {"extra_content": "oops"}},
+        {"provider": "groq", "data": {"extra_content": {}}},
+        {"data": {"extra_content": GEMINI_EXTRA}},
+    ],
+)
+def test_malformed_provider_extra_is_not_sent(extra: dict[str, Any]) -> None:
+    wire = tool_calls_sent(extra)
+    assert all("extra_content" not in c for c in wire)
+
+
+@respx.mock
+@pytest.mark.parametrize("bad", ["oops", 5, [1], {}])
+def test_wrongly_typed_extra_content_in_response_is_ignored(bad: Any) -> None:
+    call = tool_call("c1", "web_search", "{}")
+    call["extra_content"] = bad
+    respx.post(URL).respond(json=completion(None, [call], finish_reason="tool_calls"))
+    assert ask(make(), (SEARCH_TOOL,)).tool_calls[0].provider_extra is None
+
+
+@respx.mock
+def test_oversized_extra_content_is_dropped() -> None:
+    call = tool_call("c1", "web_search", "{}")
+    call["extra_content"] = {"google": {"thought_signature": "x" * (MAX_PROVIDER_EXTRA_BYTES + 1)}}
+    respx.post(URL).respond(json=completion(None, [call], finish_reason="tool_calls"))
+    assert ask(make(), (SEARCH_TOOL,)).tool_calls[0].provider_extra is None
+
+
+def test_provider_extra_does_not_affect_equality() -> None:
+    assert ToolCall("c", "n", {}, gemini_extra("g")) == ToolCall("c", "n", {})
+
+
+@respx.mock
+def test_thought_signature_is_parsed_from_gemini_shaped_response() -> None:
+    call = tool_call("call_g", "web_search", '{"query": "x"}')
+    call["extra_content"] = GEMINI_EXTRA
+    respx.post(URL).respond(json=completion(None, [call], finish_reason="tool_calls"))
+    response = ask(make(), (SEARCH_TOOL,))
+    assert response.tool_calls[0].provider_extra == {
+        "provider": "groq",
+        "data": {"extra_content": GEMINI_EXTRA},
+    }
+    assert "SIG-abc" not in repr(response.tool_calls[0])
+
+
+@respx.mock
+def test_thought_signature_is_sent_back_verbatim() -> None:
+    route = respx.post(URL).respond(json=completion("Done"))
+    call = ToolCall("call_g", "web_search", {"query": "x"}, gemini_extra("groq"))
+    history = [
+        Message("user", "q"),
+        Message("assistant", None, tool_calls=(call,)),
+        Message("tool", "r", tool_call_id="call_g"),
+    ]
+    make().chat(history, [SEARCH_TOOL], timeout_s=5)
+    assert sent(route)["messages"][1]["tool_calls"][0]["extra_content"] == GEMINI_EXTRA
+
+
+@respx.mock
+def test_no_extra_content_means_nothing_is_sent_or_parsed() -> None:
+    route = respx.post(URL)
+    route.respond(
+        json=completion(None, [tool_call("c1", "web_search", "{}")], finish_reason="tool_calls")
+    )
+    call = ask(make(), (SEARCH_TOOL,)).tool_calls[0]
+    assert call.provider_extra is None
+    route.respond(json=completion("Done"))
+    history = [Message("user", "q"), Message("assistant", None, tool_calls=(call,))]
+    make().chat(history, [SEARCH_TOOL], timeout_s=5)
+    assert "extra_content" not in sent(route)["messages"][1]["tool_calls"][0]
+
+
+def test_provider_extra_is_deep_copied() -> None:
+    source = {"extra_content": {"google": {"thought_signature": "a"}}}
+    call = ToolCall("c", "n", {}, source)
+    source["extra_content"]["google"]["thought_signature"] = "changed"
+    assert call.provider_extra == {"extra_content": {"google": {"thought_signature": "a"}}}
+    assert source["extra_content"]["google"]["thought_signature"] == "changed"

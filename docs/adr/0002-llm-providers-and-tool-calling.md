@@ -83,6 +83,17 @@ fine-tunes are not used as the default for tool calling.
 - Small local models hallucinate: factual/time-sensitive questions go through search
   (spec F6) regardless of provider.
 
+## Amendment (2026-10-23): Gemini thought signatures
+
+Gemini's OpenAI-compat endpoint returns `extra_content.google.thought_signature` on tool
+calls and answers HTTP 400 on the follow-up request if it is not echoed back. `ToolCall`
+therefore has an opaque `provider_extra` field: `OpenAICompatProvider` fills it from the
+response, tagged with its own name, and sends it back verbatim on the assistant message
+only when the same provider produced it (so a fallback provider never sees it). Payloads
+over 8 KB are dropped. Sourcing: the wire format is from memory of Google's docs (they
+could not be fetched in this session), confirmed by one passing live round-trip on
+2026-10-23; other runs were blocked by the region error ("User location is not supported").
+
 ## Owner decisions needed
 
 - Confirm default order and models after the slice-1 benchmark.

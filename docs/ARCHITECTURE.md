@@ -176,6 +176,9 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    # opaque, not in repr/eq: {"provider": <producer name>, "data": {...}}, e.g. Gemini's
+    # thought_signature; only the producing provider echoes `data` back (capped at 8 KB)
+    provider_extra: Mapping[str, Any] | None = None
 
 @dataclass(frozen=True)
 class Message:

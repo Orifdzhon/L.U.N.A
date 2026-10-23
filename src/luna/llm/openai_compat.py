@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -38,6 +38,8 @@ _NO_KEY_PLACEHOLDER = "not-needed"
 _MAX_DETAIL_CHARS = 200
 # A server asking for a longer pause must not disable the provider for hours (LLMChain cooldown).
 MAX_RETRY_AFTER_S = 300.0
+# Cap on the vendor extension kept per tool call (serialized); larger payloads are dropped.
+MAX_PROVIDER_EXTRA_BYTES = 8192
 
 
 @dataclass(frozen=True)
@@ -124,7 +126,7 @@ class OpenAICompatProvider:
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "model": self.model,
-            "messages": [_message_to_wire(m) for m in messages],
+            "messages": [_message_to_wire(m, self.name) for m in messages],
         }
         if tools:
             params["tools"] = [
@@ -196,7 +198,12 @@ class OpenAICompatProvider:
                 call_id = f"call_{uuid.uuid4().hex[:12]}"
             seen.add(call_id)
             calls.append(
-                ToolCall(call_id, function.name, self._parse_arguments(function, finish_reason))
+                ToolCall(
+                    call_id,
+                    function.name,
+                    self._parse_arguments(function, finish_reason),
+                    _provider_extra(raw, self.name),
+                )
             )
         return tuple(calls)
 
@@ -264,7 +271,40 @@ def _content_text(content: Any) -> str:
     raise TypeError("unsupported content type")
 
 
-def _message_to_wire(message: Message) -> dict[str, Any]:
+def _provider_extra(raw_call: Any, provider: str) -> dict[str, Any] | None:
+    """Vendor extension of a tool call, kept verbatim for the next request.
+
+    Gemini returns ``extra_content: {"google": {"thought_signature": ...}}`` and rejects the
+    follow-up request when it is missing. The SDK keeps unknown fields as pydantic extras.
+    The result is tagged with the producing provider so no other provider echoes it.
+    """
+    extra = getattr(raw_call, "extra_content", None)
+    if extra is None:
+        model_extra = getattr(raw_call, "model_extra", None)
+        extra = model_extra.get("extra_content") if isinstance(model_extra, dict) else None
+    if not isinstance(extra, dict) or not extra:
+        return None
+    try:
+        size = len(json.dumps(extra))
+    except (TypeError, ValueError):
+        return None
+    if size > MAX_PROVIDER_EXTRA_BYTES:
+        log.debug("%s: dropping oversized extra_content (%d bytes)", provider, size)
+        return None
+    return {"provider": provider, "data": {"extra_content": dict(extra)}}
+
+
+def _extra_content_for(call: ToolCall, provider: str) -> dict[str, Any] | None:
+    """``extra_content`` to echo for ``call``, only if this provider produced it."""
+    extra = call.provider_extra
+    if not isinstance(extra, Mapping) or extra.get("provider") != provider:
+        return None
+    data = extra.get("data")
+    content = data.get("extra_content") if isinstance(data, dict) else None
+    return content if isinstance(content, dict) and content else None
+
+
+def _message_to_wire(message: Message, provider: str) -> dict[str, Any]:
     if message.role == "tool":
         return {
             "role": "tool",
@@ -273,8 +313,9 @@ def _message_to_wire(message: Message) -> dict[str, Any]:
         }
     wire: dict[str, Any] = {"role": message.role, "content": message.content}
     if message.tool_calls:
-        wire["tool_calls"] = [
-            {
+        wire["tool_calls"] = []
+        for call in message.tool_calls:
+            wire_call: dict[str, Any] = {
                 "id": call.id,
                 "type": "function",
                 "function": {
@@ -282,8 +323,10 @@ def _message_to_wire(message: Message) -> dict[str, Any]:
                     "arguments": json.dumps(call.arguments, ensure_ascii=False),
                 },
             }
-            for call in message.tool_calls
-        ]
+            extra = _extra_content_for(call, provider)
+            if extra:
+                wire_call["extra_content"] = extra
+            wire["tool_calls"].append(wire_call)
     return wire
 
 

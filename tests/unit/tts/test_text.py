@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 import pytest
 
@@ -158,3 +159,42 @@ def test_prepare_speech_en_and_empty() -> None:
     assert chunks == ["Emmanuel Macron is the president of France (per Wikipedia).", "It is true."]
     assert prepare_speech("") == []
     assert prepare_speech("\U0001f600 \u202f ") == []
+
+
+def test_year_followed_by_capital_splits_after_g() -> None:
+    assert split_sentences("Это было в 1799 г. Это так.", first_max_chars=100, max_chars=1000) == [
+        "Это было в 1799 г.",
+        "Это так.",
+    ]
+    # Not a year, or lower-case continuation: still an abbreviation.
+    assert split_sentences("Во 99 г. Это так.", first_max_chars=100, max_chars=1000) == [
+        "Во 99 г. Это так."
+    ]
+    assert split_sentences("в 1799 г. вышла книга.", first_max_chars=100, max_chars=1000) == [
+        "в 1799 г. вышла книга."
+    ]
+
+
+HOSTILE = {
+    "brackets": "[" * 200_000,
+    "dots": "a. " * 66_000,
+    "blank_lines": " \n" * 100_000,
+    "bold": "**a " * 50_000,
+    "link_open": "[a](" * 50_000,
+    "nested": "[" * 100_000 + "x" + "]" * 100_000,
+    "ellipsis": "." * 200_000 + "x",
+    "backticks": "`a" * 100_000,
+    "italic": "*a " * 66_000,
+    "underscore": "_a " * 66_000,
+    "table": "|" + "-" * 200_000 + "x",
+    "dashes": "- " * 100_000 + "x",
+}
+
+
+@pytest.mark.parametrize("name", list(HOSTILE))
+def test_hostile_input_is_fast(name: str) -> None:
+    text = HOSTILE[name]
+    for func in (clean_for_speech, prepare_speech):
+        start = time.perf_counter()
+        func(text)
+        assert time.perf_counter() - start < 0.2, (name, func.__name__)

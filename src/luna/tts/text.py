@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001, RUF002, RUF003
+# ruff: noqa: RUF001, RUF002
 """Text preparation for speech: clean an LLM reply and split it into speakable chunks.
 
 Pure functions, no I/O. Speech starts after the first (short) chunk is synthesized,
@@ -38,20 +38,22 @@ _SYMBOL_DROP_RE = re.compile(r"[≈~] ?")
 # --- markdown -----------------------------------------------------------------
 
 _FENCE_RE = re.compile(r"(```|~~~).*?(?:\1|\Z)", re.DOTALL)
-_INLINE_CODE_RE = re.compile(r"`+([^`\n]*)`+")
-_IMAGE_RE = re.compile(r"!\[([^\]\n]*)\]\([^)\n]*\)")
-_LINK_RE = re.compile(r"\[([^\]\n]+)\]\([^)\n]*\)")
-_CITATION_RE = re.compile(r" ?\[\d+(?:\s*[,-]\s*\d+)*\]")
+_INLINE_CODE_RE = re.compile(r"`+([^`\n]{0,200})`+")
+_IMAGE_RE = re.compile(r"!\[([^\[\]\n]{0,200})\]\([^()\s]{0,500}\)")
+_LINK_RE = re.compile(r"\[([^\[\]\n]{1,200})\]\([^()\s]{0,500}\)")
+_CITATION_RE = re.compile(r" ?\[\d{1,3}(?:[ ]?[,-][ ]?\d{1,3}){0,5}\]")
 _URL_RE = re.compile(r"""(?:https?://|www\.)[^\s<>"'«»]+""", re.IGNORECASE)
-_HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+", re.MULTILINE)
-_BULLET_RE = re.compile(r"^\s*[-*+•\u25aa\u25cf\u25e6‣]\s+", re.MULTILINE)
-_QUOTE_RE = re.compile(r"^\s*>+\s?", re.MULTILINE)
+_HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+", re.MULTILINE)
+_BULLET_RE = re.compile(r"^[ \t]*[-*+•\u25aa\u25cf\u25e6‣][ \t]+", re.MULTILINE)
+_QUOTE_RE = re.compile(r"^[ \t]*>+[ \t]?", re.MULTILINE)
 _HRULE_RE = re.compile(r"^[ ]*([-*_=])(?:[ ]*\1){2,}[ ]*$", re.MULTILINE)
-_TABLE_SEP_RE = re.compile(r"^[ ]*\|?[ :|-]*-[ :|-]*\|?[ ]*$")
-_BOLD_RE = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
-_STRIKE_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
-_ITALIC_STAR_RE = re.compile(r"\*(?=\S)([^*\n]+?)(?<=\S)\*")
-_ITALIC_UNDER_RE = re.compile(r"(?<!\w)_(?=\S)([^_\n]+?)(?<=\S)_(?!\w)")
+_TABLE_SEP_CHARS = frozenset(" :|-")
+# Span contents exclude the marker character, so a failed match stops at the next marker.
+_BOLD_STAR_RE = re.compile(r"\*\*(?=\S)([^\n*]{1,200}?)(?<=\S)\*\*")
+_BOLD_UNDER_RE = re.compile(r"__(?=\S)([^\n_]{1,200}?)(?<=\S)__")
+_STRIKE_RE = re.compile(r"~~(?=\S)([^\n~]{1,200}?)(?<=\S)~~")
+_ITALIC_STAR_RE = re.compile(r"\*(?=\S)([^*\n]{1,200}?)(?<=\S)\*")
+_ITALIC_UNDER_RE = re.compile(r"(?<!\w)_(?=\S)([^_\n]{1,200}?)(?<=\S)_(?!\w)")
 _URL_TRAILING = ".,;:!?)]}»"
 
 
@@ -70,7 +72,7 @@ def _table_lines(text: str) -> str:
     out: list[str] = []
     for line in text.split("\n"):
         if line.lstrip().startswith("|") and line.count("|") >= 2:
-            if _TABLE_SEP_RE.match(line):
+            if "-" in line and set(line) <= _TABLE_SEP_CHARS:
                 continue
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
             line = ", ".join(c for c in cells if c)
@@ -99,7 +101,8 @@ def clean_for_speech(text: str) -> str:
     text = _HEADING_RE.sub("", text)
     text = _QUOTE_RE.sub("", text)
     text = _BULLET_RE.sub("", text)
-    text = _BOLD_RE.sub(r"\2", text)
+    text = _BOLD_STAR_RE.sub(r"\1", text)
+    text = _BOLD_UNDER_RE.sub(r"\1", text)
     text = _STRIKE_RE.sub(r"\1", text)
     text = _ITALIC_STAR_RE.sub(r"\1", text)
     text = _ITALIC_UNDER_RE.sub(r"\1", text)
@@ -127,29 +130,42 @@ _ABBREVIATIONS = frozenset(
         "inc", "ltd", "co", "a.m", "p.m", "u.s", "fig", "vol", "dept",
     }
 )  # fmt: skip
-_BOUNDARY_RE = re.compile(r"([.!?…]+)([\"'»)\]”’]*)(?:\s+|$)")
+_BOUNDARY_RE = re.compile(r"(?<![.!?…])([.!?…]++)([\"'»)\]”’]*+)(?:\s+|$)")
+_YEAR_BEFORE_RE = re.compile(r"(?:^|\s)\d{4}\s$")
 _OPENERS = "(\"'«[“‘"
 
 
-def _is_abbreviation(text: str, dot_pos: int) -> bool:
-    """True if the dot at ``dot_pos`` closes an abbreviation, an initial or a list number."""
-    head = text[:dot_pos]
-    token = re.split(r"\s", head)[-1].lstrip(_OPENERS).lower()
+def _is_abbreviation(text: str, dot_pos: int, next_pos: int) -> bool:
+    """True if the dot at ``dot_pos`` closes an abbreviation, an initial or a list number.
+
+    ``next_pos`` is where the text after the boundary starts. Looks back a bounded
+    distance only, so the cost per dot is constant.
+    """
+    lo = max(0, dot_pos - 40)
+    i = dot_pos
+    while i > lo and not text[i - 1].isspace():
+        i -= 1
+    if i == lo and lo > 0:
+        return False  # token too long to be an abbreviation
+    token = text[i:dot_pos].lstrip(_OPENERS).lower()
     if not token:
         return False
+    year_before = _YEAR_BEFORE_RE.search(text[max(0, i - 6) : i]) is not None
+    if token == "\u0433" and year_before and text[next_pos : next_pos + 1].isupper():
+        return False  # "in 1799 \u0433. It is so." -> a year followed by a new sentence
     if token in _ABBREVIATIONS:
         return True
-    if token.isdigit() and len(token) <= 2 and head[: len(head) - len(token)].strip() == "":
+    if token.isdigit() and len(token) <= 2 and i == 0:
         return True  # list number such as "1. Foo"
-    # Single-letter initial ("А. С. Пушкин"), but not the one-letter words "я" / "I".
-    return len(token) == 1 and token.isalpha() and token not in ("я", "a", "i")
+    # Single-letter initial, but not the one-letter words "\u044f" / "a" / "i".
+    return len(token) == 1 and token.isalpha() and token not in ("\u044f", "a", "i")
 
 
 def _split_line(line: str) -> list[str]:
     sentences: list[str] = []
     start = 0
     for m in _BOUNDARY_RE.finditer(line):
-        if m.group(1) == "." and not m.group(2) and _is_abbreviation(line, m.start(1)):
+        if m.group(1) == "." and not m.group(2) and _is_abbreviation(line, m.start(1), m.end()):
             continue
         sentences.append(line[start : m.end(2)])
         start = m.end()
@@ -212,7 +228,17 @@ def prepare_speech(
     max_chars: int = 1500,
     max_chunk_chars: int = 220,
 ) -> list[str]:
-    """Clean ``text`` and split it into chunks for the speaker."""
+    """Clean ``text`` and split it into chunks for the speaker.
+
+    The input is capped at ``max_chars * 4`` characters (cut at whitespace) before any
+    processing, so hostile or huge text cannot stall the speaker.
+    """
+    cap = max_chars * 4
+    if len(text) > cap:
+        text = text[:cap]
+        cut = max(text.rfind(" "), text.rfind("\n"))
+        if cut > 0:
+            text = text[:cut]
     return split_sentences(
         clean_for_speech(text),
         first_max_chars=first_max_chars,

@@ -101,9 +101,45 @@ def test_example_config_parses_and_equals_defaults(tmp_path):
     cwd.mkdir()
     settings = load_settings(example, env={}, cwd=cwd)
     defaults = Settings()
-    for section in ("app", "llm", "search", "router"):
+    for section in ("app", "llm", "search", "router", "tts"):
         assert getattr(settings, section) == getattr(defaults, section)
     assert settings.stt["provider"] == "faster_whisper"
+
+
+# --- [tts] -------------------------------------------------------------------------------
+
+
+def test_tts_defaults():
+    tts = Settings().tts
+    assert tts.enabled is False
+    assert tts.provider == "sapi"
+    assert (tts.voice_ru, tts.voice_en) == ("Irina", "Zira")
+    assert (tts.rate, tts.volume, tts.max_chars, tts.first_chunk_max_chars) == (0, 100, 1500, 200)
+
+
+def test_tts_values_loaded(tmp_path):
+    settings = _load_text(tmp_path, "[tts]\nenabled = true\nrate = -3\nvolume = 40\n")
+    assert settings.tts.enabled is True
+    assert (settings.tts.rate, settings.tts.volume) == (-3, 40)
+
+
+@pytest.mark.parametrize(
+    ("body", "key"),
+    [
+        ("rate = 11", r"tts\.rate"),
+        ("rate = -11", r"tts\.rate"),
+        ("volume = 101", r"tts\.volume"),
+        ("volume = -1", r"tts\.volume"),
+        ("max_chars = 0", r"tts\.max_chars"),
+        ("first_chunk_max_chars = 0", r"tts\.first_chunk_max_chars"),
+        ('provider = "piper"', r"tts\.provider"),
+        ('voice_ru = ""', r"tts\.voice_ru"),
+        ("bogus = 1", "bogus"),
+    ],
+)
+def test_tts_invalid_values_rejected(tmp_path, body, key):
+    with pytest.raises(ConfigError, match=key):
+        _load_text(tmp_path, f"[tts]\n{body}\n")
 
 
 # --- secrets -----------------------------------------------------------------------------

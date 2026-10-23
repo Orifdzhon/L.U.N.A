@@ -89,14 +89,26 @@ class RouterSettings(_Section):
     site_aliases: dict[str, str] = Field(default_factory=dict)
 
 
+class TTSSettings(_Section):
+    enabled: bool = False
+    provider: Literal["sapi"] = "sapi"  # the Piper Issue extends this Literal
+    # Case-insensitive substrings matched against installed SAPI voice names.
+    voice_ru: str = Field(default="Irina", min_length=1)
+    voice_en: str = Field(default="Zira", min_length=1)
+    rate: int = Field(default=0, ge=-10, le=10)
+    volume: int = Field(default=100, ge=0, le=100)
+    max_chars: int = Field(default=1500, ge=1)  # spoken text per reply; cut at a sentence end
+    first_chunk_max_chars: int = Field(default=200, ge=1)  # size of the first spoken chunk
+
+
 class Settings(_Section):
     app: AppSettings = Field(default_factory=AppSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     router: RouterSettings = Field(default_factory=RouterSettings)
-    # Not validated yet: owned by later Issues (STT, TTS, wake word, UI); accepted and ignored.
+    tts: TTSSettings = Field(default_factory=TTSSettings)
+    # Not validated yet: owned by later Issues (STT, wake word, UI); accepted and ignored.
     stt: dict[str, Any] = Field(default_factory=dict)
-    tts: dict[str, Any] = Field(default_factory=dict)
     wakeword: dict[str, Any] = Field(default_factory=dict)
     voice: dict[str, Any] = Field(default_factory=dict)
     ui: dict[str, Any] = Field(default_factory=dict)

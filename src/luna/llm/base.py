@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+import copy
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
 
@@ -21,6 +22,14 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    # Opaque provider-specific data (e.g. Gemini's ``thought_signature``). The provider that
+    # produced it sends it back verbatim on the assistant message; others ignore it.
+    # Kept out of ``repr`` so it never ends up in logs.
+    provider_extra: Mapping[str, Any] | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.provider_extra is not None:
+            object.__setattr__(self, "provider_extra", copy.deepcopy(dict(self.provider_extra)))
 
 
 @dataclass(frozen=True)

@@ -196,7 +196,12 @@ class OpenAICompatProvider:
                 call_id = f"call_{uuid.uuid4().hex[:12]}"
             seen.add(call_id)
             calls.append(
-                ToolCall(call_id, function.name, self._parse_arguments(function, finish_reason))
+                ToolCall(
+                    call_id,
+                    function.name,
+                    self._parse_arguments(function, finish_reason),
+                    _provider_extra(raw),
+                )
             )
         return tuple(calls)
 
@@ -264,6 +269,18 @@ def _content_text(content: Any) -> str:
     raise TypeError("unsupported content type")
 
 
+def _provider_extra(raw_call: Any) -> dict[str, Any] | None:
+    """Vendor extension of a tool call, kept verbatim for the next request.
+
+    Gemini returns ``extra_content: {"google": {"thought_signature": ...}}`` and rejects the
+    follow-up request when it is missing. The SDK keeps unknown fields as pydantic extras.
+    """
+    extra = getattr(raw_call, "extra_content", None)
+    if extra is None:
+        extra = (getattr(raw_call, "model_extra", None) or {}).get("extra_content")
+    return {"extra_content": dict(extra)} if isinstance(extra, dict) and extra else None
+
+
 def _message_to_wire(message: Message) -> dict[str, Any]:
     if message.role == "tool":
         return {
@@ -273,8 +290,9 @@ def _message_to_wire(message: Message) -> dict[str, Any]:
         }
     wire: dict[str, Any] = {"role": message.role, "content": message.content}
     if message.tool_calls:
-        wire["tool_calls"] = [
-            {
+        wire["tool_calls"] = []
+        for call in message.tool_calls:
+            wire_call: dict[str, Any] = {
                 "id": call.id,
                 "type": "function",
                 "function": {
@@ -282,8 +300,10 @@ def _message_to_wire(message: Message) -> dict[str, Any]:
                     "arguments": json.dumps(call.arguments, ensure_ascii=False),
                 },
             }
-            for call in message.tool_calls
-        ]
+            extra = (call.provider_extra or {}).get("extra_content")
+            if extra:
+                wire_call["extra_content"] = extra
+            wire["tool_calls"].append(wire_call)
     return wire
 
 

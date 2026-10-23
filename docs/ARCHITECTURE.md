@@ -176,6 +176,8 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    provider_extra: Mapping[str, Any] | None = None  # opaque, e.g. Gemini thought_signature;
+                                                     # echoed back verbatim by the same provider
 
 @dataclass(frozen=True)
 class Message:

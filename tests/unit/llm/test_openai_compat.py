@@ -486,3 +486,50 @@ def test_default_client_ignores_proxy_environment(monkeypatch: pytest.MonkeyPatc
 def test_sdk_loggers_are_not_verbose() -> None:
     for name in ("openai", "httpx"):
         assert logging.getLogger(name).getEffectiveLevel() >= logging.WARNING
+
+
+GEMINI_EXTRA = {"google": {"thought_signature": "SIG-abc=="}}
+
+
+@respx.mock
+def test_thought_signature_is_parsed_from_gemini_shaped_response() -> None:
+    call = tool_call("call_g", "web_search", '{"query": "x"}')
+    call["extra_content"] = GEMINI_EXTRA
+    respx.post(URL).respond(json=completion(None, [call], finish_reason="tool_calls"))
+    response = ask(make(), (SEARCH_TOOL,))
+    assert response.tool_calls[0].provider_extra == {"extra_content": GEMINI_EXTRA}
+    assert "SIG-abc" not in repr(response.tool_calls[0])
+
+
+@respx.mock
+def test_thought_signature_is_sent_back_verbatim() -> None:
+    route = respx.post(URL).respond(json=completion("Done"))
+    call = ToolCall("call_g", "web_search", {"query": "x"}, {"extra_content": GEMINI_EXTRA})
+    history = [
+        Message("user", "q"),
+        Message("assistant", None, tool_calls=(call,)),
+        Message("tool", "r", tool_call_id="call_g"),
+    ]
+    make().chat(history, [SEARCH_TOOL], timeout_s=5)
+    assert sent(route)["messages"][1]["tool_calls"][0]["extra_content"] == GEMINI_EXTRA
+
+
+@respx.mock
+def test_no_extra_content_means_nothing_is_sent_or_parsed() -> None:
+    route = respx.post(URL)
+    route.respond(
+        json=completion(None, [tool_call("c1", "web_search", "{}")], finish_reason="tool_calls")
+    )
+    call = ask(make(), (SEARCH_TOOL,)).tool_calls[0]
+    assert call.provider_extra is None
+    route.respond(json=completion("Done"))
+    history = [Message("user", "q"), Message("assistant", None, tool_calls=(call,))]
+    make().chat(history, [SEARCH_TOOL], timeout_s=5)
+    assert "extra_content" not in sent(route)["messages"][1]["tool_calls"][0]
+
+
+def test_provider_extra_is_deep_copied() -> None:
+    source = {"extra_content": {"google": {"thought_signature": "a"}}}
+    call = ToolCall("c", "n", {}, source)
+    source["extra_content"]["google"]["thought_signature"] = "changed"
+    assert call.provider_extra == {"extra_content": {"google": {"thought_signature": "a"}}}

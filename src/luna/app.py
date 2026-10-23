@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-VOICE_EXTRA_HINT = "install with `uv sync --extra voice`"
+VOICE_EXTRA_HINT = "run `uv sync` to install it"
 
 ACTION_LOG_NAME = "actions.jsonl"
 _CATALOG_JOIN_S = 1.0

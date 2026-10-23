@@ -90,7 +90,7 @@ def test_voice_on_missing_audio_extra_degrades_with_hint(made, monkeypatch):
     monkeypatch.setitem(sys.modules, "sounddevice", None)
     app = made(tts=FakeTTS())
     assert app.speaker is None
-    assert any("uv sync --extra voice" in w for w in app.warnings)
+    assert any("uv sync" in w for w in app.warnings)
 
 
 def test_voice_on_no_output_device_degrades(made, monkeypatch):

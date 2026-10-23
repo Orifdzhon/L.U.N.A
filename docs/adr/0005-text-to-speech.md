@@ -105,8 +105,9 @@ machine.
    original Decision applies unchanged: separate worker process (GPL-3.0 boundary), male CC0
    voices `ru_RU-dmitri-medium` / `ru_RU-denis-medium`, `en_US-ljspeech-medium`, downloaded on
    first use. `provider` gains the value `"piper"` then.
-3. **Playback: `sounddevice`** (PortAudio, MIT; bundled in the Windows wheel) in the `voice`
-   optional extra, behind the `AudioPlayer` protocol (`luna.audio`). `winsound` was rejected
+3. **Playback: `sounddevice`** (PortAudio, MIT; bundled in the Windows wheel) as a core
+   dependency on Windows (`sys_platform == 'win32'`; an optional extra is uninstalled by a plain
+   `uv run`), behind the `AudioPlayer` protocol (`luna.audio`). `winsound` was rejected
    (measured in PR #67): `SND_MEMORY | SND_ASYNC` raises `RuntimeError`, and `SND_PURGE` does
    not stop a synchronous in-memory sound, so in-memory playback cannot be interrupted.
    `sounddevice` is needed for the microphone in slice 3 anyway.

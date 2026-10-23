@@ -140,11 +140,9 @@ Example requests: `открой ютуб`, `open telegram`, `какой курс
 
 Replies can be spoken with the Windows built-in SAPI voices (ADR 0005). Voice is off by default.
 
-**Install the audio backend** (adds `sounddevice`; `--all-extras` from section 2 already includes it):
-
-```powershell
-uv sync --extra voice
-```
+**Audio backend:** `sounddevice` is a normal dependency on Windows, so the `uv sync` from section 2
+installs it. (Do not rely on an optional extra: a plain `uv run` re-syncs without extras and would
+uninstall it.)
 
 **Turn it on** for one run with `--voice`, or permanently with `[tts] enabled = true`:
 
@@ -242,8 +240,8 @@ is planned as an optional provider later.
 
 - **`Voice disabled: ... Continuing in text mode.`** Printed at start when `--voice` / `enabled`
   is on but voice cannot start; text mode keeps working. By reason:
-  - `audio backend is not installed; install with 'uv sync --extra voice'` (or `audio backend
-    failed to load (...)`): run `uv sync --extra voice`.
+  - `audio backend is not installed; run `uv sync` to install it` (or `audio backend failed to
+    load (...)`): run `uv sync`.
   - `no audio output device found`: connect or enable a speaker/headphones in Windows Sound
     settings, then restart.
   - `SAPI voices are only available on Windows`: other systems are not supported yet.

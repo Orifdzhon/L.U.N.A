@@ -1,4 +1,4 @@
-"""Real SAPI synthesis + playback (manual: ``uv sync --extra voice`` then
+"""Real SAPI synthesis + playback (manual: ``uv sync`` then
 ``uv run pytest -m audio tests/integration/test_sapi_live.py -s``)."""
 
 import sys

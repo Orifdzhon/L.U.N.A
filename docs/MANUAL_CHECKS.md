@@ -80,7 +80,7 @@ expect the local test to be skipped or fail. Keys are read from `./.env`.
 
 ## I. Voice replies (slice 2)
 
-Needs speakers and `uv sync --extra voice`; setup in [SETUP.md](SETUP.md#voice-text-to-speech).
+Needs speakers; setup in [SETUP.md](SETUP.md#voice-text-to-speech).
 Start with `uv run luna --text --voice`; the startup text must say `Voice: on (/mute, /stop, /voice).`
 
 | # | Do | Expected |
@@ -95,7 +95,7 @@ Start with `uv run luna --text --voice`; the startup text must say `Voice: on (/
 | I8 | `открой ютуб` | The router's short confirmation is spoken too |
 | I9 | Ask something with a link or markdown (`дай ссылку на сайт python`) | Links, `*`, `#` and emoji are not read aloud |
 | I10 | Ctrl+C during a running request (as D1), and a request that times out | `(cancelled)` / the timeout apology is printed but not spoken |
-| I11 | On an install without the extra (untested here: a fresh clone with plain `uv sync`) run with `--voice` | `Voice disabled: audio backend is not installed; install with `uv sync --extra voice`. Continuing in text mode.`; the REPL still works. Run `uv sync --extra voice` afterwards |
+| I11 | Without speakers/output device (disable the playback device in Windows Sound settings) run with `--voice` | `Voice disabled: no audio output device found. Continuing in text mode.`; the REPL still works |
 | I12 | `uv run luna --text --no-voice` with `[tts] enabled = true` | `Voice: off ...`, nothing is spoken |
 
 Real-device automated checks (use the speakers; skipped by default):

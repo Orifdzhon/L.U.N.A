@@ -20,7 +20,12 @@ def tone(seconds: float, hz: float = 440.0, rate: int = 22050) -> AudioClip:
 
 
 def test_tone_plays_and_is_cut_off_by_stop():
-    pytest.importorskip("sounddevice")
+    sd = pytest.importorskip("sounddevice")
+    try:
+        if sd.query_devices(kind="output") is None:
+            pytest.skip("no audio output device")
+    except Exception as e:
+        pytest.skip(f"no audio output device: {e}")
     player = SoundDevicePlayer()
     try:
         player.play(tone(0.5))  # you should hear a short beep

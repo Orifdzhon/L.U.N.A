@@ -6,13 +6,16 @@ import pytest
 from fakes import FakePlayer
 from luna.audio.base import AudioClip, AudioPlayer
 from luna.audio.playback import SoundDevicePlayer
+from luna.core.errors import AudioError
 
 
 class FakeStream:
     """Simulates a real-time device: each write() 'plays' for write_delay_s unless aborted."""
 
-    def __init__(self, write_delay_s: float = 0.02) -> None:
+    def __init__(self, write_delay_s: float = 0.02, raise_after_abort: bool = False) -> None:
         self.delay = write_delay_s
+        self.raise_after_abort = raise_after_abort
+        self.writing = threading.Event()  # set on the first write()
         self.written = 0
         self.events: list[str] = []
         self._aborted = threading.Event()
@@ -21,8 +24,13 @@ class FakeStream:
         self.events.append("start")
 
     def write(self, data: bytes) -> None:
+        if self.raise_after_abort and self._aborted.is_set():
+            raise OSError("stream aborted")
         self.written += len(data)
+        self.writing.set()
         self._aborted.wait(self.delay)
+        if self.raise_after_abort and self._aborted.is_set():
+            raise OSError("stream aborted")
 
     def stop(self) -> None:
         self.events.append("stop")
@@ -84,7 +92,7 @@ def test_stop_from_another_thread_returns_play_quickly():
     done = threading.Event()
     t = threading.Thread(target=lambda: (player.play(clip(30.0)), done.set()))
     t.start()
-    time.sleep(0.15)
+    assert stream.writing.wait(1.0)
     t0 = time.monotonic()
     player.stop()
     assert done.wait(0.5)
@@ -133,10 +141,90 @@ def test_stop_survives_abort_error():
     player = make_player(stream)
     t = threading.Thread(target=player.play, args=(clip(30.0),))
     t.start()
-    time.sleep(0.1)
+    assert stream.writing.wait(1.0)
     player.stop()
     t.join(1.0)
     assert not t.is_alive()
+
+
+def test_write_error_caused_by_stop_is_swallowed():
+    stream = FakeStream(write_delay_s=0.05, raise_after_abort=True)
+    player = make_player(stream)
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            player.play(clip(30.0))
+        except BaseException as e:
+            errors.append(e)
+
+    t = threading.Thread(target=run)
+    t.start()
+    assert stream.writing.wait(1.0)
+    player.stop()
+    t.join(1.0)
+    assert not t.is_alive() and errors == []
+    assert stream.events[-1] == "close"
+
+
+def test_write_error_without_stop_becomes_audio_error():
+    class Broken(FakeStream):
+        def write(self, data: bytes) -> None:
+            raise OSError("device lost")
+
+    stream = Broken()
+    with pytest.raises(AudioError, match="device lost"):
+        make_player(stream).play(clip(0.1))
+    assert stream.events[-1] == "close"
+
+
+def test_close_error_does_not_mask_original_error():
+    class Broken(FakeStream):
+        def write(self, data: bytes) -> None:
+            raise OSError("write failed")
+
+        def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    with pytest.raises(AudioError, match="write failed"):
+        make_player(Broken()).play(clip(0.1))
+
+
+def test_open_failure_becomes_audio_error():
+    def factory(rate: int) -> FakeStream:
+        raise OSError("no device")
+
+    with pytest.raises(AudioError, match="no device"):
+        SoundDevicePlayer(factory).play(clip(0.1))
+
+
+def test_missing_backend_gives_install_hint():
+    def factory(rate: int) -> FakeStream:
+        raise ImportError("No module named sounddevice")
+
+    with pytest.raises(AudioError, match=r"uv sync --extra voice"):
+        SoundDevicePlayer(factory).play(clip(0.1))
+
+
+def test_stop_during_device_open_is_not_lost():
+    stream = FakeStream(write_delay_s=0)
+    opening, release = threading.Event(), threading.Event()
+
+    def factory(rate: int) -> FakeStream:
+        opening.set()
+        assert release.wait(2.0)
+        return stream
+
+    player = SoundDevicePlayer(factory)
+    t = threading.Thread(target=player.play, args=(clip(1.0),))
+    t.start()
+    assert opening.wait(1.0)
+    player.stop()
+    release.set()
+    t.join(1.0)
+    assert not t.is_alive()
+    assert stream.written == 0
+    assert stream.events == ["abort", "close"]
 
 
 def test_players_satisfy_protocol():

@@ -50,3 +50,7 @@ class ToolError(LunaError):
 
 class Abandoned(LunaError):
     """The turn was abandoned (timeout / cancel): stop at once, with no further side effects."""
+
+
+class AudioError(LunaError):
+    """Audio output failed (missing backend, no device, device error)."""

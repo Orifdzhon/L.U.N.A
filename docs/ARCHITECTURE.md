@@ -475,7 +475,7 @@ autostart = false
 - Per-stage timeouts (defaults): STT 5 s, LLM call 8 s, search 5 s, page fetch 4 s
   each, total request 20 s. On timeout the user hears a short apology instead of silence.
 - Tool failures are returned to the LLM as `ToolResult(ok=False, summary=...)`; the
-  LLM phrases the error. Router fast-path failures fall through to the LLM path.
+  LLM phrases the error. Router fast path: unknown/uncertain targets fall through to the LLM path; if the tool matched but failed to launch (`open_failed`), the router replies with a short failure message instead (a retry through the LLM could open things twice).
 - Startup is degraded, not fatal: missing API key → provider skipped with a warning;
   no microphone → text mode only; no CUDA → STT on CPU.
 

@@ -73,8 +73,11 @@ def _results_message(results: Sequence[ToolResult]) -> Message:
 
 
 _PSEUDO_CALL_RE = re.compile(
-    r"<\s*/?\s*(?:search|tool|function|query|nocomment)\b|\{\s*\"name\"\s*:|\bweb_search\s*\(",
-    re.IGNORECASE,
+    r"<\s*/?\s*(?:search|tool|function|query|nocomment)\b"
+    r"|<\s*/?\s*(?:search_result|web_search_results|output)\b"  # our own wrapper markup
+    r"|^\s*\|\s"  # the '| ' quote prefix of wrapped web lines
+    r"|\{\s*\"name\"\s*:|\bweb_search\s*\(",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 

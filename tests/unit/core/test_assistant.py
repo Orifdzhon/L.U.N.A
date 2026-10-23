@@ -448,3 +448,49 @@ def test_groq_rejected_then_empty_is_graceful(tmp_path: Path) -> None:
 def test_plain_answer_mentioning_search_is_not_flagged(tmp_path: Path) -> None:
     w = World(tmp_path, [call("web_search", query="x"), say("I searched the web: 81 rubles")])
     assert w.ask("dollar rate").text == "I searched the web: 81 rubles"
+
+
+ECHO_TIME = (
+    '<search_result index=6 url="https://time.is/Moscow" title="Точное время в Москве">'
+    "\n</search_result>"
+)
+ECHO_FRANCE = (
+    '<output>\n<search_result index=1 url="https://en.wikipedia.org/wiki/President_of_France" '
+    'title="President of France - Wikipedia">\n| The current president is Emmanuel Macron.'
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        ECHO_TIME,
+        ECHO_FRANCE,
+        "<web_search_results id=1>x",
+        "</output>",
+        "Answer:\n| The current president is Emmanuel Macron.",
+    ],
+)
+def test_echoed_wrapper_markup_is_rejected(tmp_path: Path, text: str) -> None:
+    w = World(tmp_path, [call("web_search", query="x"), say(text), say(text)])
+    reply = w.ask("who is the president")
+    assert "couldn't" in reply.text
+    assert "<" not in reply.text and "|" not in reply.text
+    assert len(w.llm.calls) == 3
+
+
+def test_echoed_markup_retry_can_succeed(tmp_path: Path) -> None:
+    w = World(tmp_path, [call("web_search", query="x"), say(ECHO_FRANCE), say("It is Macron.")])
+    assert w.ask("who is the president").text == "It is Macron."
+
+
+def test_prompts_have_datetime_and_no_copy_rules(tmp_path: Path) -> None:
+    w = World(tmp_path, [call("web_search", query="x"), say("ok")])
+    w.ask("who is the president")
+    main = w.llm.calls[0].messages[0].content or ""
+    final = w.llm.calls[1].messages[0].content or ""
+    assert "use the time given above" in main
+    assert "never copy tags, markup" in final
+    w2 = World(tmp_path, [call("web_search", query="x"), say("ок")])
+    w2.ask("кто президент")
+    assert "используй время, указанное выше" in (w2.llm.calls[0].messages[0].content or "")
+    assert "никогда не копируй теги" in (w2.llm.calls[1].messages[0].content or "")

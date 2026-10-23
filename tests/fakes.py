@@ -210,3 +210,23 @@ class FakePlayer:
 
     def close(self) -> None:
         self.closed = True
+
+
+class TTSCall(NamedTuple):
+    text: str
+    lang: str
+
+
+class FakeTTS:
+    """Returns a short silent clip (or raises ``error``); records every call."""
+
+    def __init__(self, error: Exception | None = None, name: str = "fake") -> None:
+        self.name = name
+        self.error = error
+        self.calls: list[TTSCall] = []
+
+    def synthesize(self, text: str, lang: str) -> AudioClip:
+        self.calls.append(TTSCall(text, lang))
+        if self.error is not None:
+            raise self.error
+        return AudioClip(pcm=b"\x00\x00" * 160, sample_rate=16000)

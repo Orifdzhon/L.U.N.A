@@ -89,16 +89,24 @@ class RouterSettings(_Section):
     site_aliases: dict[str, str] = Field(default_factory=dict)
 
 
+EDGE_VOICE_PATTERN = r"^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z0-9]+Neural$"
+
+
 class TTSSettings(_Section):
     enabled: bool = False
-    provider: Literal["sapi"] = "sapi"  # the Piper Issue extends this Literal
-    # Case-insensitive substrings matched against installed SAPI voice names.
+    # "edge": Microsoft neural voices online, falling back to SAPI; "sapi": local only.
+    provider: Literal["edge", "sapi"] = "edge"
+    edge_voice_ru: str = Field(default="ru-RU-SvetlanaNeural", pattern=EDGE_VOICE_PATTERN)
+    edge_voice_en: str = Field(default="en-US-JennyNeural", pattern=EDGE_VOICE_PATTERN)
+    # Case-insensitive substrings matched against installed SAPI voice names (also the fallback).
     voice_ru: str = Field(default="Irina", min_length=1)
     voice_en: str = Field(default="Zira", min_length=1)
-    rate: int = Field(default=0, ge=-10, le=10)
+    rate: int = Field(default=0, ge=-10, le=10)  # edge: 5 % per step
     volume: int = Field(default=100, ge=0, le=100)
     max_chars: int = Field(default=1500, ge=1)  # spoken text per reply; cut at a sentence end
     first_chunk_max_chars: int = Field(default=200, ge=1)  # size of the first spoken chunk
+    edge_timeout_s: float = Field(default=15.0, gt=0)  # whole online synthesis of one chunk
+    fallback_cooldown_s: float = Field(default=60.0, ge=0)  # skip Edge this long after a failure
 
 
 class Settings(_Section):

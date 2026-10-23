@@ -138,7 +138,14 @@ Example requests: `открой ютуб`, `open telegram`, `какой курс
 
 ## Voice (text-to-speech)
 
-Replies can be spoken with the Windows built-in SAPI voices (ADR 0005). Voice is off by default.
+Replies can be spoken with natural Microsoft neural voices (online, default) or the Windows
+built-in SAPI voices (offline). See ADR 0005. Voice is off by default.
+
+**Privacy and network:** with `provider = "edge"` the text of each spoken reply is sent to
+Microsoft's Edge text-to-speech service (through the unofficial `edge-tts` library; the endpoint
+may change or break without notice). If the service is unreachable or fails, L.U.N.A. speaks the
+same text with the Windows SAPI voices instead, logs one warning, and retries the online voice
+after `fallback_cooldown_s`. Use `provider = "sapi"` to keep everything local.
 
 **Audio backend:** `sounddevice` is a normal dependency on Windows, so the `uv sync` from section 2
 installs it. (Do not rely on an optional extra: a plain `uv run` re-syncs without extras and would
@@ -158,11 +165,15 @@ Without either flag the config decides.
 | Key | Default | Range / meaning |
 |---|---|---|
 | `enabled` | `false` | speak replies |
-| `provider` | `"sapi"` | only `sapi` exists so far |
-| `voice_ru` | `"Irina"` | case-insensitive part of an installed voice name, used for Russian replies |
+| `provider` | `"edge"` | `"edge"` (online neural voices, SAPI fallback) or `"sapi"` (local only) |
+| `edge_voice_ru` | `"ru-RU-SvetlanaNeural"` | Edge voice for Russian replies (`uv run edge-tts --list-voices`) |
+| `edge_voice_en` | `"en-US-JennyNeural"` | Edge voice for English replies |
+| `voice_ru` | `"Irina"` | SAPI voice (the fallback, or `provider = "sapi"`): case-insensitive part of an installed voice name, used for Russian replies |
 | `voice_en` | `"Zira"` | same, for English replies |
-| `rate` | `0` | -10 (slow) .. 10 (fast) |
-| `volume` | `100` | 0 .. 100 |
+| `rate` | `0` | -10 (slow) .. 10 (fast). SAPI: its own scale. Edge: 5 % per step (`-10` = `-50%`, `+10` = `+50%`) |
+| `volume` | `100` | 0 .. 100. Edge: offset from full volume (`100` = `+0%`, `50` = `-50%`, `0` = `-100%`) |
+| `edge_timeout_s` | `15` | > 0; give up on the online voice for one chunk after this long |
+| `fallback_cooldown_s` | `60` | >= 0; after an Edge failure use SAPI for this long before trying Edge again |
 | `max_chars` | `1500` | >= 1; longer replies are cut at a sentence end for speech (the text is still printed in full) |
 | `first_chunk_max_chars` | `200` | >= 1; size limit of the first spoken chunk, smaller means sound starts sooner |
 
@@ -198,8 +209,9 @@ To add a voice: Windows Settings -> Time & language -> Speech -> Manage voices -
 install the language pack). A voice added there may be OneCore-only; if it does not show up in the
 list above it cannot be used. Then set `voice_ru` / `voice_en` to part of its name.
 
-Known limits: the SAPI voices sound robotic, and this is Windows-only. Piper (more natural voices)
-is planned as an optional provider later.
+Known limits: the SAPI voices sound robotic and are Windows-only; that is why Edge is the default.
+Edge needs the network and each sentence takes about 1.5 s to synthesize. Piper (offline natural
+voices) is planned as an optional provider later.
 
 ## 8. Troubleshooting
 
@@ -225,7 +237,7 @@ is planned as an optional provider later.
   once but the first app lookup may wait a few seconds. If the scan fails (PowerShell blocked by
   group policy, timeout), a warning goes to `luna.log` and `open <app>` finds nothing; sites and
   answers still work.
-- **`config error: ... tts.provider: Input should be 'sapi'`.** Your `luna.toml` was copied from an
+- **`config error: ... tts.provider: Input should be 'edge' or 'sapi'`.** Your `luna.toml` was copied from an
   older `luna.example.toml` that had `provider = "piper"` and a Piper voice such as
   `voice_ru = "ru_RU-dmitri-medium"`. Piper is not supported yet. Replace the whole `[tts]` block
   in `%APPDATA%\LUNA\luna.toml` (or delete it, the defaults are the same apart from `enabled`):
@@ -233,9 +245,7 @@ is planned as an optional provider later.
   ```toml
   [tts]
   enabled = true
-  provider = "sapi"
-  voice_ru = "Irina"
-  voice_en = "Zira"
+  provider = "edge"   # or "sapi" for local-only voices
   ```
 
 - **`Voice disabled: ... Continuing in text mode.`** Printed at start when `--voice` / `enabled`
@@ -247,6 +257,12 @@ is planned as an optional provider later.
   - `SAPI voices are only available on Windows`: other systems are not supported yet.
   - `cannot list SAPI voices (...)` or `no SAPI voices are installed`: PowerShell or
     `System.Speech` is blocked or has no voices; see "Windows voices" above.
+- **`No offline fallback voice: ... Speech needs the network.`** Edge is on but SAPI cannot be
+  used as a backup (not Windows, no SAPI voices, PowerShell blocked). Without the network nothing
+  is spoken; text replies still work.
+- **Replies are spoken in a robotic voice.** The online voice was unreachable and SAPI took over
+  (see the one warning `edge unavailable (...)` in `luna.log`); Edge is retried after
+  `fallback_cooldown_s`. Check the network or proxy/firewall rules for Microsoft endpoints.
 - **Voice is on but there is no sound, or it plays on the wrong device.** Audio goes to the
   Windows default output device; change it in Windows Sound settings and restart L.U.N.A. Check
   that `/voice` does not say `muted` and that the volume mixer is not muting Python. Speech errors

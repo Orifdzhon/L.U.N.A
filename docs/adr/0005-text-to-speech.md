@@ -3,6 +3,8 @@
 - Status: **accepted (with amendment of 2026-10-23)**
 - Date: 2026-10-22 (amended 2026-10-23)
 
+> Amendment 2 (2026-10-24, at the end) makes **Edge online voices the default, SAPI the fallback**.
+>
 > The Amendment below replaces the default-voice part of the original Decision:
 > **SAPI is the default, Piper is a later optional provider.** The original text is kept
 > for history.
@@ -159,3 +161,37 @@ machine.
 - Local check: installed Windows voices listed via `System.Speech` (2026-10-22): Irina (ru-RU), David, Zira (en-US); OneCore: Irina, Pavel, David, Mark, Zira.
 - PR #67 (winsound vs sounddevice measurement, 2026-10-23): https://github.com/Orifdzhon/L.U.N.A/pull/67
 - sounddevice on PyPI (0.5.6, MIT, Python >=3.7; accessed 2026-10-23): https://pypi.org/pypi/sounddevice/json
+
+## Amendment 2 (2026-10-24): Edge online voices by default, SAPI as fallback
+
+Owner decision after hearing Irina/Zira: SAPI sounds too robotic. The owner accepts that reply
+text is sent to Microsoft's online service and that the endpoint is unofficial (it may break).
+
+1. **Default provider: `EdgeTTS`** (`luna.tts.edge`, library `edge-tts` 7.x). Voices:
+   `ru-RU-SvetlanaNeural` (female) and `en-US-JennyNeural`, settings `edge_voice_ru` /
+   `edge_voice_en` (validated against `^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z0-9]+Neural$`).
+   `[tts] provider` is `"edge" | "sapi"`; `voice_ru` / `voice_en` keep meaning "SAPI voice".
+   `rate` (-10..10) maps to `-50%..+50%` (5 % per step); `volume` (0..100) maps to the offset
+   `volume - 100` percent (`+0%` = full volume).
+2. **Fallback: `FallbackTTS(EdgeTTS, SapiTTS)`.** `ProviderUnavailable` from Edge (network, timeout,
+   service error, undecodable audio) makes the same chunk be spoken by SAPI; for
+   `fallback_cooldown_s` (60 s) Edge is skipped, so no sentence waits for a failing call. One
+   warning per outage, an info line when Edge is back. `ProviderRequestError` is not a service
+   failure and propagates. Without SAPI (not Windows / no voices) Edge runs alone and the
+   startup shows a warning.
+3. **Audio format.** `edge-tts` always streams MP3 (24 kHz, 48 kbps, mono); the output format is
+   hard-coded in the library, so a PCM/WAV format cannot be requested. Decoder options:
+   `miniaudio` (MIT, pyminiaudio wheels for Windows/CPython 3.13, ~0.5 MB, no external binary) -
+   **chosen**; PyAV (bundles FFmpeg, ~30 MB+, heavier licensing story); ffmpeg subprocess (not
+   installed, would be an external prerequisite). The clip is decoded to int16 mono at 24 kHz.
+4. **Threading.** `synthesize` runs on the Speaker's synthesis thread; it creates a short-lived
+   event loop with `asyncio.run`, bounded by `edge_timeout_s` (plus 5 s connect / 15 s read
+   timeouts in the library).
+5. **Security.** Plain text only: `edge_tts.Communicate` XML-escapes the text (`&`, `<`, `>`)
+   before building its SSML, so injected `<speak>`/`<voice>`/`<prosody>` tags are read aloud as
+   text (covered by tests). Voice names come from config and are pattern-checked; rate and
+   volume are built from ints.
+6. **Dependencies and licenses.** `edge-tts` is **LGPL-3.0** (pure Python, unmodified, used
+   through `import`), which does not make L.U.N.A. LGPL: the library stays replaceable by the
+   user (`uv`-managed dependency). Its dependencies: `aiohttp` (Apache-2.0), `certifi` (MPL-2.0),
+   `tabulate` (MIT), `typing-extensions` (PSF). `miniaudio` is MIT.

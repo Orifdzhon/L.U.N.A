@@ -7,6 +7,7 @@ import pytest
 
 from fakes import FakeClock, FakeLLM, ScriptExhausted
 from luna.core.errors import (
+    ConfigError,
     ProviderError,
     ProviderRequestError,
     ProviderUnavailable,
@@ -36,9 +37,9 @@ def test_is_an_llm_provider() -> None:
 
 
 def test_rejects_empty_and_duplicate_providers() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ConfigError):
         LLMChain([], FakeClock())
-    with pytest.raises(ValueError):
+    with pytest.raises(ConfigError):
         LLMChain([llm("a"), llm("a")], FakeClock())
 
 
@@ -105,17 +106,22 @@ def test_backoff_doubles_caps_and_resets_after_success() -> None:
     assert chat(chain).provider == "a"
 
 
-def test_all_on_cooldown_raises_immediately_without_sleeping() -> None:
+def _no_sleep(*_: object) -> None:
+    raise AssertionError("LLMChain must never sleep")
+
+
+def test_all_on_cooldown_raises_immediately_without_sleeping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     clock = FakeClock()
     a = llm("a", RateLimited(retry_after_s=30))
     b = llm("b", ProviderUnavailable("down"))
     chain = LLMChain([a, b], clock)
     with pytest.raises(ProviderUnavailable):
         chat(chain)
-    started = time.monotonic()
+    monkeypatch.setattr(time, "sleep", _no_sleep)
     with pytest.raises(ProviderUnavailable) as info:
         chat(chain)
-    assert time.monotonic() - started < 0.5
     assert len(a.calls) == 1 and len(b.calls) == 1
     assert "a: cooldown" in str(info.value) and "b: cooldown" in str(info.value)
 
@@ -134,8 +140,11 @@ def test_request_error_is_retried_on_one_more_provider_only() -> None:
     b = llm("b", ProviderRequestError("bad too"))
     c = llm("c", ok("c"))
     chain = LLMChain([a, b, c], FakeClock())
-    with pytest.raises(ProviderRequestError, match="bad too"):
+    with pytest.raises(ProviderRequestError) as info:
         chat(chain)
+    assert "bad too" not in str(info.value)
+    assert "a: ProviderRequestError; b: ProviderRequestError" in str(info.value)
+    assert isinstance(info.value.__cause__, ProviderRequestError)
     assert c.calls == []
 
 
@@ -221,3 +230,115 @@ def test_remaining_timeout_is_passed_and_deadline_enforced() -> None:
 def test_script_exhausted_is_not_swallowed() -> None:
     with pytest.raises(ScriptExhausted):
         chat(LLMChain([llm("a"), llm("b", ok("b"))], FakeClock()))
+
+
+def test_demotion_after_two_request_errors_followed_by_success() -> None:
+    clock = FakeClock()
+    bad = ProviderRequestError("thought_signature")
+    gemini = llm("gemini", bad, ProviderRequestError("again"), ok("gemini"), ok("gemini"))
+    groq = llm("groq", *[ok("groq")] * 5)
+    chain = LLMChain([gemini, groq], clock)
+    chat(chain)
+    chat(chain)
+    assert len(gemini.calls) == 2
+    chat(chain)  # the 2nd tool call of the turn: Gemini is skipped
+    assert len(gemini.calls) == 2
+    clock.advance(59)
+    chat(chain)
+    assert len(gemini.calls) == 2
+    clock.advance(1.1)
+    assert chat(chain).provider == "gemini"  # flat 60 s, then it is probed again
+
+
+def test_success_resets_request_failure_counter() -> None:
+    gemini = llm(
+        "gemini", ProviderRequestError("x"), ok("gemini"), ProviderRequestError("x"), ok("gemini")
+    )
+    groq = llm("groq", ok("groq"), ok("groq"))
+    chain = LLMChain([gemini, groq], FakeClock())
+    assert [chat(chain).provider for _ in range(4)] == ["groq", "gemini", "groq", "gemini"]
+
+
+def test_request_error_everywhere_demotes_nobody() -> None:
+    a = llm("a", *[ProviderRequestError("x")] * 4)
+    b = llm("b", *[ProviderRequestError("y")] * 4)
+    chain = LLMChain([a, b], FakeClock())
+    for _ in range(4):
+        with pytest.raises(ProviderRequestError):
+            chat(chain)
+    assert len(a.calls) == 4 and len(b.calls) == 4
+
+
+def test_non_positive_timeout_makes_no_provider_call() -> None:
+    a = llm("a", ok("a"))
+    with pytest.raises(ProviderUnavailable, match="deadline"):
+        chat(LLMChain([a], FakeClock()), timeout_s=0)
+    assert a.calls == []
+
+
+def test_deadline_after_request_error_raises_request_error() -> None:
+    clock = FakeClock()
+
+    class Slow:
+        name = "slow"
+
+        def chat(
+            self,
+            messages: Sequence[Message],
+            tools: Sequence[ToolSchema] = (),
+            *,
+            timeout_s: float,
+        ) -> ChatResponse:
+            clock.advance(timeout_s)
+            raise ProviderRequestError("bad")
+
+    c = llm("c", ok("c"))
+    with pytest.raises(ProviderRequestError, match="deadline"):
+        chat(LLMChain([Slow(), c], clock), timeout_s=5.0)
+    assert c.calls == []
+
+
+def test_rate_limited_after_request_error_falls_through() -> None:
+    a = llm("a", ProviderRequestError("bad"))
+    b = llm("b", RateLimited(retry_after_s=10))
+    c = llm("c", ok("c"))
+    assert chat(LLMChain([a, b, c], FakeClock())).provider == "c"
+
+
+def test_request_id_is_passed_to_provider_switched() -> None:
+    a = llm("a", ProviderUnavailable("down"))
+    b = llm("b", ok("b"))
+    bus = EventBus()
+    with bus.subscribe() as sub:
+        LLMChain([a, b], FakeClock(), bus).chat(MSGS, timeout_s=5, request_id="req-1")
+        event = sub.queue.get_nowait()
+    assert isinstance(event, ProviderSwitched) and event.request_id == "req-1"
+
+
+def test_concurrent_stale_failure_does_not_double_backoff() -> None:
+    clock = FakeClock()
+    chain_holder: list[LLMChain] = []
+
+    class Racy:
+        name = "racy"
+
+        def chat(
+            self,
+            messages: Sequence[Message],
+            tools: Sequence[ToolSchema] = (),
+            *,
+            timeout_s: float,
+        ) -> ChatResponse:
+            # While this call is in flight, a concurrent request records a failure for us.
+            clock.advance(1)
+            chain_holder[0]._fail("racy", None, started=clock())
+            raise ProviderUnavailable("down")
+
+    chain = LLMChain([Racy(), llm("b", *[ok("b")] * 3)], clock)
+    chain_holder.append(chain)
+    clock.advance(1)
+    chat(chain)
+    # Two failures for one outage: the cooldown is still the first step (60 s), not 120 s.
+    clock.advance(61)
+    assert chain._state["racy"].failures == 1
+    assert not chain._cooling_down("racy", clock())

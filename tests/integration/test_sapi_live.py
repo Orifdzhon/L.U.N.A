@@ -44,3 +44,40 @@ def test_real_voices_include_irina_and_an_english_voice():
     names = [v.name for v in SapiTTS().list_voices()]
     print("\n" + "\n".join(names))
     assert any("irina" in n.lower() for n in names)
+
+
+def test_speaker_speaks_and_stops_after_first_sentence():
+    sd = pytest.importorskip("sounddevice")
+    try:
+        sd.query_devices(kind="output")
+    except Exception as e:
+        pytest.skip(f"no audio output device: {e}")
+    from luna.config.settings import TTSSettings
+    from luna.core.events import EventBus, Status
+    from luna.core.models import Reply
+    from luna.tts.speaker import Speaker
+
+    bus = EventBus()
+    sub = bus.subscribe()
+    speaker = Speaker(SapiTTS(), SoundDevicePlayer(), bus, TTSSettings())
+
+    def wait_for_status(status, timeout):
+        while True:
+            event = sub.queue.get(timeout=timeout)
+            if getattr(event, "status", None) == status:
+                return
+
+    try:
+        text = "Привет, я Луна. Сейчас я расскажу кое-что длинное. И ещё одно предложение."
+        started = time.monotonic()
+        speaker.speak(Reply(text=text, lang="ru"), "live")
+        wait_for_status(Status.SPEAKING, 10)
+        print(f"\nfirst audio after {time.monotonic() - started:.2f}s")
+        time.sleep(1.5)  # roughly the first sentence
+        stopped = time.monotonic()
+        speaker.stop()
+        wait_for_status(Status.IDLE, 5)
+        print(f"IDLE {time.monotonic() - stopped:.2f}s after stop()")
+        assert time.monotonic() - stopped < 0.5
+    finally:
+        speaker.close()

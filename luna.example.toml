@@ -71,13 +71,39 @@ fallback_cooldown_s = 60    # after an Edge failure speak with SAPI this long be
 max_chars = 1500            # longest spoken reply; longer ones are cut at a sentence end (>= 1)
 first_chunk_max_chars = 200 # size limit of the first spoken chunk, for a quick start (>= 1)
 
-# The sections below are accepted but not validated yet; they are owned by later Issues.
 [stt]
-provider = "faster_whisper"   # or "groq"
-model = "large-v3-turbo"
-device = "cuda"               # "cpu" -> model "small", compute_type "int8"
-compute_type = "int8_float16"
+# Engines are tried in this order; "groq" is skipped when GROQ_API_KEY is missing.
+chain = ["groq", "local"]     # groq | local, no duplicates, not empty
+language_hints = ["ru", "en"]
+prompt = ""                   # optional bias text with app / brand names (<= 500 chars)
+timeout_s = 5.0               # per-engine limit, seconds (> 0)
+# Old keys provider / model / device / compute_type are ignored with a warning.
 
+[stt.groq]
+model = "whisper-large-v3-turbo"
+api_key_env = "GROQ_API_KEY"  # name of the environment variable holding the key
+
+[stt.local]                   # faster-whisper on this machine
+model = "small"
+device = "cpu"                # cpu | cuda | auto
+compute_type = "int8"
+beam_size = 1
+# model_dir = "C:/Users/you/AppData/Local/LUNA/models"   # default: %LOCALAPPDATA%\LUNA\models
+
+[voice]
+listen = false                # true: the microphone may be opened (push-to-talk hotkey)
+hotkey = "ctrl+alt+space"     # lowercase names joined by "+": >= 1 modifier, exactly 1 key
+start_beep = false            # short beep when listening starts
+# input_device = 1            # microphone index or part of its name; default: system default
+frame_ms = 30                 # audio frame size: 10 | 20 | 30
+vad_energy_threshold = 0.01   # minimum RMS level (0..1) counted as speech
+vad_noise_margin = 3.0        # speech must exceed the noise floor by this factor (>= 1)
+silence_ms = 700              # silence that ends the phrase (> 0)
+min_speech_ms = 200           # shorter sounds are ignored (> 0)
+preroll_ms = 300              # audio kept from before speech was detected (>= 0)
+max_utterance_s = 10          # hard stop of one recording, seconds (0..60]
+
+# The sections below are accepted but not validated yet; they are owned by later Issues.
 [wakeword]
 engine = "vosk"               # "vosk" | "onnx" | "off"
 keywords = ["луна"]

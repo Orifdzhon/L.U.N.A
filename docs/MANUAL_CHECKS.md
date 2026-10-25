@@ -1,4 +1,4 @@
-# Manual checks (slices 1-2: text mode and voice replies)
+# Manual checks (slices 1-3: text mode, voice replies, voice input)
 
 These checks need a real Windows desktop, a browser and network access, so CI cannot run them.
 Set up first: [SETUP.md](SETUP.md). Start the REPL with `uv run luna --text`.
@@ -120,3 +120,49 @@ uv run python scripts/benchmark.py --providers gemini,groq --chain --out bench.j
 Expected: a table per provider with `pass`, `first call s`, `total s`, `LLM calls`, `retries`,
 `error`, `accuracy %`, `tool ok %`. All safety prompts must pass (a failure means a provider
 followed injected instructions). All options and column meanings are in the README.
+
+## K. Voice input (slice 3)
+
+Needs a microphone, speakers and (for K9) the ability to cut the network. Setup:
+[SETUP.md](SETUP.md#voice-input-push-to-talk). Start with `uv run luna --text --voice --listen`.
+Press the hotkey (default Ctrl+Alt+Space), speak, and wait for the reply. Latency target:
+at most 2 s from the end of your speech to the action for simple commands; note what you measure
+(the log line per voice turn in `%LOCALAPPDATA%\LUNA\logs\luna.log` has the stage timings).
+
+| # | Do | Expected | Latency / notes |
+|---|---|---|---|
+| K1 | Start as above | Startup lists `Listen: on (Ctrl+Alt+Space)` and `Speech recognition: groq -> local.` (only `local` without a Groq key) | |
+| K2 | Press the hotkey, say "открой ютуб" | `(listening...)`, `(heard) открой ютуб`, YouTube opens, a short confirmation is spoken | |
+| K3 | Say "open telegram" (or another installed app) | `(heard) open telegram`, the app launches | |
+| K4 | Say "какой курс доллара" | `(heard) ...`, web search, a spoken Russian answer with a figure | |
+| K5 | Say a mixed phrase, e.g. "открой telegram" | Recognized and handled; note any misrecognition | |
+| K6 | Press the hotkey and stay silent | After the silence limit: `(no speech heard)`, nothing opens, back to idle | |
+| K7 | Press the hotkey, then talk without stopping for more than 10 s | Recording is cut at 10 s and the recorded part is handled | |
+| K8 | Press the hotkey, say "привет", press the hotkey again before the silence limit | Recording stops at once, the phrase is handled | |
+| K9 | Disconnect the network (or set a wrong `GROQ_API_KEY`), ask by voice | Local fallback recognizes it (slower, the first time also downloads the model if missing); after reconnecting, Groq is used again | |
+| K10 | Ask for a long answer by voice; while it is spoken press the hotkey | Speech stops at once and `(listening...)` starts (barge-in); the next phrase is handled | |
+| K11 | Press the hotkey while a request is still thinking | The request is cancelled and listening starts | |
+| K12 | `/listen off`, press the hotkey; then `/listen on` | Off: nothing happens (`Listen: off`); on: `Listen: on (...)`, the hotkey works again | |
+| K13 | `/mic`, stay quiet, then speak | `Noise floor: ..., peak: ...` and `Suggested [voice] vad_energy_threshold = ...`; silence only gives `No speech heard: ...` | |
+| K14 | Set `[voice] hotkey` to a combination another program owns (or run a second `luna --listen`) | `Voice input disabled: hotkey '...' is already taken by another program; choose another combination in [voice] hotkey. Continuing in text mode.`; typing still works | |
+| K15 | Disable or unplug the microphone, start with `--listen` | `Voice input disabled: no audio input device (microphone) found. Continuing in text mode.`; after fixing, `/listen on` works | |
+| K16 | Turn off "Let desktop apps access your microphone" in Windows privacy settings, press the hotkey | A clear failure message, no crash (re-enable it afterwards) | |
+| K17 | With the Windows microphone indicator visible, watch it while idle and between turns | The indicator is off at idle and after each turn; on only while `(listening...)` | |
+| K18 | Press the hotkey and speak 20 times in a row (short phrases such as "open notepad") | Every turn works; no growing delay, no extra console noise; the Python process does not keep growing in Task Manager | |
+| K19 | `exit` while idle and while listening | Quits cleanly, exit code 0, no hanging process | |
+
+Known limitations: there is no wake word yet (hotkey only); the speaker is silenced before
+recording, so echo into the microphone is not handled any other way (use headphones if you want to
+test barge-in at high volume); mixed Russian/English accuracy is whatever Whisper delivers (see the
+STT benchmark, #87).
+
+Real-device automated checks (skipped by default; they use the real microphone, speakers, hotkey
+or network):
+
+```powershell
+uv run pytest -m audio tests/integration -s      # microphone capture and recorder (speak when asked)
+uv run pytest -m desktop tests/integration -s    # global hotkey registration
+uv run pytest -m live tests/integration          # Groq / local STT and LLM providers (keys, network)
+```
+
+A test that finds no device or no key is skipped, not failed.

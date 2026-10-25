@@ -29,7 +29,7 @@ All automated tests need none of these: they run without microphone, GPU, networ
 | 0 | Skeleton | **done** | #4-#8 |
 | 1 | Text core | **done** | #9-#23, #43, #48 (open follow-ups: #33, #35, #39) |
 | 2 | Voice out | **done** | #55-#62 (#63 Piper: later/optional) |
-| 3 | Voice in (push-to-talk) | planned (Issues written) | #77-#88 |
+| 3 | Voice in (push-to-talk) | **code done**, #84 and #87 open | #77-#88 |
 | 4 | Wake word | planned | — |
 | 5 | Desktop shell | planned | — |
 | 6 | Hardening | planned | — |
@@ -139,7 +139,7 @@ Planning notes (not decisions):
 - Default English voice: planner proposes Zira (female, matches Irina); owner may choose David.
 - Voice follows `Reply.lang` for the whole reply; per-sentence language switching is out of scope.
 
-## Slice 3 — Voice in, push-to-talk (planned, Issues written 2026-10-26)
+## Slice 3 — Voice in, push-to-talk (code done; #84 and #87 open)
 
 **Goal:** hotkey -> speak -> action + spoken reply.
 **Contents:** audio capture, VAD endpointing, `FasterWhisperSTT` + `GroqWhisperSTT`, global hotkey
@@ -167,6 +167,9 @@ missing STT key degrade to text mode with a clear message; one latency line per 
 | #86 | Wire it up: `build_app`, CLI `--listen`, barge-in, degraded start | #77-#83, #85 | — |
 | #87 | STT benchmark script and owner's run: latency, accuracy, VRAM, CUDA-on-Windows | #78, #81, #82 | #83, #85 |
 | #88 | Docs: voice input setup and slice-3 manual checks | #86 (soft #87) | #87 |
+
+Status: #77-#83, #85, #86 and #88 are done (merged or in review); #84 (ADR amendment) and #87
+(STT benchmark, owner's run) are still open.
 
 Suggested order: group A in parallel (`#77`, `#78`, `#79`, `#80`) -> group B in parallel (`#81`, `#82`,
 `#83`) -> `#85` -> `#86` -> (`#87` owner run, `#88`) -> `#84` final amendment with measured numbers.

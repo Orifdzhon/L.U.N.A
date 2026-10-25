@@ -9,6 +9,7 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
     "ddgs>=9.16,<10",
     "edge-tts>=7,<8",
+    "faster-whisper>=1.1,<2",
     "httpx>=0.27",
     "miniaudio>=1.61,<2",
     "openai>=2,<3",

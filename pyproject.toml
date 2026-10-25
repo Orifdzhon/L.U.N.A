@@ -60,5 +60,6 @@ markers = [
     "live: needs real network / API keys (run manually)",
     "gpu: needs a CUDA GPU",
     "audio: needs a microphone or speakers",
+    "desktop: touches the real Windows desktop session (global hotkeys)",
 ]
-addopts = '-m "not live and not gpu and not audio"'
+addopts = '-m "not live and not gpu and not audio and not desktop"'

@@ -279,3 +279,36 @@ class FakeTTS:
         finally:
             with self._lock:
                 self._active -= 1
+
+
+# ---------------------------------------------------------------------------------------
+# Hotkey fakes (issue #79)
+# ---------------------------------------------------------------------------------------
+
+
+class FakeHotkeyListener:
+    """In-memory ``HotkeyListener``: ``press()`` runs the callback synchronously."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.hotkey: str | None = None
+        self.running = False
+        self._on_press = None
+
+    def start(self, hotkey: str, on_press) -> None:
+        if self.error is not None:
+            raise self.error
+        if self.running:
+            raise RuntimeError("fake hotkey listener already running")
+        self.hotkey = hotkey
+        self._on_press = on_press
+        self.running = True
+
+    def stop(self) -> None:
+        self.running = False
+        self._on_press = None
+
+    def press(self) -> None:
+        if not self.running or self._on_press is None:
+            raise RuntimeError("fake hotkey listener is not running")
+        self._on_press()

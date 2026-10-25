@@ -20,12 +20,13 @@ def test_defaults_are_typed_models():
     assert s.stt.language_hints == ["ru", "en"]
     assert s.stt.timeout_s == 5.0
     assert (s.stt.groq.model, s.stt.groq.api_key_env) == ("whisper-large-v3-turbo", "GROQ_API_KEY")
-    assert (s.stt.local.model, s.stt.local.device) == ("small", "cpu")
+    assert (s.stt.local.model, s.stt.local.device) == ("base", "cpu")
     assert (s.stt.local.compute_type, s.stt.local.beam_size) == ("int8", 1)
     assert s.stt.local.model_dir is None
     v = s.voice
     assert v.listen is False and v.start_beep is False
     assert v.hotkey == "ctrl+alt+space"
+    assert v.vad_energy_threshold == 0.003  # owner-calibrated (Logi C270 speech 0.005-0.016)
     assert (v.silence_ms, v.preroll_ms, v.max_utterance_s, v.frame_ms) == (700, 300, 10, 30)
     assert v.input_device is None
 

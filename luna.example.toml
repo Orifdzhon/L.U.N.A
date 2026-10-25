@@ -84,7 +84,7 @@ model = "whisper-large-v3-turbo"
 api_key_env = "GROQ_API_KEY"  # name of the environment variable holding the key
 
 [stt.local]                   # faster-whisper on this machine
-model = "small"
+model = "base"                # base: ~1 s per phrase on a laptop CPU; small is ~2x slower
 device = "cpu"                # cpu | cuda | auto
 compute_type = "int8"
 beam_size = 1
@@ -96,7 +96,7 @@ hotkey = "ctrl+alt+space"     # lowercase names joined by "+": >= 1 modifier, ex
 start_beep = false            # short beep when listening starts
 # input_device = 1            # microphone index or part of its name; default: system default
 frame_ms = 30                 # audio frame size: 10 | 20 | 30
-vad_energy_threshold = 0.01   # minimum RMS level (0..1) counted as speech
+vad_energy_threshold = 0.003  # minimum RMS level (0..1) counted as speech; calibrate with /mic
 vad_noise_margin = 3.0        # speech must exceed the noise floor by this factor (>= 1)
 silence_ms = 700              # silence that ends the phrase (> 0)
 min_speech_ms = 200           # shorter sounds are ignored (> 0)

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from luna.audio.base import AudioPlayer
+from luna.audio.capture import MicSource
 from luna.config.settings import ASSISTANT_MARGIN_S, Settings, TTSSettings
 from luna.core.assistant import Assistant
 from luna.core.clock import Clock
@@ -31,14 +32,16 @@ from luna.llm.chain import LLMChain
 from luna.llm.openai_compat import OpenAICompatProvider, Quirks
 from luna.logs.action_log import ActionLog
 from luna.logs.setup import default_log_dir
-from luna.platform.base import AppCatalog, AppLauncher, BrowserOpener
+from luna.platform.base import AppCatalog, AppLauncher, BrowserOpener, HotkeyListener
 from luna.search.base import SearchProvider
+from luna.stt.base import STTProvider
 from luna.tools.builtin.datetime import GetDatetimeTool
 from luna.tools.builtin.open_app import OpenAppTool
 from luna.tools.builtin.open_website import OpenWebsiteTool
 from luna.tools.builtin.web_search import WebSearchTool
 from luna.tools.registry import ToolRegistry
 from luna.tts.base import TTSProvider
+from luna.voice.input import VoiceInput
 
 if TYPE_CHECKING:
     from luna.tts.speaker import Speaker
@@ -83,6 +86,7 @@ class App:
     warnings: list[str] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
     speaker: Speaker | None = None  # None: voice is off (text mode only)
+    voice_input: VoiceInput | None = None  # push-to-talk; built lazily, see ``enable()``
     _closers: list[LLMProvider] = field(default_factory=list, repr=False)
     _catalog_thread: threading.Thread | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
@@ -133,12 +137,25 @@ class App:
             lines.append("Voice: on (/mute, /stop, /voice).")
         elif not any(w.startswith("Voice disabled") for w in self.warnings):
             lines.append("Voice: off (start with --voice to speak replies).")
+        lines.extend(self._listen_lines())
         return lines
+
+    def _listen_lines(self) -> list[str]:
+        voice_input = self.voice_input
+        if voice_input is None:
+            return []
+        if voice_input.enabled:
+            return [voice_input.status_line() + " - /listen, /mic.", *voice_input.notes]
+        if any(w.startswith("Voice input disabled") for w in self.warnings):
+            return []
+        return ["Listen: off (start with --listen or type /listen to talk with the hotkey)."]
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        if self.voice_input is not None:
+            self.voice_input.close()  # hotkey, mic and voice turns first: they use the rest
         self.orchestrator.close(_ORCHESTRATOR_CLOSE_S)
         if self.speaker is not None:
             self.speaker.close()  # before the bus: it publishes its final IDLE there
@@ -311,6 +328,9 @@ def _assemble(
     clock: Clock | None = None,
     tts: TTSProvider | None = None,
     player: AudioPlayer | None = None,
+    stt: STTProvider | None = None,
+    mic: MicSource | None = None,
+    hotkey: HotkeyListener | None = None,
 ) -> App:
     """Secrets must already be registered for log redaction."""
     clock = clock or time.monotonic
@@ -394,6 +414,21 @@ def _assemble(
     speaker = None
     if settings.tts.enabled:
         speaker = _build_speaker(settings, bus, tts, player, platform, warnings)
+    voice_input = VoiceInput(
+        settings,
+        bus,
+        orchestrator,
+        speaker,
+        platform=platform,
+        clock=clock,
+        stt=stt,
+        mic=mic,
+        hotkey=hotkey,
+    )
+    if settings.voice.listen:
+        reason = voice_input.enable()
+        if reason is not None:
+            warnings.append(f"Voice input disabled: {reason}. Continuing in text mode.")
     for text in warnings:
         logger.warning(text)
     return App(
@@ -408,6 +443,7 @@ def _assemble(
         warnings=warnings,
         tool_names=sorted(s.name for s in registry.schemas()),
         speaker=speaker,
+        voice_input=voice_input,
         _closers=closers,
         _catalog_thread=thread,
     )

@@ -21,6 +21,15 @@ def build_parser() -> argparse.ArgumentParser:
     voice.add_argument(
         "--no-voice", action="store_true", help="do not speak replies (overrides tts.enabled)"
     )
+    listen = parser.add_mutually_exclusive_group()
+    listen.add_argument(
+        "--listen", action="store_true", help="listen to the hotkey (overrides voice.listen)"
+    )
+    listen.add_argument(
+        "--no-listen",
+        action="store_true",
+        help="do not use the microphone (overrides voice.listen)",
+    )
     parser.add_argument("--config", type=Path, metavar="PATH", help="path to luna.toml")
     return parser
 
@@ -49,6 +58,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings.tts.enabled = True
     elif args.no_voice:
         settings.tts.enabled = False
+    if args.listen:
+        settings.voice.listen = True
+    elif args.no_listen:
+        settings.voice.listen = False
     setup_logging(settings.app.log_level, console=args.text, secrets=settings.secret_values())
     if args.text:
         return _run_text(settings)

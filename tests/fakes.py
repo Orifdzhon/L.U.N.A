@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from typing import Any, NamedTuple
 
 from luna.audio.base import AudioClip
@@ -32,6 +32,7 @@ class LLMCall(NamedTuple):
     messages: list[Message]
     tools: list[ToolSchema]
     timeout_s: float
+    exclude: frozenset[str] = frozenset()
 
 
 class FakeLLM:
@@ -49,9 +50,15 @@ class FakeLLM:
         *,
         timeout_s: float,
         request_id: str | None = None,
+        exclude: Collection[str] = (),
     ) -> ChatResponse:
         self.calls.append(
-            LLMCall(copy.deepcopy(list(messages)), copy.deepcopy(list(tools)), timeout_s)
+            LLMCall(
+                copy.deepcopy(list(messages)),
+                copy.deepcopy(list(tools)),
+                timeout_s,
+                frozenset(exclude),
+            )
         )
         if not self._script:
             raise ScriptExhausted("FakeLLM script exhausted")

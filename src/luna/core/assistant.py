@@ -1,3 +1,4 @@
+# ruff: noqa: RUF001
 """Assistant: the LLM tool-calling loop (ARCHITECTURE sections 4.1, 9).
 
 Security invariants:
@@ -19,7 +20,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from typing import Protocol
 
 from luna.core.errors import (
@@ -62,7 +63,29 @@ class _Chat(Protocol):
         *,
         timeout_s: float,
         request_id: str | None = None,
+        exclude: Collection[str] = (),
     ) -> ChatResponse: ...
+
+
+_NO_INTERNET_RE = re.compile(
+    r"(нет|не\s+имею|не\s+могу\s+получить|отсутствует)\s+(у\s+меня\s+)?"
+    r"(доступа\s+к\s+(интернет|актуальн|реальн|данн|текущ)|прямого\s+доступа)"
+    r"|не\s+(имею|могу)\s+(доступа|получить\s+доступ)"
+    r"|не\s+подключ[её]н\s+к\s+интернет"
+    r"|(don't|do\s+not|can't|cannot|can\s?not|unable\s+to)\s+(have\s+)?"
+    r"(access|browse|connect)\s+(to\s+)?(the\s+)?"
+    r"(internet|real[- ]time|current|live|up[- ]to[- ]date)"
+    r"|no\s+(access|internet\s+access)\s+to\s+(the\s+)?(internet|real[- ]time|current|live)"
+    r"|(real[- ]time|live|up[- ]to[- ]date)\s+(information|data)\s+(is\s+)?(not\s+)?"
+    r"(available|accessible)\s+to\s+me"
+    r"|as\s+an\s+ai[^.]*(no|don't\s+have)[^.]*(internet|real[- ]time)",
+    re.IGNORECASE,
+)
+
+
+def _claims_no_internet(text: str | None) -> bool:
+    """A reply that says the assistant has no internet / real-time access."""
+    return bool(text) and _NO_INTERNET_RE.search(text or "") is not None
 
 
 class _DenyConfirmer:
@@ -249,13 +272,16 @@ class Assistant:
         request: Request,
         cancel: threading.Event | None,
     ) -> ChatResponse:
-        def send(msgs: list[Message], offered: Sequence[ToolSchema]) -> ChatResponse:
+        def send(
+            msgs: list[Message], offered: Sequence[ToolSchema], skip: Collection[str] = ()
+        ) -> ChatResponse:
             _check(cancel)
             remaining = deadline - self._timer()
             if remaining <= 0:
                 raise _GaveUp
+            extra = {"exclude": skip} if skip else {}  # only LLMChain understands ``exclude``
             response = self._llm.chat(
-                msgs, offered, timeout_s=remaining, request_id=request.request_id
+                msgs, offered, timeout_s=remaining, request_id=request.request_id, **extra
             )
             _check(cancel)
             return response
@@ -266,6 +292,8 @@ class Assistant:
         # write a pseudo tool call as text. Retry once in plain text, then give up gracefully.
         try:
             response = send(messages, ())
+            if _claims_no_internet(response.text):
+                return self._retry_elsewhere(send, messages, response)
             if not _looks_like_tool_call(response.text):
                 return response
             logger.warning("tools-free reply looked like a tool call; retrying")
@@ -278,6 +306,21 @@ class Assistant:
         if _looks_like_tool_call(response.text):
             raise _GaveUp
         return response
+
+    @staticmethod
+    def _retry_elsewhere(
+        send: Callable[..., ChatResponse], messages: list[Message], first: ChatResponse
+    ) -> ChatResponse:
+        """The model ignored the fetched results ("no internet"): ask the next provider once."""
+        logger.warning("tools-free reply claimed no internet access; trying the next provider")
+        skip = {first.provider} if first.provider else set()
+        try:
+            second = send(messages, (), skip) if skip else None
+        except ProviderError:
+            raise _GaveUp from None
+        if second is None or _claims_no_internet(second.text) or _looks_like_tool_call(second.text):
+            raise _GaveUp
+        return second
 
     def _execute(
         self,

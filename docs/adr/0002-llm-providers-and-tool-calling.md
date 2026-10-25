@@ -49,7 +49,7 @@ sufficient.
 1. A single `OpenAICompatProvider(base_url, model, api_key, quirks)` implements
    `LLMProvider` using the `openai` SDK. Quirks: `supports_tool_choice`,
    `reasoning_effort` (e.g. `"low"` for Gemini 3 / gpt-oss), `max_tokens`.
-2. `LLMChain` with default order **Gemini → Groq → Ollama**, cooldown on 429/5xx/
+2. `LLMChain` with default order **Groq → Gemini → Ollama** (amended 2026-10-23: Gemini flash-lite ignored web results in tools-free follow-ups), cooldown on 429/5xx/
    timeouts (ARCHITECTURE §8). A provider with no API key is skipped.
 3. Tool calling uses the OpenAI `tools` format; tool schemas come from `ToolRegistry`.
    We never depend on `tool_choice` (Ollama ignores it); "must search first" is

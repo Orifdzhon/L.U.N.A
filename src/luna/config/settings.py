@@ -55,7 +55,7 @@ def _default_providers() -> dict[str, ProviderSettings]:
 
 
 class LLMSettings(_Section):
-    chain: list[str] = Field(default_factory=lambda: ["gemini", "groq", "local"])
+    chain: list[str] = Field(default_factory=lambda: ["groq", "gemini", "local"])
     providers: dict[str, ProviderSettings] = Field(default_factory=_default_providers)
     timeout_s: float = Field(default=20.0, gt=0)
     connect_timeout_s: float = Field(default=5.0, gt=0)

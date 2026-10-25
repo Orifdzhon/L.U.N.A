@@ -76,3 +76,20 @@ The core is UI-agnostic (adapters), so a split into service + clients is possibl
 - PySide6 on PyPI (6.12.0, license, abi3 wheels): https://pypi.org/pypi/PySide6/json
 - Win32 `RegisterHotKey`: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-registerhotkey (not re-fetched this session; long-standing API)
 - Run registry keys: https://learn.microsoft.com/windows/win32/setupapi/run-and-runonce-registry-keys (not re-fetched this session)
+
+## Amendment (2026-10-26): hotkey implemented, toggle push-to-talk (Issue #84)
+
+The hotkey part of this ADR is decided by the owner (D2, D3 in ROADMAP slice 3) and implemented in
+`luna.platform.windows.hotkey.WindowsHotkeyListener` (PR #90, wired into the app in #98). The
+rest of this ADR (PySide6, autostart) stays proposed until slice 5.
+
+- `RegisterHotKey` with `MOD_NOREPEAT`, `hWnd=NULL`, on a dedicated `luna-hotkey` message-loop
+  thread; `on_press` runs on a separate `luna-hotkey-cb` worker fed by a bounded queue (8), so a
+  slow callback never blocks the message loop. **No low-level keyboard hook.**
+- Consequence: only presses are reported, so push-to-talk is a **toggle** (press to start, VAD or
+  a second press to stop). The interaction model lives in ARCHITECTURE §4.2; `HotkeyListener`
+  stays press-only (`start(hotkey, on_press)` / `stop()`).
+- Default `ctrl+alt+space`, configurable in `[voice] hotkey`. It collided with another program on
+  the owner's PC (they use `ctrl+shift+space`). `ERROR_HOTKEY_ALREADY_REGISTERED` becomes a
+  `ToolError` saying the hotkey is taken and pointing to `[voice] hotkey`; the app continues in
+  text mode.

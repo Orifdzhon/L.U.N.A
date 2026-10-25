@@ -279,3 +279,50 @@ class FakeTTS:
         finally:
             with self._lock:
                 self._active -= 1
+
+
+# --- microphone capture (#78) -------------------------------------------------------------
+
+
+class FakeMic:
+    """Scripted ``MicSource``: ``read()`` returns the given frames, then None (or raises).
+
+    ``error`` is raised by ``start()``; ``read_error`` by ``read()`` once the frames ran out.
+    """
+
+    def __init__(
+        self,
+        frames: Sequence[bytes] = (),
+        error: Exception | None = None,
+        read_error: Exception | None = None,
+    ) -> None:
+        self._frames = list(frames)
+        self.error = error
+        self.read_error = read_error
+        self.started = False
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.closed = False
+
+    def start(self) -> None:
+        if self.error is not None:
+            raise self.error
+        self.started = True
+        self.start_calls += 1
+
+    def stop(self) -> None:
+        self.started = False
+        self.stop_calls += 1
+
+    def read(self, timeout_s: float) -> bytes | None:
+        if not self.started:
+            return None
+        if self._frames:
+            return self._frames.pop(0)
+        if self.read_error is not None:
+            raise self.read_error
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+        self.stop()

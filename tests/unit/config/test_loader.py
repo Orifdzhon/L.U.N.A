@@ -83,8 +83,8 @@ def test_partial_provider_override_keeps_other_keys(tmp_path):
 
 
 def test_unvalidated_sections_accepted(tmp_path):
-    settings = _load_text(tmp_path, '[stt]\nanything = "goes"\n[ui]\nautostart = true\n')
-    assert settings.stt == {"anything": "goes"}
+    settings = _load_text(tmp_path, '[wakeword]\nanything = "goes"\n[ui]\nautostart = true\n')
+    assert settings.wakeword == {"anything": "goes"}
     assert settings.ui == {"autostart": True}
 
 
@@ -101,9 +101,21 @@ def test_example_config_parses_and_equals_defaults(tmp_path):
     cwd.mkdir()
     settings = load_settings(example, env={}, cwd=cwd)
     defaults = Settings()
-    for section in ("app", "llm", "search", "router", "tts"):
+    for section in ("app", "llm", "search", "router", "tts", "stt", "voice"):
         assert getattr(settings, section) == getattr(defaults, section)
-    assert settings.stt["provider"] == "faster_whisper"
+
+
+def test_legacy_owner_config_still_loads(tmp_path, caplog):
+    text = (
+        '[stt]\nprovider = "faster_whisper"\nmodel = "large-v3-turbo"\ndevice = "cuda"\n'
+        'compute_type = "int8_float16"\n\n'
+        '[wakeword]\nengine = "vosk"\nkeywords = ["луна"]\nhotkey = "ctrl+alt+space"\n\n'
+        "[ui]\nautostart = false\n"
+    )
+    with caplog.at_level("WARNING"):
+        settings = _load_text(tmp_path, text)
+    assert settings.stt == Settings().stt
+    assert "deprecated [stt] keys" in caplog.text
 
 
 # --- [tts] -------------------------------------------------------------------------------

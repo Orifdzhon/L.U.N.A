@@ -5,10 +5,23 @@ by the loader and kept in a private attribute as :class:`~pydantic.SecretStr`, s
 show up in ``repr()``, ``model_dump()`` or ``model_dump_json()``.
 """
 
+import logging
+import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
+
+_log = logging.getLogger(__name__)
 
 
 class _Section(BaseModel):
@@ -109,16 +122,127 @@ class TTSSettings(_Section):
     fallback_cooldown_s: float = Field(default=60.0, ge=0)  # skip Edge this long after a failure
 
 
+# Keys of the old pre-slice-3 example `[stt]` block (faster_whisper / cuda). They are ignored with
+# a warning so an existing luna.toml keeps starting; see the `chain` / `local` keys instead.
+_LEGACY_STT_KEYS = ("provider", "model", "device", "compute_type")
+
+
+class STTGroqSettings(_Section):
+    model: str = Field(default="whisper-large-v3-turbo", min_length=1)
+    api_key_env: str = Field(default="GROQ_API_KEY", min_length=1)
+
+
+class STTLocalSettings(_Section):
+    model: str = Field(default="small", min_length=1)
+    device: Literal["cpu", "cuda", "auto"] = "cpu"
+    compute_type: str = Field(default="int8", min_length=1)
+    beam_size: int = Field(default=1, ge=1, le=10)
+    # None = resolved later to %LOCALAPPDATA%\LUNA\models.
+    model_dir: Path | None = None
+
+
+class STTSettings(_Section):
+    # Order = fallback order. Provisional default (owner decision D1): groq first, local fallback.
+    chain: list[Literal["groq", "local"]] = Field(default_factory=lambda: ["groq", "local"])
+    language_hints: list[str] = Field(default_factory=lambda: ["ru", "en"])
+    prompt: str = Field(default="", max_length=500)  # bias text for brand / app names
+    timeout_s: float = Field(default=5.0, gt=0)
+    groq: STTGroqSettings = Field(default_factory=STTGroqSettings)
+    local: STTLocalSettings = Field(default_factory=STTLocalSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            legacy = [key for key in _LEGACY_STT_KEYS if key in data]
+            if legacy:
+                _log.warning(
+                    "Ignoring deprecated [stt] keys %s; use chain / [stt.groq] / [stt.local]",
+                    ", ".join(legacy),
+                )
+                data = {k: v for k, v in data.items() if k not in legacy}
+        return data
+
+    @field_validator("chain")
+    @classmethod
+    def _chain_valid(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("chain must not be empty")
+        if len(set(value)) != len(value):
+            raise ValueError("chain must not contain duplicates")
+        return value
+
+    @field_validator("language_hints")
+    @classmethod
+    def _hints_valid(cls, value: list[str]) -> list[str]:
+        if not value or any(not re.fullmatch(r"[a-z]{2,3}", hint) for hint in value):
+            raise ValueError("language_hints must be a non-empty list of ISO codes like 'ru'")
+        return value
+
+
+_HOTKEY_MODIFIERS = frozenset({"ctrl", "alt", "shift", "win"})
+_HOTKEY_KEY = re.compile(r"[a-z0-9_]+")
+
+
+def _check_hotkey(value: str) -> str:
+    parts = value.split("+")
+    if any(not _HOTKEY_KEY.fullmatch(part) for part in parts):
+        raise ValueError("hotkey must be lowercase names joined by '+', e.g. 'ctrl+alt+space'")
+    modifiers = [part for part in parts if part in _HOTKEY_MODIFIERS]
+    keys = [part for part in parts if part not in _HOTKEY_MODIFIERS]
+    if len(set(modifiers)) != len(modifiers):
+        raise ValueError("hotkey repeats a modifier")
+    if not modifiers:
+        raise ValueError("hotkey needs at least one modifier (ctrl, alt, shift, win)")
+    if len(keys) != 1:
+        raise ValueError("hotkey needs exactly one non-modifier key")
+    return value
+
+
+class VoiceSettings(_Section):
+    listen: bool = False  # the microphone is never opened unless enabled
+    hotkey: str = "ctrl+alt+space"
+    start_beep: bool = False
+    input_device: int | str | None = None  # None = default; int = index; str = name substring
+    frame_ms: Literal[10, 20, 30] = 30
+    vad_energy_threshold: float = Field(default=0.01, gt=0, le=1)  # RMS floor, 0..1 of full scale
+    vad_noise_margin: float = Field(default=3.0, ge=1)  # speech = this many times the noise floor
+    silence_ms: int = Field(default=700, gt=0, le=10_000)  # trailing silence that ends a phrase
+    min_speech_ms: int = Field(default=200, gt=0)  # shorter than this is treated as noise
+    preroll_ms: int = Field(default=300, ge=0, le=2000)  # audio kept from before speech starts
+    max_utterance_s: float = Field(default=10.0, gt=0, le=60)
+
+    @field_validator("hotkey")
+    @classmethod
+    def _hotkey_valid(cls, value: str) -> str:
+        return _check_hotkey(value)
+
+    @field_validator("input_device")
+    @classmethod
+    def _device_valid(cls, value: int | str | None) -> int | str | None:
+        if isinstance(value, int) and value < 0:
+            raise ValueError("input_device index must be >= 0")
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("input_device name must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _speech_fits(self) -> Self:
+        if self.min_speech_ms >= self.max_utterance_s * 1000:
+            raise ValueError("min_speech_ms must be shorter than max_utterance_s")
+        return self
+
+
 class Settings(_Section):
     app: AppSettings = Field(default_factory=AppSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     router: RouterSettings = Field(default_factory=RouterSettings)
     tts: TTSSettings = Field(default_factory=TTSSettings)
-    # Not validated yet: owned by later Issues (STT, wake word, UI); accepted and ignored.
-    stt: dict[str, Any] = Field(default_factory=dict)
+    stt: STTSettings = Field(default_factory=STTSettings)
+    voice: VoiceSettings = Field(default_factory=VoiceSettings)
+    # Not validated yet: owned by later Issues (wake word, UI); accepted and ignored.
     wakeword: dict[str, Any] = Field(default_factory=dict)
-    voice: dict[str, Any] = Field(default_factory=dict)
     ui: dict[str, Any] = Field(default_factory=dict)
 
     # env-variable name -> secret value; never serialized, never in repr().
@@ -128,6 +252,7 @@ class Settings(_Section):
         """Pick up the keys this config refers to from ``env``; blank values count as missing."""
         names = {(p.api_key_env or "").strip() for p in self.llm.providers.values()}
         names.add(self.search.api_key_env.strip())
+        names.add(self.stt.groq.api_key_env.strip())
         names.discard("")
         self._api_keys = {n: SecretStr(env[n].strip()) for n in names if env.get(n, "").strip()}
         return self
@@ -152,4 +277,15 @@ class Settings(_Section):
             for name in self.llm.chain
             if not (env_name := (self.llm.providers[name].api_key_env or "").strip())
             or env_name in self._api_keys
+        ]
+
+    def available_stt_engines(self) -> list[str]:
+        """STT engines of the chain that can be used, in chain order.
+
+        ``groq`` without its key is skipped (degraded start, not an error); ``local`` needs none.
+        """
+        return [
+            name
+            for name in self.stt.chain
+            if name != "groq" or self.stt.groq.api_key_env.strip() in self._api_keys
         ]

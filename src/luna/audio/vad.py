@@ -51,7 +51,7 @@ class EnergyVAD:
 
     def __init__(
         self,
-        threshold: float = 0.01,
+        threshold: float = 0.003,
         margin: float = 3.0,
         frame_ms: int = DEFAULT_FRAME_MS,
         hangover_ms: int = DEFAULT_HANGOVER_MS,

@@ -136,6 +136,25 @@ On start it prints the active providers and any skipped ones. REPL commands:
 
 Example requests: `открой ютуб`, `open telegram`, `какой курс доллара?`, `что такое черная дыра?`.
 
+## Voice input (push-to-talk)
+
+```powershell
+uv run luna --text --voice --listen
+```
+
+Press **Ctrl+Alt+Space** (`[voice] hotkey`), speak, and the reply is printed and, with `--voice`,
+spoken. A second press while listening stops the recording early; a press while L.U.N.A. speaks
+or thinks interrupts it and listens again. `--listen` / `--no-listen` override `[voice] listen`;
+`/listen [on|off]` switches it while running. The microphone is open only while recording.
+
+Speech recognition uses `[stt] chain` (default `groq`, then `local`). Groq needs `GROQ_API_KEY`
+(skipped without it); `local` is faster-whisper on the CPU (model `base`, downloaded on first use
+and loaded in the background at start-up). If the hotkey is taken, there is no microphone or no
+recognition engine, one line says why and L.U.N.A. continues in text mode.
+
+**Calibration:** `/mic` listens for 3 seconds (stay quiet for a moment, then speak) and prints the
+noise floor, the speech peak and a suggested `[voice] vad_energy_threshold` (default `0.003`).
+
 ## Voice (text-to-speech)
 
 Replies can be spoken with natural Microsoft neural voices (online, default) or the Windows

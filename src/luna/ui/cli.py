@@ -16,9 +16,23 @@ from collections.abc import Callable
 from typing import TextIO
 
 from luna.app import App
-from luna.core.events import CLOSED, ProviderSwitched, Status, StatusChanged, Subscription
+from luna.core.errors import AudioError
+from luna.core.events import (
+    CLOSED,
+    ProviderSwitched,
+    Status,
+    StatusChanged,
+    Subscription,
+    TranscriptReady,
+)
 from luna.core.models import Reply, Request
 from luna.core.prompts import fallback_text
+from luna.voice.frontend import (
+    DETAIL_AUDIO_FAILED,
+    DETAIL_NO_SPEECH,
+    DETAIL_NOT_CAUGHT,
+    DETAIL_STT_FAILED,
+)
 
 PROMPT = "> "
 BOM = chr(0xFEFF)  # PowerShell pipes / editors may prefix a line with a byte order mark
@@ -27,8 +41,16 @@ LOCAL_PROVIDER = "local"
 HELP_TEXT = (
     "Type a request, e.g. 'открой ютуб', 'open telegram', 'какой курс доллара?'.\n"
     "Commands: /help, /providers, /clear (forget the conversation), exit (or Ctrl+C twice).\n"
-    "Voice (needs --voice): /mute (toggle), /stop (stop speaking), /voice (settings)."
+    "Voice (needs --voice): /mute (toggle), /stop (stop speaking), /voice (settings).\n"
+    "Listening: /listen [on|off] (hotkey push-to-talk), /mic (3 s microphone level check)."
 )
+# Status details of a voice turn worth telling the user about.
+_VOICE_NOTES = {
+    DETAIL_NO_SPEECH: "(no speech heard)",
+    DETAIL_NOT_CAUGHT: "(did not catch that)",
+    DETAIL_STT_FAILED: "(speech recognition failed)",
+    DETAIL_AUDIO_FAILED: "(microphone error)",
+}
 # Apologies for a cancelled / timed-out turn are shown but not spoken.
 _SILENT_KINDS = ("cancelled", "timeout")
 
@@ -53,19 +75,54 @@ class Repl:
         self._input = input_fn if input_fn is not None else builtins.input
         self._out = out if out is not None else sys.stdout
         self._speech_pending = False  # a reply was handed to the speaker, its IDLE not seen yet
+        self._print_lock = threading.Lock()  # the voice thread prints too
+        self._events: Subscription | None = None
+        self._at_prompt = False  # main thread waits in input(): redraw the prompt after output
 
     def _say(self, text: str) -> None:
-        print(text, file=self._out, flush=True)
+        with self._print_lock:
+            print(text, file=self._out, flush=True)
+
+    def _say_async(self, text: str) -> None:
+        """Print from a background thread: start on a fresh line and show the prompt again."""
+        with self._print_lock:
+            print(f"\n{text}", file=self._out, flush=True)
+            if self._at_prompt:
+                print(PROMPT, end="", file=self._out, flush=True)
 
     def run(self) -> int:
         self._say("L.U.N.A. text mode. Type /help for help, 'exit' to quit.")
         for line in self._app.startup_lines():
             self._say(line)
+        voice = self._app.voice_input
+        stop_status = threading.Event()
+        status_thread: threading.Thread | None = None
+        if voice is not None:
+            voice.set_sinks(self._voice_reply, self._voice_stale_reply)
+            status_thread = threading.Thread(
+                target=self._watch_voice, args=(stop_status,), name="luna-ui-status", daemon=True
+            )
+            status_thread.start()
+        try:
+            return self._loop()
+        finally:
+            stop_status.set()
+            if voice is not None:
+                voice.set_sinks(_ignore, _ignore)
+            if status_thread is not None:
+                status_thread.join(1.0)
+
+    def _loop(self) -> int:
         with self._app.bus.subscribe() as events:
+            self._events = events
             interrupted = False
             while True:
                 try:
-                    line = self._input(PROMPT)
+                    self._at_prompt = True
+                    try:
+                        line = self._input(PROMPT)
+                    finally:
+                        self._at_prompt = False
                 except EOFError:
                     self._say("")
                     return 0
@@ -120,6 +177,10 @@ class Repl:
             self._toggle_mute()
         elif name == "/voice":
             self._show_voice()
+        elif name == "/listen":
+            self._listen(text.split()[1:])
+        elif name == "/mic":
+            self._mic_check()
         else:
             self._say(f"Unknown command {name}. Try /help.")
 
@@ -136,6 +197,86 @@ class Repl:
         self._drain(events)
         self._say(reply.text)
         self._speak(reply)
+
+    # ---- voice input -----------------------------------------------------------------
+
+    def _voice_reply(self, reply: Reply) -> None:
+        """A finished voice turn (voice thread): print it like a typed reply, then speak it."""
+        self._print_voice_reply(reply)
+        self._speak(reply)
+
+    def _voice_stale_reply(self, reply: Reply) -> None:
+        """The user pressed the hotkey again but the work finished: show it, never speak."""
+        self._print_voice_reply(reply)
+
+    def _print_voice_reply(self, reply: Reply) -> None:
+        events = self._events
+        with self._print_lock:
+            if events is not None:
+                self._drain_locked(events)
+            print(f"\n{reply.text}", file=self._out, flush=True)
+            if self._at_prompt:
+                print(PROMPT, end="", file=self._out, flush=True)
+
+    def _watch_voice(self, stop: threading.Event) -> None:
+        """Print short status lines of voice turns (own subscription, own thread)."""
+        with self._app.bus.subscribe() as events:
+            while not stop.is_set():
+                try:
+                    event = events.queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if event is CLOSED:
+                    return
+                if isinstance(event, TranscriptReady):
+                    self._say_async(f"(heard) {event.text}")
+                elif isinstance(event, StatusChanged):
+                    if event.status is Status.LISTENING:
+                        self._say_async("(listening...)")
+                    elif event.detail in _VOICE_NOTES:
+                        self._say_async(_VOICE_NOTES[event.detail])
+
+    def _listen(self, args: list[str]) -> None:
+        voice = self._app.voice_input
+        if voice is None:
+            self._say("Voice input is not available.")
+            return
+        want = {"on": True, "off": False}.get(args[0].lower()) if args else not voice.enabled
+        if want is None:
+            self._say("Usage: /listen [on|off]")
+            return
+        if want:
+            reason = voice.enable()
+            if reason is not None:
+                self._say(f"Voice input disabled: {reason}. Continuing in text mode.")
+                return
+        else:
+            voice.disable()
+        self._say(voice.status_line())
+        if want:
+            for note in voice.notes:
+                self._say(note)
+
+    def _mic_check(self) -> None:
+        voice = self._app.voice_input
+        if voice is None:
+            self._say("Voice input is not available.")
+            return
+        self._say("Measuring the microphone for 3 s: stay quiet a moment, then speak normally...")
+        try:
+            levels = voice.measure()
+        except AudioError as exc:
+            self._say(f"Microphone check failed: {exc}")
+            return
+        self._say(f"Noise floor: {levels.noise_floor:.4f}, peak: {levels.peak:.4f} (RMS, 0..1)")
+        if levels.suggested_threshold is None:
+            self._say("No speech heard: speak louder or closer to the microphone and retry.")
+            return
+        current = self._app.settings.voice.vad_energy_threshold
+        self._say(
+            f"Suggested [voice] vad_energy_threshold = {levels.suggested_threshold} "
+            f"(now {current})."
+        )
 
     def _speak(self, reply: Reply) -> None:
         speaker = self._app.speaker
@@ -181,6 +322,10 @@ class Repl:
 
     def _drain(self, events: Subscription) -> None:
         """Print status notes (provider switches) queued during the request."""
+        with self._print_lock:
+            self._drain_locked(events)
+
+    def _drain_locked(self, events: Subscription) -> None:
         while True:
             try:
                 event = events.queue.get_nowait()
@@ -196,9 +341,14 @@ class Repl:
                 continue
             if isinstance(event, ProviderSwitched):
                 if event.to_provider == LOCAL_PROVIDER:
-                    self._say("[offline mode: using the local model]")
+                    note = "[offline mode: using the local model]"
                 else:
-                    self._say(f"[provider: {event.to_provider}]")
+                    note = f"[provider: {event.to_provider}]"
+                print(note, file=self._out, flush=True)
+
+
+def _ignore(reply: Reply) -> None:
+    return None
 
 
 def _is_silent(reply: Reply) -> bool:

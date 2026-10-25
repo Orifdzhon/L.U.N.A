@@ -1,6 +1,6 @@
 """Local speech-to-text with faster-whisper (CTranslate2); the offline STT fallback.
 
-Defaults are safe for the reference machine: CPU, ``int8``, ``small``, beam 1. CUDA is opt-in
+Defaults are safe for the reference machine: CPU, ``int8``, ``base``, beam 1. CUDA is opt-in
 (``device="cuda"`` or ``"auto"``) because the GPU is usually busy with the local LLM.
 
 Heavy imports (``faster_whisper``, ``ctranslate2``, ``numpy``) happen lazily, never at import time
@@ -104,7 +104,7 @@ class FasterWhisperSTT:
 
     def __init__(
         self,
-        model: str = "small",
+        model: str = "base",
         device: str = "cpu",
         compute_type: str = "int8",
         beam_size: int = 1,

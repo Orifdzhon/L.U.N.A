@@ -90,7 +90,7 @@ def test_factory_called_once_for_many_calls():
         run(stt)
     assert len(factory.calls) == 1
     name, kwargs = factory.calls[0]
-    assert name == "small"
+    assert name == "base"
     assert kwargs["device"] == "cpu" and kwargs["compute_type"] == "int8"
     assert kwargs["download_root"] == str(MODEL_DIR)
 
@@ -257,9 +257,9 @@ def test_download_logged_only_when_not_cached(tmp_path, caplog):
     stt, _ = make(model_dir=tmp_path)
     with caplog.at_level(logging.INFO):
         run(stt)
-    assert "downloading STT model 'small', about 465 MB" in caplog.text
+    assert "downloading STT model 'base', about 145 MB" in caplog.text
     caplog.clear()
-    (tmp_path / "models--Systran--faster-whisper-small").mkdir()
+    (tmp_path / "models--Systran--faster-whisper-base").mkdir()
     stt2, _ = make(model_dir=tmp_path)
     with caplog.at_level(logging.INFO):
         run(stt2)

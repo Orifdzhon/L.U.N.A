@@ -133,7 +133,7 @@ class STTGroqSettings(_Section):
 
 
 class STTLocalSettings(_Section):
-    model: str = Field(default="small", min_length=1)
+    model: str = Field(default="base", min_length=1)
     device: Literal["cpu", "cuda", "auto"] = "cpu"
     compute_type: str = Field(default="int8", min_length=1)
     beam_size: int = Field(default=1, ge=1, le=10)
@@ -205,7 +205,7 @@ class VoiceSettings(_Section):
     start_beep: bool = False
     input_device: int | str | None = None  # None = default; int = index; str = name substring
     frame_ms: Literal[10, 20, 30] = 30
-    vad_energy_threshold: float = Field(default=0.01, gt=0, le=1)  # RMS floor, 0..1 of full scale
+    vad_energy_threshold: float = Field(default=0.003, gt=0, le=1)  # RMS floor, 0..1 of full scale
     vad_noise_margin: float = Field(default=3.0, ge=1)  # speech = this many times the noise floor
     silence_ms: int = Field(default=700, gt=0, le=10_000)  # trailing silence that ends a phrase
     min_speech_ms: int = Field(default=200, gt=0)  # shorter than this is treated as noise

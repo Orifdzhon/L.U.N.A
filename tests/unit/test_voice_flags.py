@@ -62,3 +62,41 @@ def test_help_lists_voice(capsys):
     with pytest.raises(SystemExit):
         main(["--help"])
     assert "--voice" in capsys.readouterr().out
+
+
+def capture_listen(monkeypatch):
+    seen = []
+    monkeypatch.setattr("luna.__main__._run_text", lambda s: seen.append(s.voice.listen) or 0)
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [(["--text"], False), (["--text", "--listen"], True), (["--text", "--no-listen"], False)],
+)
+def test_listen_flags_vs_default(isolated, monkeypatch, argv, expected):
+    seen = capture_listen(monkeypatch)
+    assert main(argv) == 0
+    assert seen == [expected]
+
+
+@pytest.mark.parametrize(("argv", "expected"), [(["--no-listen"], False), (["--listen"], True)])
+def test_listen_flags_override_config(isolated, monkeypatch, argv, expected):
+    cfg = isolated / "l.toml"
+    cfg.write_text(f"[voice]\nlisten = {str(not expected).lower()}\n", encoding="utf-8")
+    seen = capture_listen(monkeypatch)
+    assert main(["--text", "--config", str(cfg), *argv]) == 0
+    assert seen == [expected]
+
+
+def test_config_listen_applies_without_flags(isolated, monkeypatch):
+    cfg = isolated / "l.toml"
+    cfg.write_text("[voice]\nlisten = true\n", encoding="utf-8")
+    seen = capture_listen(monkeypatch)
+    assert main(["--text", "--config", str(cfg)]) == 0
+    assert seen == [True]
+
+
+def test_listen_flags_are_mutually_exclusive(isolated):
+    with pytest.raises(SystemExit):
+        main(["--text", "--listen", "--no-listen"])

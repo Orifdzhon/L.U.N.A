@@ -1,0 +1,171 @@
+# STT benchmark phrases for scripts/bench_stt.py (Issue #87).
+#
+# Fields:
+#   id        unique id (also the WAV file name)
+#   lang      ru | en | mixed ("mixed" = Russian sentence with an English name; expected language ru)
+#   category  app | site | search | chat | number | silence
+#   text      the reference transcript, also what is synthesized or read aloud with --record.
+#             Empty text (category "silence") = a clip with no speech: the expected result is
+#             an empty transcript. Numbers are written as digits, the way Whisper prints them.
+
+[[phrase]]
+id = "ru-app-1"
+lang = "ru"
+category = "app"
+text = "Открой телеграм"
+
+[[phrase]]
+id = "ru-app-2"
+lang = "ru"
+category = "app"
+text = "Запусти калькулятор"
+
+[[phrase]]
+id = "ru-app-3"
+lang = "ru"
+category = "app"
+text = "Включи спотифай"
+
+[[phrase]]
+id = "ru-app-4"
+lang = "ru"
+category = "app"
+text = "Запусти блокнот"
+
+[[phrase]]
+id = "ru-site-1"
+lang = "ru"
+category = "site"
+text = "Открой сайт википедии"
+
+[[phrase]]
+id = "ru-search-1"
+lang = "ru"
+category = "search"
+text = "Найди в интернете рецепт борща"
+
+[[phrase]]
+id = "ru-search-2"
+lang = "ru"
+category = "search"
+text = "Какая погода завтра в Москве"
+
+[[phrase]]
+id = "ru-chat-1"
+lang = "ru"
+category = "chat"
+text = "Расскажи короткую шутку про программистов"
+
+[[phrase]]
+id = "ru-num-1"
+lang = "ru"
+category = "number"
+text = "Поставь таймер на 15 минут"
+
+[[phrase]]
+id = "ru-num-2"
+lang = "ru"
+category = "number"
+text = "Сколько будет 12 умножить на 7"
+
+[[phrase]]
+id = "ru-num-3"
+lang = "ru"
+category = "number"
+text = "Разбуди меня в 7 30 утра"
+
+[[phrase]]
+id = "ru-time-1"
+lang = "ru"
+category = "chat"
+text = "Который сейчас час"
+
+[[phrase]]
+id = "en-app-1"
+lang = "en"
+category = "app"
+text = "Open Telegram"
+
+[[phrase]]
+id = "en-app-2"
+lang = "en"
+category = "app"
+text = "Launch Visual Studio Code"
+
+[[phrase]]
+id = "en-site-1"
+lang = "en"
+category = "site"
+text = "Open github dot com"
+
+[[phrase]]
+id = "en-search-1"
+lang = "en"
+category = "search"
+text = "Search the web for the latest Python release"
+
+[[phrase]]
+id = "en-chat-1"
+lang = "en"
+category = "chat"
+text = "What is the capital of Australia"
+
+[[phrase]]
+id = "en-num-1"
+lang = "en"
+category = "number"
+text = "Set a timer for 20 minutes"
+
+[[phrase]]
+id = "mix-app-1"
+lang = "mixed"
+category = "app"
+text = "Открой YouTube"
+
+[[phrase]]
+id = "mix-app-2"
+lang = "mixed"
+category = "app"
+text = "Запусти Steam"
+
+[[phrase]]
+id = "mix-app-3"
+lang = "mixed"
+category = "app"
+text = "Открой Google Chrome"
+
+[[phrase]]
+id = "mix-app-4"
+lang = "mixed"
+category = "app"
+text = "Включи Spotify"
+
+[[phrase]]
+id = "mix-site-1"
+lang = "mixed"
+category = "site"
+text = "Открой сайт GitHub"
+
+[[phrase]]
+id = "mix-search-1"
+lang = "mixed"
+category = "search"
+text = "Найди в Google курс доллара"
+
+[[phrase]]
+id = "mix-search-2"
+lang = "mixed"
+category = "search"
+text = "Загугли как установить Docker на Windows 11"
+
+[[phrase]]
+id = "mix-app-5"
+lang = "mixed"
+category = "app"
+text = "Запусти Visual Studio Code"
+
+[[phrase]]
+id = "silence-1"
+lang = "ru"
+category = "silence"
+text = ""

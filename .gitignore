@@ -35,3 +35,7 @@ Thumbs.db
 
 # Local config (the committed template is luna.example.toml)
 /luna.toml
+
+# STT benchmark audio (recordings and synthesized clips; never committed)
+/benchmarks/stt_audio/
+/benchmarks/*.json

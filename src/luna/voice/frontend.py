@@ -19,6 +19,11 @@ can cancel it and start the next turn at once. A superseded turn publishes nothi
 calls ``on_reply``; it only re-publishes the current status if the orchestrator's late
 ``IDLE`` would otherwise hide the new ``LISTENING``.
 
+Delivery: a reply is spoken only if its turn is still current; after `on_reply` the turn is
+checked again and speech is cut if a press arrived meanwhile. A superseded turn whose
+reply is real (an action ran) goes to `on_stale_reply` (print only). At most one STT call is
+in flight. Early stop uses a per-turn event passed to `Recorder.record(stop=...)`.
+
 Privacy: the INFO latency line has durations and the provider name only. The transcript is
 logged at DEBUG.
 """
@@ -71,7 +76,7 @@ class _Turn:
     request_id: str
     pressed_at: float
     cancel: threading.Event = field(default_factory=threading.Event)
-    early_stop: bool = False  # pressed again before the recorder started
+    stop: threading.Event = field(default_factory=threading.Event)  # early stop (keep audio)
     thread: threading.Thread | None = None
 
 
@@ -86,6 +91,7 @@ class VoiceFrontEnd:
         bus: EventBus,
         on_reply: Callable[[Reply], None],
         *,
+        on_stale_reply: Callable[[Reply], None] | None = None,
         voice: VoiceSettings | None = None,
         stt_conf: STTSettings | None = None,
         clock: Clock = time.monotonic,
@@ -98,6 +104,8 @@ class VoiceFrontEnd:
         self._speaker = speaker
         self._bus = bus
         self._on_reply = on_reply
+        self._on_stale_reply = on_stale_reply  # print only, never speak
+        self._stt_lock = threading.Lock()  # at most one recognition in flight
         self._voice = voice or VoiceSettings()
         self._stt_conf = stt_conf or STTSettings()
         self._clock = clock
@@ -135,7 +143,6 @@ class VoiceFrontEnd:
                 turn.cancel.set()
                 self._turn = None
                 self._set_state(VoiceState.IDLE, turn.request_id, publish=True)
-        self._recorder.stop()
         self._hotkey.stop()
 
     def close(self, timeout: float = DEFAULT_CLOSE_TIMEOUT_S) -> None:
@@ -160,8 +167,7 @@ class VoiceFrontEnd:
                 return
             turn = self._turn
             if self._state is VoiceState.LISTENING and turn is not None:
-                turn.early_stop = True
-                self._recorder.stop()
+                turn.stop.set()  # per turn: also applies if record() has not started yet
                 return
             if turn is not None:  # TRANSCRIBING / HANDLING: cancel it, then listen again
                 turn.cancel.set()
@@ -248,6 +254,7 @@ class VoiceFrontEnd:
             if not self._advance(turn, VoiceState.TRANSCRIBING):
                 return
             transcript = self._transcribe(turn, utt, spans)
+            del utt  # drop the audio as soon as it was recognised
             if transcript is None:
                 return
             provider = transcript.provider
@@ -263,17 +270,23 @@ class VoiceFrontEnd:
             self._end(turn, Status.ERROR, "voice error")
         finally:
             self._log_spans(turn, spans, provider, reason)
-            self._end_if_current(turn)
-            if turn.cancel.is_set() and "handle_ms" in spans:
+            handled = "handle_ms" in spans
+            self._end_if_current(turn, handled=handled)
+            if turn.cancel.is_set() and handled:
                 self._republish_current()
 
-    def _end_if_current(self, turn: _Turn) -> None:
-        """Safety net: a turn that returned without a final status must not block the next."""
+    def _end_if_current(self, turn: _Turn, *, handled: bool) -> None:
+        """Safety net: a turn that returned without a final status must not block the next.
+
+        After ``handle`` the orchestrator already published the final IDLE; a second one
+        could hide a SPEAKING status the UI set meanwhile, so the state is reset silently.
+        """
         with self._lock:
             if self._turn is turn:
                 self._turn = None
                 self._state = VoiceState.IDLE
-                self._bus.publish(StatusChanged(Status.IDLE, turn.request_id))
+                if not handled:
+                    self._bus.publish(StatusChanged(Status.IDLE, turn.request_id))
 
     def _record(self, turn: _Turn, spans: dict[str, float]) -> Utterance | None:
         spans["hotkey_to_listening_ms"] = (self._clock() - turn.pressed_at) * 1000
@@ -282,13 +295,9 @@ class VoiceFrontEnd:
                 self._beep()
             except Exception:
                 logger.warning("start cue failed", exc_info=True)
-        with self._lock:
-            if turn.early_stop:  # pressed again before we even started: nothing was said
-                self._end_locked_idle(turn, DETAIL_NO_SPEECH)
-                return None
         started = self._clock()
         try:
-            utt = self._recorder.record(turn.cancel)
+            utt = self._recorder.record(turn.cancel, stop=turn.stop)
         except AudioError as exc:
             logger.warning("Recording failed: %s", exc)
             self._end(turn, Status.ERROR, DETAIL_AUDIO_FAILED)
@@ -296,16 +305,13 @@ class VoiceFrontEnd:
         spans["capture_ms"] = (self._clock() - started) * 1000
         return utt
 
-    def _end_locked_idle(self, turn: _Turn, detail: str) -> None:
-        if self._turn is turn:
-            self._turn = None
-            self._state = VoiceState.IDLE
-            self._bus.publish(StatusChanged(Status.IDLE, turn.request_id, detail))
-
     def _transcribe(
         self, turn: _Turn, utt: Utterance, spans: dict[str, float]
     ) -> Transcript | None:
         hints = self._stt_conf.language_hints
+        while not self._stt_lock.acquire(timeout=0.05):  # a superseded turn may still be busy
+            if turn.cancel.is_set():
+                return None
         started = self._clock()
         try:
             transcript = self._stt.transcribe(
@@ -321,6 +327,7 @@ class VoiceFrontEnd:
             return None
         finally:
             spans["stt_ms"] = (self._clock() - started) * 1000
+            self._stt_lock.release()
         return transcript
 
     def _handle(self, turn: _Turn, transcript: Transcript, spans: dict[str, float]) -> None:
@@ -343,14 +350,36 @@ class VoiceFrontEnd:
             return
         finally:
             spans["handle_ms"] = (self._clock() - started) * 1000
-        with self._lock:
-            superseded = turn.cancel.is_set() or self._turn is not turn
-        if superseded:
-            return  # the user moved on (or we are closing): do not speak a stale reply
+        if self._superseded(turn):
+            self._deliver_stale(reply)  # the user moved on: never speak it
+            return
         try:
             self._on_reply(reply)
         except Exception:
             logger.warning("on_reply failed", exc_info=True)
+        # A press may have landed while on_reply was starting the speech: cut it again.
+        if self._superseded(turn) and self._speaker is not None:
+            try:
+                self._speaker.stop()
+            except Exception:
+                logger.warning("stopping speech failed", exc_info=True)
+
+    def _superseded(self, turn: _Turn) -> bool:
+        with self._lock:
+            return turn.cancel.is_set() or self._turn is not turn
+
+    def _deliver_stale(self, reply: Reply) -> None:
+        """A cancel arrived but the work finished (an action really ran): show, don't speak.
+
+        The orchestrator's own apology for a cancelled turn has no provider and no actions
+        and is dropped.
+        """
+        if self._on_stale_reply is None or (reply.provider is None and not reply.actions):
+            return
+        try:
+            self._on_stale_reply(reply)
+        except Exception:
+            logger.warning("on_stale_reply failed", exc_info=True)
 
     def _log_spans(self, turn: _Turn, spans: dict[str, float], provider: str, reason: str) -> None:
         if "stt_ms" not in spans:

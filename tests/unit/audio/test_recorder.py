@@ -132,6 +132,22 @@ def test_recorder_can_be_reused_after_stop():
     assert u.reason == "silence"
 
 
+def test_per_call_stop_set_before_record_is_not_lost():
+    stop = threading.Event()
+    stop.set()  # requested just before record() starts
+    mic = FakeMic(silence(10) + tone(20) + silence(40))
+    u = make(mic).record(threading.Event(), stop=stop)
+    assert u.reason == "stopped" and u.pcm16 == b""
+    assert mic.stop_calls == 1
+
+
+def test_per_call_stop_keeps_audio_heard_so_far():
+    stop = threading.Event()
+    mic = HookMic(silence(10) + tone(100), hook=lambda n: stop.set() if n == 30 else None)
+    u = make(mic).record(threading.Event(), stop=stop)
+    assert u.reason == "stopped" and u.duration_s > 0.5
+
+
 def test_audio_error_during_read_propagates_and_stops_mic():
     mic = FakeMic(silence(10) + tone(3), read_error=AudioError("unplugged"))
     with pytest.raises(AudioError, match="unplugged"):

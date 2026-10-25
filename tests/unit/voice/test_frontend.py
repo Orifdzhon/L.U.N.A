@@ -47,39 +47,52 @@ def wait_for(cond: Callable[[], bool], timeout: float = 3.0) -> None:
 
 class FakeRecorder:
     """Script items: Utterance (returned at once), Exception (raised), or "block" (waits for
-    stop() -> reason "stopped" with audio, or cancel -> "cancelled")."""
+    the per-call ``stop`` event -> reason "stopped" with audio, or cancel -> "cancelled").
+    When the script is empty ``default`` is returned. Counts concurrent record() calls."""
 
-    def __init__(self, script: list, log: list[str]) -> None:
+    def __init__(self, script: list, log: list[str], default: Utterance | None = None) -> None:
         self.script = list(script)
         self.log = log
+        self.default = default
         self.recording = False
-        self.stop_calls = 0
         self.cancels: list[threading.Event] = []
-        self._stop = threading.Event()
+        self.stops: list[threading.Event] = []
         self.started = threading.Event()
+        self.active = 0
+        self.max_active = 0
+        self.errors: list[str] = []
+        self._count = threading.Lock()
 
-    def stop(self) -> None:
-        self.stop_calls += 1
-        self._stop.set()
-
-    def record(self, cancel: threading.Event) -> Utterance:
-        self._stop.clear()
+    def record(self, cancel: threading.Event, *, stop: threading.Event | None = None) -> Utterance:
+        assert stop is not None
+        with self._count:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
         self.cancels.append(cancel)
+        self.stops.append(stop)
         self.log.append("mic_start")
         self.recording = True
         self.started.set()
         try:
-            item = self.script.pop(0)
+            if self.script:
+                item = self.script.pop(0)
+            elif self.default is not None:
+                item = self.default
+            else:
+                self.errors.append("record() called with an empty script")
+                raise AssertionError("empty recorder script")
             if isinstance(item, Exception):
                 raise item
             if item == "block":
-                while not (self._stop.is_set() or cancel.is_set()):
+                while not (stop.is_set() or cancel.is_set()):
                     time.sleep(0.002)
                 if cancel.is_set():
                     return Utterance(b"", 16000, 0.0, "cancelled")
                 return Utterance(PCM, 16000, 0.1, "stopped")
             return item
         finally:
+            with self._count:
+                self.active -= 1
             self.recording = False
             self.log.append("mic_stop")
 
@@ -97,8 +110,10 @@ class FakeSpeaker:
 class FakeOrchestrator:
     """Returns a reply, or with ``block`` waits for the cancel event."""
 
-    def __init__(self, block: bool = False) -> None:
+    def __init__(self, block: bool = False, bus: EventBus | None = None, real=None) -> None:
         self.block = block
+        self.bus = bus
+        self.real = real  # reply returned even when cancelled (the action already ran)
         self.requests: list[Request] = []
         self.cancels: list[threading.Event] = []
         self.entered = threading.Event()
@@ -108,10 +123,17 @@ class FakeOrchestrator:
         assert cancel is not None
         self.cancels.append(cancel)
         self.entered.set()
+        rid = request.request_id
+        if self.bus:
+            self.bus.publish(StatusChanged(Status.THINKING, rid))
         if self.block:
             cancel.wait(5)
-            return Reply("cancelled", "en")
-        return Reply("answer", request.lang or "ru")
+            reply = self.real or Reply("cancelled", "en")
+        else:
+            reply = Reply("answer", request.lang or "ru", provider="router")
+        if self.bus:
+            self.bus.publish(StatusChanged(Status.IDLE, rid))
+        return reply
 
 
 class BlockingSTT:
@@ -122,23 +144,33 @@ class BlockingSTT:
         self.entered = threading.Event()
         self.release = threading.Event()
         self.calls = 0
+        self.active = 0
+        self.max_active = 0
 
     def transcribe(self, pcm16, sample_rate=16000, *, lang_hint=None, prompt=None, timeout_s):
         self.calls += 1
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
         self.entered.set()
-        self.release.wait(5)
-        return self.result
+        try:
+            self.release.wait(5)
+            return self.result
+        finally:
+            self.active -= 1
 
 
 class Harness:
-    def __init__(self, script: list, stt=None, orchestrator=None, *, speaker=True, **kw) -> None:
+    def __init__(
+        self, script: list, stt=None, orchestrator=None, *, speaker=True, default=None, **kw
+    ) -> None:
         self.log: list[str] = []
         self.hotkey = FakeHotkeyListener()
-        self.recorder = FakeRecorder(script, self.log)
+        self.recorder = FakeRecorder(script, self.log, default)
         self.stt = stt if stt is not None else FakeSTT([ok()])
-        self.orch = orchestrator or FakeOrchestrator()
-        self.speaker = FakeSpeaker(self.log) if speaker else None
         self.bus = EventBus()
+        self.orch = orchestrator or FakeOrchestrator(bus=self.bus)
+        self.speaker = FakeSpeaker(self.log) if speaker else None
+        self.stale: list[Reply] = []
         self.sub = self.bus.subscribe()
         self.replies: list[Reply] = []
         self.fe = VoiceFrontEnd(
@@ -149,6 +181,7 @@ class Harness:
             self.speaker,
             self.bus,
             self.replies.append,
+            on_stale_reply=self.stale.append,
             voice=VoiceSettings(),
             stt_conf=STTSettings(),
             clock=kw.pop("clock", FakeClock()),
@@ -200,6 +233,13 @@ def test_happy_path_events_request_and_reply(make):
     events = h.events()
     kinds = [type(e).__name__ for e in events]
     assert kinds[:3] == ["StatusChanged", "StatusChanged", "TranscriptReady"]
+    # the orchestrator's own THINKING / IDLE follow; the front end adds no second IDLE
+    assert [e.status for e in events if isinstance(e, StatusChanged)] == [
+        Status.LISTENING,
+        Status.THINKING,
+        Status.THINKING,
+        Status.IDLE,
+    ]
     assert events[0].status is Status.LISTENING
     assert events[1].status is Status.THINKING
     ready = events[2]
@@ -245,11 +285,11 @@ def test_second_press_stops_recording_and_keeps_audio(make):
     assert h.fe.state is VoiceState.LISTENING
     h.hotkey.press()
     wait_for(lambda: bool(h.replies))
-    assert h.recorder.stop_calls == 1
+    assert h.recorder.stops[0].is_set()
     assert h.stt.calls[0].pcm16 == PCM
 
 
-def test_double_press_before_recorder_starts_is_no_speech(make):
+def test_stop_pressed_before_recorder_starts_still_applies(make):
     started = threading.Event()
     gate = threading.Event()
 
@@ -262,9 +302,9 @@ def test_double_press_before_recorder_starts_is_no_speech(make):
     started.wait(3)
     h.hotkey.press()
     gate.set()
+    wait_for(lambda: bool(h.recorder.stops))
+    assert h.recorder.stops[0].is_set()  # already set when record() began: not lost
     h.idle()
-    assert (Status.IDLE, DETAIL_NO_SPEECH) in h.statuses()
-    assert h.stt.calls == [] and not h.recorder.started.is_set()
 
 
 def test_no_speech_skips_stt_and_orchestrator(make):
@@ -327,8 +367,7 @@ def test_orchestrator_exception_becomes_error(make):
 
 
 def test_press_during_handling_cancels_request_and_listens(make):
-    h = make(["block"], orchestrator=FakeOrchestrator(block=True))
-    h.recorder.script = [SPOKEN, "block"]
+    h = make([SPOKEN, "block"], orchestrator=FakeOrchestrator(block=True))
     h.hotkey.press()
     assert h.orch.entered.wait(3)
     assert h.fe.state is VoiceState.HANDLING
@@ -357,15 +396,79 @@ def test_press_during_transcribing_cancels_turn_and_listens(make):
     assert h.fe.state is VoiceState.LISTENING
 
 
+class AlwaysSTT:
+    name = "always"
+
+    def transcribe(self, pcm16, sample_rate=16000, *, lang_hint=None, prompt=None, timeout_s):
+        return ok()
+
+
 def test_rapid_presses_never_wedge(make):
-    script = [SPOKEN] * 6
-    h = make(script, stt=FakeSTT([ok()] * 6))
-    for _ in range(6):
+    h = make([], stt=AlwaysSTT(), default=SPOKEN)
+    for _ in range(40):
         h.hotkey.press()
-    wait_for(lambda: h.fe.state is VoiceState.IDLE and not h.recorder.recording)
+    wait_for(lambda: h.fe.state is VoiceState.IDLE and not h.recorder.recording, timeout=5)
+    time.sleep(0.05)
+    assert h.recorder.errors == []
+    assert h.recorder.max_active == 1  # never two microphones at once
+    assert all(s is not Status.ERROR for s, _ in h.statuses())
     h.hotkey.press()  # still usable
-    h.recorder.script.append(SPOKEN)
-    wait_for(lambda: h.fe.state is VoiceState.IDLE)
+    wait_for(lambda: len(h.replies) >= 1)
+
+
+def test_reply_superseded_while_delivering_is_cut(make):
+    h = make([SPOKEN, "block"])
+
+    def on_reply(reply: Reply) -> None:
+        h.replies.append(reply)
+        h.log.append("speak")
+        h.hotkey.press()  # a press lands while the UI starts speaking
+
+    h.fe._on_reply = on_reply
+    h.hotkey.press()
+    wait_for(lambda: bool(h.replies))
+    wait_for(lambda: h.recorder.recording)
+    # stop_speech: turn 1 press, the press inside on_reply, and the cut after delivery
+    wait_for(lambda: h.log.count("stop_speech") == 3)
+    assert h.log.index("speak") < len(h.log) - 1
+    assert h.log[-1] == "stop_speech" or h.log.count("stop_speech") == 3
+
+
+def test_stale_real_reply_is_printed_not_spoken(make):
+    real = Reply("opened youtube", "en", provider="router")
+    h = make([SPOKEN, "block"], orchestrator=FakeOrchestrator(block=True, real=real))
+    h.hotkey.press()
+    assert h.orch.entered.wait(3)
+    h.hotkey.press()
+    wait_for(lambda: h.recorder.recording)
+    wait_for(lambda: bool(h.stale))
+    assert h.stale == [real] and h.replies == []
+
+
+def test_stale_apology_is_dropped(make):
+    h = make([SPOKEN, "block"], orchestrator=FakeOrchestrator(block=True))
+    h.hotkey.press()
+    assert h.orch.entered.wait(3)
+    h.hotkey.press()
+    wait_for(lambda: not h.fe._threads[0].is_alive())
+    assert h.stale == [] and h.replies == []
+
+
+def test_only_one_stt_call_in_flight(make):
+    stt = BlockingSTT(ok("first"))
+    h = make([SPOKEN, "block"], stt=stt)
+    h.hotkey.press()
+    assert stt.entered.wait(3)
+    h.hotkey.press()  # supersede while the first recognition is still running
+    wait_for(lambda: h.recorder.recording)
+    h.hotkey.press()  # stop the second recording: its STT must wait for the first
+    time.sleep(0.15)
+    assert stt.calls == 1
+    stt.release.set()
+    wait_for(lambda: stt.calls == 2)
+    wait_for(lambda: bool(h.replies))
+    assert stt.max_active == 1
+    assert len(h.orch.requests) == 1  # only the second turn reached the orchestrator
 
 
 def test_close_while_listening(make):

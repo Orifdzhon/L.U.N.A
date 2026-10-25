@@ -59,8 +59,12 @@ class Recorder:
         """Finish the current recording and keep what was heard (thread-safe)."""
         self._stop.set()
 
-    def record(self, cancel: threading.Event) -> Utterance:
+    def record(self, cancel: threading.Event, *, stop: threading.Event | None = None) -> Utterance:
         """Block until the utterance ends. ``cancel`` (any thread) discards the audio.
+
+        ``stop`` is an optional per-call event with the meaning of ``stop()``: unlike the
+        shared flag it is not cleared when the call starts, so a stop requested just before
+        ``record()`` begins is never lost.
 
         Raises ``AudioError`` if the microphone cannot be opened, fails or goes silent.
         The microphone is always stopped on return.
@@ -92,7 +96,7 @@ class Recorder:
             while True:
                 if cancel.is_set():
                     return result("cancelled", False)
-                if self._stop.is_set():
+                if self._stop.is_set() or (stop is not None and stop.is_set()):
                     return result("stopped", True)
                 frame = self._mic.read(READ_TIMEOUT_S)
                 if frame is None:

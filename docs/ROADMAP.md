@@ -2,7 +2,7 @@
 
 > Maintained by the `planner` agent. Source of stages: [ARCHITECTURE.md §12](ARCHITECTURE.md#12-build-slices-incremental).
 > Requirements: [PRODUCT_SPEC.md](PRODUCT_SPEC.md). Decisions: [docs/adr/](adr/).
-> Status date: 2026-10-23.
+> Status date: 2026-10-26.
 
 **Slices 0 (skeleton), 1 (text core) and 2 (voice out) are done** (Issues #4-#23, #43, #48 and #55-#62).
 Later slices are planned when their predecessor is nearly done. Open follow-ups from slice 1:
@@ -29,7 +29,7 @@ All automated tests need none of these: they run without microphone, GPU, networ
 | 0 | Skeleton | **done** | #4-#8 |
 | 1 | Text core | **done** | #9-#23, #43, #48 (open follow-ups: #33, #35, #39) |
 | 2 | Voice out | **done** | #55-#62 (#63 Piper: later/optional) |
-| 3 | Voice in (push-to-talk) | planned | — |
+| 3 | Voice in (push-to-talk) | planned (Issues written) | #77-#88 |
 | 4 | Wake word | planned | — |
 | 5 | Desktop shell | planned | — |
 | 6 | Hardening | planned | — |
@@ -139,14 +139,64 @@ Planning notes (not decisions):
 - Default English voice: planner proposes Zira (female, matches Irina); owner may choose David.
 - Voice follows `Reply.lang` for the whole reply; per-sentence language switching is out of scope.
 
-## Slice 3 — Voice in, push-to-talk (planned)
+## Slice 3 — Voice in, push-to-talk (planned, Issues written 2026-10-26)
 
 **Goal:** hotkey -> speak -> action + spoken reply.
 **Contents:** audio capture, VAD endpointing, `FasterWhisperSTT` + `GroqWhisperSTT`, global hotkey
-([ADR 0003](adr/0003-speech-to-text.md), [ADR 0007](adr/0007-desktop-shell.md)); `docs/manual-checks.md` mic/GPU checklist; VRAM measurement.
-**Exit criteria:** hotkey flow works on the reference machine; latency spans are logged.
-**Owner decisions:** hotkey combination (default `Ctrl+Alt+Space`, Q5); dialog flow (Q4).
-**Issues:** to be written.
+([ADR 0003](adr/0003-speech-to-text.md), [ADR 0007](adr/0007-desktop-shell.md)); manual mic/GPU
+checklist in `docs/MANUAL_CHECKS.md`; STT benchmark and VRAM measurement.
+**Exit criteria:** with `uv run luna --text --listen`, pressing the hotkey and saying "открой ютуб" /
+"open telegram" / "какой курс доллара" opens/answers and speaks the reply on the reference machine;
+pressing the hotkey during speech stops it and listens (barge-in); missing microphone, taken hotkey or
+missing STT key degrade to text mode with a clear message; one latency line per voice turn is logged
+(`capture_ms`, `stt_ms`, `llm_ms`, `tts_first_audio_ms`), simple commands <= 2 s after end of speech
+(N4); all automated tests pass with fakes (no microphone, GPU, network or keys); the benchmark table
+(#87) and manual checks (#88) are done by the owner.
+
+| Issue | Title | Depends on | Parallel with |
+|---|---|---|---|
+| #77 | Validated `[stt]` and `[voice]` settings | — | #78, #79, #80, #84 |
+| #78 | Microphone capture: `MicSource`, `SoundDeviceMic`, ring buffer, `FakeMic` | — (soft #77) | #77, #79, #80, #81, #82 |
+| #79 | Windows global hotkey listener (`RegisterHotKey`, own thread) | — | all except `tests/fakes.py` merge |
+| #80 | STT foundation: `Transcript`, `STTProvider`, `STTChain`, `FakeSTT` | — | #77, #78, #79 |
+| #81 | `GroqWhisperSTT` | #80 (soft #77) | #82, #83, #78, #79 |
+| #82 | `FasterWhisperSTT` (CPU int8 `small` default, CUDA optional, lazy download) | #80 (soft #77) | #81, #83, #78, #79 |
+| #83 | Energy-based VAD and utterance `Recorder` | #78 (soft #77) | #79, #80, #81, #82 |
+| #84 | Docs (architect): accept ADR 0003 with the owner's STT order, record the PTT model, VRAM table | owner answers; §11 numbers after #87 | code Issues up to #83 |
+| #85 | `VoiceFrontEnd`: hotkey -> record -> STT -> `Request(source="voice")`, events, latency spans | #80, #83 (soft #79) | #81, #82, #87 |
+| #86 | Wire it up: `build_app`, CLI `--listen`, barge-in, degraded start | #77-#83, #85 | — |
+| #87 | STT benchmark script and owner's run: latency, accuracy, VRAM, CUDA-on-Windows | #78, #81, #82 | #83, #85 |
+| #88 | Docs: voice input setup and slice-3 manual checks | #86 (soft #87) | #87 |
+
+Suggested order: group A in parallel (`#77`, `#78`, `#79`, `#80`) -> group B in parallel (`#81`, `#82`,
+`#83`) -> `#85` -> `#86` -> (`#87` owner run, `#88`) -> `#84` final amendment with measured numbers.
+Owner can answer the decisions below while group A is being built. `#84` part 1 (decisions) should be
+done before `#86`; it only changes docs, not code.
+Shared files: `tests/fakes.py` (#78, #79, #80: trivial merges), `pyproject.toml`/`uv.lock` (#82
+dependency), `app.py`/`cli.py`/`__main__.py` only in #86.
+
+### Owner decisions needed for slice 3 (needs-decision)
+
+| # | Question | Planner recommendation | Trade-offs |
+|---|---|---|---|
+| D1 | **Default STT order** (setting `[stt].chain`; ADR 0003 currently says local GPU first) | **Groq first, local CPU `small` int8 as fallback** (`["groq","local"]`). Revisit local-GPU only if #87 shows CUDA works and Groq latency or limits hurt. | *Latency:* Groq ~0.3-0.8 s inference + network RTT, no model load; local CPU `small` int8 on an i3-12100F expected ~1-2 s (estimate, #87 measures). *VRAM:* the 9B q4 local LLM already fills most of the 6 GB, so GPU Whisper (~1-1.5 GB) would force LLM or Whisper swapping/OOM when both are used; CPU Whisper has no contention but loads ~1 GB RAM and uses cores the LLM host also needs. *CUDA on Windows:* CTranslate2 needs CUDA 12 + cuDNN 9; the pip route (~1.3 GB of wheels) is unverified on Windows, so it is risky as a default and is measured in #87. *Free tier:* about 20 RPM / 2K requests per day, each billed as >= 10 s (figures unverified for the free plan); fine for personal push-to-talk but the same key is used for the Groq LLM, so heavy testing can hit limits and fall back to local. *Accuracy RU/EN:* `whisper-large-v3-turbo` (Groq) is clearly better on code-switching ("открой YouTube", brand names) than `small`; `small` may need `initial_prompt` help. *Privacy:* audio goes to Groq; the owner said this is acceptable. |
+| D2 | **Push-to-talk interaction** | **Toggle:** press = start listening, auto-stop on 700 ms silence (or 10 s), press again = stop early / cancel the running turn; press while speaking = barge-in. | `RegisterHotKey` gives presses only; true hold-to-talk needs a low-level keyboard hook (more code, antivirus/anti-cheat sensitivity) and is not in the current `HotkeyListener` protocol. Toggle + VAD needs a good endpointing threshold (#83, tuned in #88). Hold-to-talk can be added later behind the same protocol if toggle feels wrong. |
+| D3 | **Hotkey** (Q5) | Keep `Ctrl+Alt+Space`; configurable via `[voice].hotkey`. | May collide with IME/other tools; #79 reports a clear error and the owner can change it. |
+| D4 | **Audible cue** when listening starts (short beep) | Yes, optional and off by default is the safest; decide after the manual check. Not planned in an Issue; #85 leaves a hook. | Without a tray indicator (slice 5) the CLI line `[listening...]` may be missed when the window is not focused. |
+| D5 | **`faster-whisper` as core dependency or optional extra** | Optional extra `stt-local`, with the exact `uv sync --extra stt-local` command documented (decide in #82/#84). | Core: a plain `uv run` always works (lesson from `sounddevice` in slice 2) but every install pulls ctranslate2/onnxruntime/av (hundreds of MB). Extra: lighter, but `uv run` without the extra removes it. |
+| D6 | Follow-up window without pressing the hotkey again (Q4) | Not in slice 3; decide with wake word (slice 4). | Toggle PTT is one command per press. |
+
+Planning notes (not decisions):
+- VAD: planner proposal is an energy-based VAD with an adaptive noise floor (no new dependency, no
+  native build); a Silero/ONNX VAD stays an option behind the same protocol if manual checks show bad
+  endpoints. faster-whisper's own `vad_filter` still trims silence inside STT. Architect may override in #84.
+- CLI naming: `--voice` already means spoken replies, so voice input is `--listen` / `--no-listen`
+  (`[voice].listen`), consistent with `--voice` / `--no-voice`.
+- Echo: the pipeline stops speech before recording, so the assistant does not hear itself; this does
+  not hold for the always-on wake word (slice 4 must solve it).
+- Safety: a transcript has the same trust as typed text; the microphone is open only while listening;
+  no new tools or permissions in this slice. Transcript text is not written to the latency log line.
+- The old name `docs/manual-checks.md` in earlier plans is `docs/MANUAL_CHECKS.md` in the repo.
 
 ## Slice 4 — Wake word (planned)
 

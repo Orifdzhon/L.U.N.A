@@ -17,7 +17,7 @@ added in later slices.
 |---|---|---|---|
 | Runtime | Python 3.13, `uv`, `ruff`, `pytest`, src layout | Python 3.12 if a dependency breaks | [0001](adr/0001-python-version-packaging-tooling.md) |
 | LLM | One OpenAI-compatible client; chain Gemini `gemini-3.5-flash-lite` → Groq `openai/gpt-oss-120b` → local LM Studio (~4B Qwen) | native `google-genai` SDK if the compat layer breaks | [0002](adr/0002-llm-providers-and-tool-calling.md) |
-| STT | `faster-whisper` `large-v3-turbo` on GPU (int8_float16) | Groq `whisper-large-v3-turbo`; CPU `small` int8 | [0003](adr/0003-speech-to-text.md) |
+| STT | `STTChain`: Groq `whisper-large-v3-turbo` → local `faster-whisper` `base` on CPU int8; toggle push-to-talk hotkey + energy VAD | `[stt.local] device = "auto"` (CUDA probed; unused on the reference PC); `small` model | [0003](adr/0003-speech-to-text.md) + amendment |
 | Wake word | Hotkey first; then Vosk `small-ru` grammar spotter ("луна"); then a custom ONNX model | Porcupine rejected (free tier closed) | [0004](adr/0004-wake-word.md) |
 | TTS | Windows SAPI voices: Irina (ru-RU), Zira (en-US); playback via `sounddevice` | Piper (`piper-tts`, out-of-process, CC0 voices) later/optional (#63) | [0005](adr/0005-text-to-speech.md) + amendment |
 | Web search | `ddgs` metasearch + `trafilatura` extraction | self-hosted SearXNG; Tavily free key | [0006](adr/0006-web-search.md) |
@@ -30,7 +30,7 @@ added in later slices.
 ```
                  ┌───────────────────────── Input adapters ─────────────────────────┐
                  │ CLI REPL (slice 1) · Qt text box (slice 5) · Voice front-end      │
-                 │                                   (mic → wake word/hotkey → VAD → STT) │
+                 │      (hotkey → mic → VAD → STTChain, slice 3; wake word, slice 4)  │
                  └──────────────────────────────┬──────────────────────────────────┘
                                                 │ Request(text, source, lang?)
                                                 ▼
@@ -58,11 +58,11 @@ added in later slices.
 | Tools | `luna.tools` | `Tool` protocol, `ToolRegistry`, safety levels, built-in tools: `open_app`, `open_website`, `web_search`, `get_datetime`. |
 | Search | `luna.search` | `SearchProvider` protocol, `DdgsSearch`, `SearxngSearch`, page fetch + extraction. |
 | Platform | `luna.platform` | OS adapters behind protocols: app catalog/launcher, browser, hotkey, autostart. `luna.platform.windows` implements them. |
-| Audio | `luna.audio` | `AudioClip`, `AudioPlayer` protocol + interruptible `sounddevice` playback (slice 2); microphone capture, ring buffer, VAD (slice 3). |
-| STT | `luna.stt` | `STTProvider` protocol, `FasterWhisperSTT`, `GroqWhisperSTT`. |
+| Audio | `luna.audio` | `AudioClip`, `AudioPlayer` protocol + interruptible `sounddevice` playback (slice 2); `MicSource` / `SoundDeviceMic` capture (open only while recording), `RingBuffer`, `EnergyVAD`, utterance `Recorder` (slice 3). |
+| STT | `luna.stt` | `STTProvider` protocol, `Transcript`, `STTChain` (fallback + cooldown), `GroqWhisperSTT` (default), `FasterWhisperSTT` (local CPU fallback). |
 | TTS | `luna.tts` | `TTSProvider` protocol, `SapiTTS` (default), speech text preparation (`text`), `Speaker` worker (explicit `speak(reply)` from the UI); `PiperTTS` (subprocess worker) later/optional. |
 | Wake word | `luna.wakeword` | `WakeWordDetector` protocol, `VoskKeywordSpotter`, `OnnxWakeWord`. |
-| Voice front-end | `luna.voice` | State machine IDLE → LISTENING → TRANSCRIBING → (core) → SPEAKING; glues audio, wake word, VAD, STT, TTS. |
+| Voice front-end | `luna.voice` | `VoiceFrontEnd`: push-to-talk state machine IDLE → LISTENING → TRANSCRIBING → HANDLING (§4.2), barge-in, latency spans. `VoiceInput`: lazy assembly (STT chain, mic, recorder, hotkey), degraded start, `/mic` diagnostic. Wake word joins in slice 4. |
 | UI | `luna.ui` | `cli` (REPL, slice 1) and `qt` (tray, popup window, status indicator, slice 5). |
 | Logging | `luna.logs` | App log (rotating text) and action log (JSONL, F9). |
 
@@ -108,13 +108,16 @@ src/luna/
     windows/hotkey.py     # RegisterHotKey via ctypes
     windows/autostart.py  # HKCU\...\Run via winreg
   audio/
-    capture.py            # sounddevice InputStream → frames queue
-    ringbuffer.py
-    vad.py                # Silero VAD (onnx) endpointing
+    capture.py            # MicSource, SoundDeviceMic (RawInputStream → bounded queue), RingBuffer
+    vad.py                # VoiceActivityDetector, EnergyVAD (adaptive noise floor)
+    recorder.py           # Recorder: pre-roll, endpointing, max length, cancel → Utterance
     base.py               # AudioClip, AudioPlayer protocol
     playback.py           # SoundDevicePlayer: RawOutputStream, chunked writes, abort() on stop
   stt/
-    base.py, faster_whisper_stt.py, groq_stt.py
+    base.py               # STTProvider, Transcript, normalize_lang
+    chain.py              # STTChain (same cooldown rules as LLMChain)
+    groq.py               # GroqWhisperSTT (default)
+    faster_whisper.py     # FasterWhisperSTT (local CPU fallback, optional CUDA probe)
   tts/
     base.py               # TTSProvider
     sapi.py               # SapiTTS (Windows built-in voices; integration chosen in #59)
@@ -124,7 +127,8 @@ src/luna/
   wakeword/
     base.py, vosk_spotter.py, onnx_wakeword.py
   voice/
-    frontend.py           # voice state machine
+    frontend.py           # VoiceFrontEnd: push-to-talk state machine
+    input.py              # VoiceInput: lazy assembly, degraded start, /mic levels
   ui/
     cli.py
     qt/app.py, tray.py, window.py
@@ -216,15 +220,96 @@ class LLMProvider(Protocol):
 ```python
 # luna/stt/base.py
 @dataclass(frozen=True)
-class Transcript:
+class Transcript:                     # text == "" means "nothing understood", not an error
     text: str
-    lang: str                 # detected language
-    confidence: float | None
+    lang: str = "unknown"             # "ru" | "en" | "unknown" (normalize_lang)
+    confidence: float | None = None   # 0..1 when the backend reports it
+    provider: str = ""                # stamped by STTChain
+    duration_s: float | None = None   # audio length, stamped by STTChain
+    @property
+    def is_empty(self) -> bool: ...
 
 class STTProvider(Protocol):
     name: str
-    def transcribe(self, pcm16: bytes, sample_rate: int = 16_000,
-                   *, lang_hint: str | None = None, prompt: str | None = None) -> Transcript: ...
+    def transcribe(self, pcm16: bytes, sample_rate: int = 16_000, *,
+                   lang_hint: str | None = None, prompt: str | None = None,
+                   timeout_s: float) -> Transcript: ...
+    # Raises RateLimited / ProviderUnavailable / ProviderRequestError (all ProviderError).
+
+# luna/stt/chain.py: itself an STTProvider (name "chain"); publishes ProviderSwitched
+class STTChain:
+    def __init__(self, providers: Sequence[STTProvider], clock: Clock,
+                 bus: EventBus | None = None) -> None: ...
+    def transcribe(self, pcm16: bytes, sample_rate: int = 16_000, *, lang_hint=None,
+                   prompt=None, timeout_s: float, request_id: str | None = None) -> Transcript: ...
+
+# luna/stt/faster_whisper.py: provider name "local"
+class FasterWhisperSTT:
+    def __init__(self, model: str = "base", device: str = "cpu",   # "cpu" | "cuda" | "auto"
+                 compute_type: str = "int8", beam_size: int = 1,
+                 model_dir: Path | str | None = None, *, vad_filter: bool = False) -> None: ...
+    def warm_up(self) -> None: ...                    # blocking load
+    def start_warm_up(self) -> threading.Thread: ...  # background load, errors logged
+    resolved_device: str | None                       # "cpu" / "cuda" after loading
+```
+
+```python
+# luna/audio/capture.py: 16 kHz mono PCM16, 30 ms frames
+class MicSource(Protocol):
+    def start(self) -> None: ...                  # opens the device; AudioError if it cannot
+    def stop(self) -> None: ...                   # thread-safe, idempotent, unblocks read()
+    def read(self, timeout_s: float) -> bytes | None: ...   # one frame; None on timeout/stop
+    def close(self) -> None: ...
+# SoundDeviceMic(device, frame_ms, preroll_ms, queue_frames): open only between start/stop;
+# bounded queue (oldest frame dropped and counted); context manager + weakref.finalize.
+
+# luna/audio/vad.py
+class VoiceActivityDetector(Protocol):
+    def is_speech(self, frame: bytes) -> bool: ...
+    def reset(self) -> None: ...                  # before each recording
+# EnergyVAD(threshold=0.003, margin=3.0, frame_ms=30, hangover_ms=60, warmup_ms=240)
+
+# luna/audio/recorder.py
+@dataclass(frozen=True)
+class Utterance:
+    pcm16: bytes                                  # empty for no_speech / cancelled
+    sample_rate: int
+    duration_s: float
+    reason: Literal["silence", "max", "stopped", "cancelled", "no_speech"]
+
+class Recorder:
+    def __init__(self, mic: MicSource, vad: VoiceActivityDetector, conf: VoiceSettings, *,
+                 clock: Clock = time.monotonic) -> None: ...
+    def record(self, cancel: threading.Event, *,
+               stop: threading.Event | None = None) -> Utterance: ...  # mic stopped on return
+```
+
+```python
+# luna/voice/frontend.py
+class VoiceState(enum.Enum):
+    IDLE = "idle"
+    LISTENING = "listening"
+    TRANSCRIBING = "transcribing"
+    HANDLING = "handling"
+
+class VoiceFrontEnd:
+    def __init__(self, hotkey: HotkeyListener, recorder: Recorder, stt: STTProvider,
+                 orchestrator: _Orchestrator, speaker: _Speaker | None, bus: EventBus,
+                 on_reply: Callable[[Reply], None], *,
+                 on_stale_reply: Callable[[Reply], None] | None = None,   # print only
+                 voice: VoiceSettings | None = None, stt_conf: STTSettings | None = None,
+                 clock: Clock = time.monotonic,
+                 beep: Callable[[], None] | None = None) -> None: ...
+    def start(self) -> None: ...      # registers the hotkey; ToolError if invalid/taken
+    def stop(self) -> None: ...       # unregisters, cancels the active turn
+    def close(self, timeout: float = 2.0) -> None: ...
+
+# luna/voice/input.py: built by luna.app; never raises into the UI
+class VoiceInput:
+    def enable(self) -> str | None: ...   # None = listening; otherwise the degrade reason
+    def disable(self) -> None: ...
+    def measure(self, seconds: float = 3.0) -> MicLevels: ...   # /mic: floor, peak, suggestion
+    def close(self) -> None: ...
 ```
 
 ```python
@@ -337,8 +422,10 @@ class AppLauncher(Protocol):
 class BrowserOpener(Protocol):
     def open_url(self, url: str) -> None: ...        # http/https only
 
-class HotkeyListener(Protocol):
+class HotkeyListener(Protocol):       # press-only (no key-up): hence toggle push-to-talk
     def start(self, hotkey: str, on_press: Callable[[], None]) -> None: ...
+    # hotkey: "+"-joined lowercase names ("ctrl+alt+space"); on_press runs on a background
+    # thread; raises ToolError if the combination is invalid or already taken.
     def stop(self) -> None: ...
 
 class Autostart(Protocol):
@@ -371,23 +458,64 @@ class Autostart(Protocol):
    - final text → `Reply`.
 4. Orchestrator writes the action log, emits `ReplyReady`, returns the reply.
 
-### 4.2 Voice request (slices 3–4)
+### 4.2 Voice request
+
+#### Push-to-talk (slice 3, implemented) — the interaction model
+
+This is the single definition of the push-to-talk model (owner decisions D2-D4, ADR 0003
+amendment). `HotkeyListener` is press-only (`RegisterHotKey`, no keyboard hook), so it is a
+**toggle**: one hotkey whose meaning depends on the state of `VoiceFrontEnd`.
+
+| State when the hotkey is pressed | Effect |
+|---|---|
+| `IDLE` (also while a reply is being spoken) | **barge-in**: `Speaker.stop()`, optional start beep, open the mic, start a new turn → `LISTENING` |
+| `LISTENING` | stop recording now and **keep** what was said (early stop) → `TRANSCRIBING` |
+| `TRANSCRIBING` / `HANDLING` | **cancel** the turn (its `cancel` event) and start a new recording at once |
 
 ```
-mic (sounddevice callback, 16 kHz mono, 30 ms frames)
-  └─► frames queue ─► VoiceFrontEnd thread
-          IDLE:       feed WakeWordDetector  (or hotkey event)
-          on wake ──► LISTENING: collect frames after WakeEvent.end_sample (+300 ms pre-roll),
-                      VAD endpointing: stop at 700 ms silence or 10 s max
-          ──────────► TRANSCRIBING: STTProvider.transcribe(...)
-          ──────────► Request(text, source="voice", lang=transcript.lang) → Orchestrator
-          ──────────► SPEAKING: UI calls Speaker.speak(reply): synthesize per chunk → playback (interruptible)
-          ──────────► IDLE (optionally a follow-up window, owner decision Q3)
+hotkey press (luna-hotkey-cb thread) ── flips state only, starts a turn thread ──┐
+                                                                                 ▼
+turn thread "luna-voice":
+  LISTENING     Recorder.record(cancel, stop=turn.stop): mic open, 30 ms frames,
+                300 ms pre-roll, EnergyVAD; ends on 700 ms silence, 10 s max,
+                second press ("stopped"), or no speech within 5 s ("no_speech"); mic closed
+                └─ empty audio / no_speech → IDLE "no speech" (no STT, no LLM call)
+  TRANSCRIBING  STTChain.transcribe(pcm16, lang_hint, prompt, timeout_s=5)  (Groq → local)
+                └─ empty transcript → IDLE "didn't catch that" (no LLM call)
+                └─ ProviderError → ERROR "speech recognition failed"
+  HANDLING      TranscriptReady → Orchestrator.handle(Request(text, source="voice", lang), cancel)
+                └─ turn still current → UI on_reply(reply): print + Speaker.speak(reply)
+                └─ turn superseded → on_stale_reply: print only if an action really ran
+                   (never spoken; the orchestrator's "cancelled" apology is dropped)
+  → IDLE; one INFO line: hotkey_to_listening_ms, capture_ms, stt_ms, handle_ms, provider, end reason
+```
+
+Rules:
+- At most one STT call in flight (a superseded turn may still be decoding; the next waits or
+  is cancelled). A press never blocks: `on_press` only changes state and signals events.
+- Speaking is owned by the UI, after the turn has ended, so a press while speaking is an
+  `IDLE` press. After `on_reply` the turn is checked again and speech is cut if a press landed
+  meanwhile.
+- `StatusChanged`: `LISTENING` on start, `THINKING` for transcribing/handling, final
+  `IDLE` / `ERROR` with a short detail. A superseded turn publishes nothing (it only re-publishes
+  the current status if the orchestrator's late `IDLE` would hide it).
+- Privacy: the microphone is open only while recording; the audio is dropped after recognition;
+  the transcript is logged at DEBUG only, the latency line has durations and the provider name.
+- Hotkey: default `ctrl+alt+space`, `[voice] hotkey`; start beep `[voice] start_beep` (off).
+- Echo: barge-in stops speech before the mic opens, so the assistant does not hear itself.
+- No follow-up window: one command per press (D6, revisit in slice 4).
+
+#### Wake word (slice 4, planned)
+
+```
+always-on mic ─► WakeWordDetector ─► on WakeEvent: same LISTENING → TRANSCRIBING → HANDLING turn,
+                 starting at WakeEvent.end_sample (+300 ms pre-roll from the ring buffer)
 ```
 
 "Луна, открой YouTube" said in one breath works because the detector reports the
 sample position where the keyword ended and capture continues into the ring buffer.
-If STT text still starts with "Луна"/"Luna", the router strips it.
+If STT text still starts with "Луна"/"Luna", the router strips it. Slice 4 must also solve
+TTS echo into an always-open microphone and decide the follow-up window (Q4).
 
 ### 4.3 Status events
 
@@ -403,11 +531,13 @@ receives them via a `QObject` bridge that re-emits them as Qt signals on the GUI
 | Thread | Work |
 |---|---|
 | Main | Qt event loop (slice 5) or the CLI REPL (slice 1–4) |
-| PortAudio callback | copies frames to a queue only (never blocks) |
-| `voice` | wake word + VAD + STT state machine (slice 3+) |
+| PortAudio callback | copies frames to a bounded queue only (never blocks; drops the oldest frame if full); exists only while recording |
+| `luna-hotkey` | Win32 message loop for `RegisterHotKey` (registers, pumps `GetMessageW`, unregisters) |
+| `luna-hotkey-cb` | runs `VoiceFrontEnd._on_press` from a bounded queue (8): flips state, signals events, starts a turn thread; never records or waits |
+| `luna-voice` (one per turn, daemon) | record (VAD) → STT → `Orchestrator.handle(request, cancel)` and waits for it; a press can cancel the turn and start the next one at once |
+| `stt-warm-up` (daemon, once) | loads the local faster-whisper model in the background when listening is enabled |
 | `speaker` | `Speaker` worker: synthesize chunk N+1 while chunk N plays (slice 2) |
-| `worker` | orchestrator: router, LLM calls, tools (single-threaded → no races on dialog state) |
-| `hotkey` | Win32 message loop for `RegisterHotKey` |
+| `luna-req-<id>` (one per request, daemon) | orchestrator turn: router, LLM calls, tools. Turns are serialized by a turn lock, so typed and voice requests never run concurrently (no races on dialog state); the caller (REPL or `luna-voice`) waits for the reply, the timeout or its cancel event |
 | Piper subprocess | later/optional: separate **process** (license boundary, ADR 0005) |
 
 Why not asyncio:
@@ -448,11 +578,29 @@ api_key_env = "GROQ_API_KEY"
 base_url = "http://localhost:1234/v1"
 model = "qwen3-4b"                 # exact name as shown by LM Studio; chosen by #22 benchmark
 
-[stt]
-provider = "faster_whisper"     # or "groq"
-model = "large-v3-turbo"
-device = "cuda"                 # "cpu" → model "small", compute_type "int8"
-compute_type = "int8_float16"
+[stt]                           # ADR 0003 amendment
+chain = ["groq", "local"]       # order of STTChain; Groq skipped without GROQ_API_KEY
+language_hints = ["ru", "en"]   # exactly one entry = force that language; more = auto-detect
+prompt = ""                     # bias text for brand / app names (<= 500 chars)
+timeout_s = 5.0
+[stt.groq]
+model = "whisper-large-v3-turbo"
+api_key_env = "GROQ_API_KEY"
+[stt.local]                     # faster-whisper
+model = "base"                  # "small" is more accurate but RTF ~2 on the reference i3
+device = "cpu"                  # "cpu" | "cuda" | "auto" (auto: test decode, else CPU)
+compute_type = "int8"
+beam_size = 1
+
+[voice]                         # push-to-talk input (§4.2)
+listen = false                  # --listen / /listen; the mic is never opened otherwise
+hotkey = "ctrl+alt+space"       # the owner uses "ctrl+shift+space" (conflict)
+start_beep = false
+# input_device = "C270"         # omitted = default device; or an index / name substring
+vad_energy_threshold = 0.003    # tune with /mic
+vad_noise_margin = 3.0
+silence_ms = 700
+max_utterance_s = 10.0
 
 [tts]                           # ADR 0005 amendment
 enabled = false                 # speak replies aloud
@@ -464,10 +612,9 @@ volume = 100                    # 0 .. 100
 max_chars = 1500                # longest spoken reply, cut at a sentence end
 first_chunk_max_chars = 200     # short first chunk → quick first audio
 
-[wakeword]
+[wakeword]                      # slice 4, not implemented yet
 engine = "vosk"                 # "vosk" | "onnx" | "off"
 keywords = ["луна"]
-hotkey = "ctrl+alt+space"
 
 [search]
 provider = "ddgs"               # "ddgs" | "searxng" | "tavily"
@@ -502,15 +649,18 @@ autostart = false
   never waits on a cooling provider. `ProviderSwitched` is emitted so the UI can show
   "offline mode". Errors that are our fault (400 bad request, schema errors) are not
   retried on other providers more than once.
-- The same `FallbackChain` helper is reused for STT (local ↔ Groq) and search
-  (ddgs ↔ SearXNG/Tavily). TTS has one provider in slice 2 (SAPI); a TTS failure is logged,
+- STT uses `STTChain` (Groq → local), which copies `LLMChain`'s cooldown rules and constants;
+  extracting one shared `FallbackChain` for LLM/STT (and later search: ddgs ↔ SearXNG/Tavily)
+  is a backlog item. TTS has one provider in slice 2 (SAPI); a TTS failure is logged,
   `StatusChanged(ERROR)` is emitted and the reply stays visible as text.
 - Per-stage timeouts (defaults): STT 5 s, LLM call 8 s, search 5 s, page fetch 4 s
   each, total request 20 s. On timeout the user hears a short apology instead of silence.
 - Tool failures are returned to the LLM as `ToolResult(ok=False, summary=...)`; the
   LLM phrases the error. Router fast path: unknown/uncertain targets fall through to the LLM path; if the tool matched but failed to launch (`open_failed`), the router replies with a short failure message instead (a retry through the LLM could open things twice).
 - Startup is degraded, not fatal: missing API key → provider skipped with a warning;
-  no microphone → text mode only; no CUDA → STT on CPU.
+  no microphone, taken hotkey, non-Windows or no STT engine → `VoiceInput.enable()` returns
+  a reason, the app prints it and stays in text mode (a taken hotkey points to
+  `[voice] hotkey`); no Groq key → local STT only; CUDA failing → STT on CPU (`device="auto"`).
 
 ## 9. Safety
 
@@ -556,24 +706,31 @@ stays fast; voice-module unit tests import them lazily and use fakes.
 
 ## 11. VRAM and resource budget (RTX 2060, 6 GB — confirmed 6144 MiB by `nvidia-smi`)
 
-| Item | Device | VRAM (est.) | RAM (est.) | Notes |
+Updated 2026-10-26 (ADR 0003 amendment). **STT uses no VRAM**: Groq is remote and the local
+fallback runs on the CPU, so the whole GPU is left to the local LLM. Measured STT RAM numbers are
+**pending the STT benchmark (#87)**; RAM values below are estimates unless marked measured.
+
+| Item | Device | VRAM | RAM | CPU / notes |
 |---|---|---|---|---|
-| Windows desktop + browser | GPU | 0.3–0.6 GB | — | already used before L.U.N.A. starts |
-| faster-whisper `large-v3-turbo` int8_float16 | GPU | ~1.0–1.5 GB | ~1 GB | **estimate, measure in slice 3**; loaded once, kept warm |
-| Wake word (Vosk small-ru, 45 MB) or ONNX | CPU | 0 | ~150 MB | ~5–10 % of one core (to measure) |
-| Silero VAD | CPU | 0 | ~20 MB | |
-| SAPI voice (Windows built-in) | CPU | 0 | ~20–50 MB (est.) | default TTS |
+| Windows desktop + browser | GPU | 0.3–0.6 GB (est.) | — | already used before L.U.N.A. starts |
+| Groq Whisper (default STT) | remote | 0 | ~0 (one WAV upload) | network RTT + inference; no model load |
+| faster-whisper `base` int8 (local fallback, default) | CPU | 0 | ~0.3–0.5 GB (est., **pending #87**) | **measured** by the owner: ~1 s for a ~2 s clip on i3-12100F (4 cores); loaded once in the background when listening is enabled |
+| faster-whisper `small` int8 (option) | CPU | 0 | ~0.8–1 GB (est., **pending #87**) | **measured**: RTF ~1.8–2.0 → misses N4 on this CPU; not the default |
+| faster-whisper on CUDA (`device="auto"`/`"cuda"`) | GPU | ~1–1.5 GB for `large-v3-turbo` (est.) | | **not used**: decoding fails on the owner's PC (`cublas64_12.dll` missing); `auto` falls back to CPU |
+| EnergyVAD + mic capture | CPU | 0 | < 5 MB | pure Python RMS per 30 ms frame; mic open only while recording |
+| Wake word (Vosk small-ru, 45 MB) or ONNX — slice 4 | CPU | 0 | ~150 MB (est.) | ~5–10 % of one core (to measure) |
+| Edge TTS (default) / SAPI fallback | remote / CPU | 0 | ~20–50 MB (est.) | MP3 decode via `miniaudio` |
 | Piper medium voices (2) — optional, later | CPU | 0 | ~200 MB | separate process, not in the default total |
-| Qt UI | CPU | ~0 | ~100 MB | |
-| **Default total (cloud LLM)** | | **~1.5 GB** | ~1.5 GB | leaves >4 GB for games/other apps |
-| Ollama `qwen3:4b` (2.5 GB Q4 + KV cache 8k) | GPU | ~3–3.5 GB | | only when cloud is unavailable or `offline=true` |
-| **Offline total** | | **~5 GB** | | fits with little headroom; `qwen3:8b` (5.2 GB) does **not** fit alongside STT |
+| Qt UI — slice 5 | CPU | ~0 | ~100 MB (est.) | |
+| **Default total (cloud LLM, Groq STT)** | | **~0 GB** by L.U.N.A. | ~0.5–1 GB (est.) | GPU entirely free for games/other apps |
+| Local LLM in LM Studio (owner: ~9B q4) | GPU | most of the 6 GB (owner's setup, not measured here) | | used as the last LLM fallback; this is why GPU STT was dropped |
+| **Offline total (local LLM + local STT)** | | LLM only | LLM host + ~0.5 GB | STT and the LLM host share the 4 CPU cores; latency to be checked in #87 |
 
 Policies:
-- Ollama is called with `keep_alive` = 5 min so the local model unloads when cloud
-  providers are working.
-- "Low-VRAM / game mode" (later; owner question Q1): STT on CPU `small` int8 or Groq,
-  Ollama disabled. Exposed as one config switch + tray toggle.
+- The local LLM host (LM Studio) manages its own model loading/unloading; L.U.N.A. does not
+  load anything onto the GPU in the default configuration.
+- "Low-VRAM / game mode" (later; owner question Q6): with STT already off the GPU it reduces to
+  disabling the local LLM fallback. Exposed as one config switch + tray toggle.
 
 ## 12. Build slices (incremental)
 
@@ -584,7 +741,7 @@ Each slice ends in something the owner can run. Later slices only add adapters.
 | 0 | Skeleton | `uv` project, src layout, ruff/pytest, CI on windows-latest, config loader, logging, action log, fakes | `uv run luna --version`; CI green |
 | 1 | **Text core** | CLI REPL `uv run luna --text`; router; `open_website`, `open_app` (Get-StartApps), `web_search` (ddgs + trafilatura); Assistant with `LLMChain` (Gemini → Groq → Ollama); small latency/accuracy benchmark script over ~20 RU/EN prompts | typing "открой ютуб", "open telegram", "какой курс доллара?", "что такое черная дыра?" gives correct actions/answers; tests pass |
 | 2 | Voice out | `SapiTTS` (Irina / Zira); speech text clean-up and sentence splitting; voice by `Reply.lang`; `sounddevice` interruptible playback; `Speaker` worker; CLI `--voice`, `/mute`, `/stop`. Piper later/optional (#63) | CLI replies are spoken in RU/EN |
-| 3 | Voice in (push-to-talk) | audio capture, VAD endpointing, `FasterWhisperSTT` + `GroqWhisperSTT`, global hotkey | hotkey → speak → action + spoken reply; latency spans logged |
+| 3 | Voice in (push-to-talk) — **code merged** (PRs #90–#98, 2026-10-26); STT benchmark #87 and manual checks #88 open | `SoundDeviceMic` capture, `EnergyVAD` + `Recorder`, `STTChain` (`GroqWhisperSTT` → `FasterWhisperSTT` CPU `base`), `WindowsHotkeyListener`, `VoiceFrontEnd` toggle PTT with barge-in, `VoiceInput` + CLI `--listen` / `/listen` / `/mic`, degraded start | hotkey → speak → action + spoken reply; latency spans logged |
 | 4 | Wake word | always-on capture, `VoskKeywordSpotter` for "луна", one-breath commands; parallel spike: custom ONNX model (ADR 0004) | "Луна, открой YouTube" works; false accepts/hour measured over a 2-hour session |
 | 5 | Desktop shell | PySide6 tray, popup reply window with text input, status indicator, autostart toggle, settings file shortcut | MVP definition of done (spec §6) |
 | 6 | Hardening | offline mode switch, game mode, provider status in tray, custom wake-word model if it beats Vosk, packaging (PyInstaller) investigation | owner's choice |
@@ -597,5 +754,10 @@ See the decision list in each ADR. Summary:
 3. ~~Voice~~ — **decided** (owner, 2026-10-23): SAPI "Irina" (RU) and "Zira" (EN) by default;
    Piper with male CC0 voices later/optional (ADR 0005 amendment).
 4. Dialog: one command per wake word vs. a short follow-up window; "Луна, стоп".
-5. Hotkey combination (default `Ctrl+Alt+Space`).
+   **Partly decided** (owner, 2026-10-26, D2/D6): push-to-talk is one command per press (toggle,
+   §4.2); the follow-up window and "Луна, стоп" are decided with the wake word in slice 4.
+5. ~~Hotkey combination~~ — **decided** (owner, 2026-10-26, D3): default `Ctrl+Alt+Space`,
+   configurable in `[voice] hotkey`; the owner uses `Ctrl+Shift+Space` because of a conflict.
 6. Game mode / unloading models while gaming.
+7. ~~STT provider order~~ — **decided** (owner, 2026-10-26, D1): Groq first, local CPU `base`
+   fallback, no GPU STT (ADR 0003 amendment).

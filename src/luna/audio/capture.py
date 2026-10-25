@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import queue
 import threading
+import weakref
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -136,13 +137,16 @@ def resolve_input_device(device: DeviceSpec, loader: Loader = _load_sounddevice)
         raise AudioError("no audio input device (microphone) found")
     if device is None or (isinstance(device, str) and not device.strip()):
         with contextlib.suppress(Exception):
-            default = loader().default.device
-            default_index = int(default[0] if isinstance(default, (list, tuple)) else default)
+            default = loader().default.device  # sd's (input, output) pair, not a tuple
+            try:
+                default_index = int(default[0])
+            except TypeError:
+                default_index = int(default)
             for dev in devices:
                 if dev.index == default_index:
                     return dev
         return devices[0]
-    if isinstance(device, int) or device.strip().isdigit():
+    if isinstance(device, int) or (device.strip().isascii() and device.strip().isdigit()):
         wanted = int(device)
         for dev in devices:
             if dev.index == wanted:
@@ -169,8 +173,72 @@ def check_audio_input(loader: Loader = _load_sounddevice) -> str | None:
     return None
 
 
+class _Session:
+    """State of one start()..stop() period; the PortAudio callbacks are bound to it only.
+
+    It deliberately does not reference the mic, so a mic that is dropped without ``stop()``
+    can be garbage-collected (and its stream closed by the finalizer).
+    """
+
+    def __init__(self, frame_bytes_: int, queue_frames: int) -> None:
+        self.frame_bytes = frame_bytes_
+        self.queue: queue.Queue[bytes | None] = queue.Queue(maxsize=queue_frames)
+        self.pending = bytearray()  # touched only by the PortAudio callback thread
+        self.dropped = 0
+        self.ended = False  # set by stop(): the end of the stream is expected
+        self.lost = False  # the stream ended on its own (device unplugged / failed)
+
+    def on_audio(self, indata: Any, frames: int, time: Any, status: Any) -> None:
+        # PortAudio thread: copy and queue only, never block.
+        self.pending += bytes(indata)
+        size = self.frame_bytes
+        while len(self.pending) >= size:
+            frame = bytes(self.pending[:size])
+            del self.pending[:size]
+            try:
+                self.queue.put_nowait(frame)
+            except queue.Full:
+                with contextlib.suppress(queue.Empty):
+                    self.queue.get_nowait()  # drop the oldest frame
+                self.dropped += 1
+                with contextlib.suppress(queue.Full):
+                    self.queue.put_nowait(frame)
+
+    def on_finished(self) -> None:
+        if not self.ended:
+            self.lost = True
+            self.wake()
+
+    def wake(self) -> None:
+        # A sentinel makes a blocked read() return right away.
+        with contextlib.suppress(queue.Full):
+            self.queue.put_nowait(None)
+
+    def clear(self) -> None:
+        self.pending = bytearray()
+        with contextlib.suppress(queue.Empty):
+            while True:
+                self.queue.get_nowait()
+
+
+def _release(holder: dict[str, Any]) -> None:
+    """Abort and close the stream in ``holder`` (idempotent; used by stop() and finalizer)."""
+    stream = holder.pop("stream", None)
+    if stream is None:
+        return
+    with contextlib.suppress(Exception):
+        stream.abort()
+    with contextlib.suppress(Exception):
+        stream.close()
+
+
 class SoundDeviceMic:
-    """``MicSource`` backed by ``sounddevice.RawInputStream``; open only while started."""
+    """``MicSource`` backed by ``sounddevice.RawInputStream``; open only while started.
+
+    Use it as a context manager (``with SoundDeviceMic() as mic:``) or call ``close()``. As a
+    safety net a ``weakref.finalize`` closes a still-open stream when the object is garbage
+    collected or the process exits, so the microphone is never left on.
+    """
 
     def __init__(
         self,
@@ -183,20 +251,34 @@ class SoundDeviceMic:
         if frame_ms <= 0 or queue_frames <= 0:
             raise ValueError("frame_ms and queue_frames must be positive")
         self.frame_ms = frame_ms
-        self.dropped_frames = 0
         self.preroll = RingBuffer(preroll_ms)
         self._device = device
         self._loader = loader
         self._frame_bytes = frame_bytes(frame_ms)
-        self._queue: queue.Queue[bytes | None] = queue.Queue(maxsize=queue_frames)
-        self._pending = bytearray()  # touched only by the PortAudio callback thread
+        self._queue_frames = queue_frames
+        self._dropped_before = 0  # dropped frames of finished sessions
         self._lock = threading.Lock()
+        self._holder: dict[str, Any] = {}
+        self._session: _Session | None = None
         self._stream: Any = None
         self._closed = False
+        weakref.finalize(self, _release, self._holder)
 
     @property
     def is_open(self) -> bool:
         return self._stream is not None
+
+    @property
+    def dropped_frames(self) -> int:
+        session = self._session
+        return self._dropped_before + (session.dropped if session else 0)
+
+    def __enter__(self) -> SoundDeviceMic:
+        self.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
     def start(self) -> None:
         with self._lock:
@@ -206,8 +288,9 @@ class SoundDeviceMic:
                 return
             info = resolve_input_device(self._device, self._loader)
             sd = self._loader()
-            self._drain()
-            self._pending = bytearray()
+            if self._session is not None:
+                self._dropped_before += self._session.dropped
+            session = _Session(self._frame_bytes, self._queue_frames)  # fresh queue per session
             self.preroll.clear()
             stream = None
             try:
@@ -217,62 +300,60 @@ class SoundDeviceMic:
                     dtype="int16",
                     blocksize=self._frame_bytes // SAMPLE_WIDTH_BYTES,
                     device=info.index,
-                    callback=self._on_audio,
+                    callback=session.on_audio,
+                    finished_callback=session.on_finished,
                 )
                 stream.start()
-            except Exception as e:
+            except BaseException as e:  # incl. KeyboardInterrupt: never leave the device open
                 if stream is not None:
                     with contextlib.suppress(Exception):
                         stream.close()
-                raise AudioError(f"cannot open microphone {info.name!r}: {e}") from e
+                if isinstance(e, Exception):
+                    raise AudioError(f"cannot open microphone {info.name!r}: {e}") from e
+                raise
+            self._session = session
             self._stream = stream
+            self._holder["stream"] = stream
 
     def stop(self) -> None:
         with self._lock:
-            stream, self._stream = self._stream, None
-        if stream is None:
-            return
-        with contextlib.suppress(Exception):
-            stream.abort()
-        with contextlib.suppress(Exception):
-            stream.close()
-        # A sentinel makes a blocked read() return None right away.
-        with contextlib.suppress(queue.Full):
-            self._queue.put_nowait(None)
+            session, self._stream = self._session, None
+            if session is not None:
+                session.ended = True
+        _release(self._holder)
+        if session is not None:
+            session.wake()
 
     def read(self, timeout_s: float) -> bytes | None:
-        if self._stream is None and self._queue.empty():
+        session = self._session
+        if session is None:
+            return None
+        self._raise_if_lost(session)
+        if self._stream is None and session.queue.empty():
             return None
         try:
-            frame = self._queue.get(timeout=max(0.0, timeout_s))
+            frame = session.queue.get(timeout=max(0.0, timeout_s))
         except queue.Empty:
+            self._raise_if_lost(session)
             return None
-        if frame is not None:
-            self.preroll.append(frame)
+        if frame is None:
+            self._raise_if_lost(session)
+            return None
+        self.preroll.append(frame)
         return frame
 
     def close(self) -> None:
         with self._lock:
             self._closed = True
         self.stop()
+        session = self._session
+        if session is not None:
+            session.clear()  # no raw audio stays in memory
+        self.preroll.clear()
 
-    def _on_audio(self, indata: Any, frames: int, time: Any, status: Any) -> None:
-        # PortAudio thread: copy and queue only, never block.
-        self._pending += bytes(indata)
-        size = self._frame_bytes
-        while len(self._pending) >= size:
-            frame = bytes(self._pending[:size])
-            del self._pending[:size]
-            try:
-                self._queue.put_nowait(frame)
-            except queue.Full:
-                with contextlib.suppress(queue.Empty):
-                    self._queue.get_nowait()  # drop the oldest frame
-                self.dropped_frames += 1
-                with contextlib.suppress(queue.Full):
-                    self._queue.put_nowait(frame)
-
-    def _drain(self) -> None:
-        with contextlib.suppress(queue.Empty):
-            while True:
-                self._queue.get_nowait()
+    def _raise_if_lost(self, session: _Session) -> None:
+        stream = self._stream
+        if stream is None:
+            return
+        if session.lost or not getattr(stream, "active", True):
+            raise AudioError("microphone stopped unexpectedly (device unplugged or in use?)")

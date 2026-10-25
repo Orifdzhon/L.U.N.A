@@ -26,26 +26,44 @@ class FakeStream:
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
         self.events: list[str] = []
-        self.fail_start: Exception | None = None
+        self.fail_start: BaseException | None = None
+        self.active = False
 
     def start(self) -> None:
         if self.fail_start:
             raise self.fail_start
+        self.active = True
         self.events.append("start")
 
     def abort(self) -> None:
         self.events.append("abort")
+        self.active = False
+        self.kwargs["finished_callback"]()  # PortAudio reports the end of the stream
+
+    def unplug(self) -> None:
+        self.active = False
+        self.kwargs["finished_callback"]()
 
     def close(self) -> None:
         self.events.append("close")
 
 
+class Pair:
+    """Like sounddevice's _InputOutputPair: indexable, but not a list or tuple."""
+
+    def __init__(self, input_index: int, output_index: int = 0) -> None:
+        self._items = (input_index, output_index)
+
+    def __getitem__(self, i: int) -> int:
+        return self._items[i]
+
+
 class FakeSD:
-    def __init__(self, devices=DEVICES, fail_start: Exception | None = None) -> None:
+    def __init__(self, devices=DEVICES, fail_start: BaseException | None = None) -> None:
         self.devices = devices
         self.fail_start = fail_start
         self.streams: list[FakeStream] = []
-        self.default = types.SimpleNamespace(device=(2, 0))
+        self.default = types.SimpleNamespace(device=Pair(2))
 
     def query_devices(self, kind=None):
         if kind == "input" and not any(d["max_input_channels"] for d in self.devices):
@@ -217,7 +235,7 @@ def test_device_by_name_substring_case_insensitive_and_by_index():
 
 def test_default_device_falls_back_to_first_input():
     sd = FakeSD()
-    sd.default.device = (-1, 0)
+    sd.default.device = Pair(-1)
     mic, _ = make_mic(sd)
     mic.start()
     assert sd.streams[0].kwargs["device"] == 1
@@ -245,3 +263,80 @@ def test_fake_mic_conforms_and_scripts_frames():
     failing.start()
     with pytest.raises(AudioError):
         failing.read(0.1)
+
+
+def test_default_device_is_read_from_input_slot_of_pair():
+    sd = FakeSD()
+    sd.default.device = Pair(1, 2)
+    mic, _ = make_mic(sd)
+    mic.start()
+    assert sd.streams[0].kwargs["device"] == 1
+
+
+def test_context_manager_opens_and_closes():
+    mic, sd = make_mic()
+    with mic as m:
+        assert m is mic and mic.is_open
+    assert sd.streams[0].events == ["start", "abort", "close"]
+
+
+def test_dropped_without_stop_closes_stream_via_finalizer():
+    import gc
+
+    mic, sd = make_mic()
+    mic.start()
+    stream = sd.streams[0]
+    del mic
+    gc.collect()
+    assert stream.events == ["start", "abort", "close"]
+
+
+def test_base_exception_during_start_closes_stream():
+    sd = FakeSD(fail_start=KeyboardInterrupt())
+    mic, _ = make_mic(sd)
+    with pytest.raises(KeyboardInterrupt):
+        mic.start()
+    assert sd.streams[0].events == ["close"] and not mic.is_open
+
+
+def test_unplugged_device_makes_read_raise_instead_of_returning_none():
+    mic, sd = make_mic()
+    mic.start()
+    sd.streams[0].unplug()
+    with pytest.raises(AudioError, match="stopped unexpectedly"):
+        mic.read(0.1)
+    mic.stop()
+    assert mic.read(0.01) is None
+
+
+def test_inactive_stream_without_callback_makes_read_raise():
+    mic, sd = make_mic()
+    mic.start()
+    sd.streams[0].active = False
+    with pytest.raises(AudioError, match="stopped unexpectedly"):
+        mic.read(0.01)
+
+
+def test_stop_sentinel_does_not_leak_into_next_session():
+    mic, sd = make_mic()
+    mic.start()
+    mic.stop()
+    mic.start()
+    feed(sd, b"\x07" * frame_bytes(30))
+    assert mic.read(0.1)[0] == 7
+
+
+def test_close_drops_buffered_audio():
+    mic, sd = make_mic()
+    mic.start()
+    feed(sd, b"\x01" * frame_bytes(30))
+    mic.read(0.1)
+    feed(sd, b"\x02" * frame_bytes(30))
+    mic.close()
+    assert mic.preroll.snapshot() == b"" and mic.read(0.01) is None
+
+
+def test_non_ascii_digit_device_is_audio_error():
+    mic, _ = make_mic(device=chr(0xB2))
+    with pytest.raises(AudioError, match="not found"):
+        mic.start()

@@ -1,8 +1,8 @@
-# L.U.N.A. setup guide (slices 1-2: text mode with spoken replies)
+# L.U.N.A. setup guide (slices 1-3: text mode, spoken replies, push-to-talk voice input)
 
 L.U.N.A. runs as a text REPL: you type requests, it opens apps and sites, searches the web and
-answers, optionally out loud (see [Voice](#voice-text-to-speech)). Voice input and the wake word
-come in later slices. For the checks after setup see [MANUAL_CHECKS.md](MANUAL_CHECKS.md).
+answers, optionally out loud (see [Voice](#voice-text-to-speech)) and, with a hotkey, by voice (see
+[Voice input](#voice-input-push-to-talk)). The wake word comes in a later slice. For the checks after setup see [MANUAL_CHECKS.md](MANUAL_CHECKS.md).
 
 ## 1. Prerequisites
 
@@ -142,18 +142,101 @@ Example requests: `открой ютуб`, `open telegram`, `какой курс
 uv run luna --text --voice --listen
 ```
 
-Press **Ctrl+Alt+Space** (`[voice] hotkey`), speak, and the reply is printed and, with `--voice`,
-spoken. A second press while listening stops the recording early; a press while L.U.N.A. speaks
-or thinks interrupts it and listens again. `--listen` / `--no-listen` override `[voice] listen`;
-`/listen [on|off]` switches it while running. The microphone is open only while recording.
+`--listen` / `--no-listen` override `[voice] listen` (default `false`: the microphone is never
+opened unless you enable it). At start you should see `Listen: on (Ctrl+Alt+Space)`. `/listen
+[on|off]` switches it while running. There is no wake word yet; the hotkey is the only trigger.
 
-Speech recognition uses `[stt] chain` (default `groq`, then `local`). Groq needs `GROQ_API_KEY`
-(skipped without it); `local` is faster-whisper on the CPU (model `base`, downloaded on first use
-and loaded in the background at start-up). If the hotkey is taken, there is no microphone or no
-recognition engine, one line says why and L.U.N.A. continues in text mode.
+### How it works
 
-**Calibration:** `/mic` listens for 3 seconds (stay quiet for a moment, then speak) and prints the
-noise floor, the speech peak and a suggested `[voice] vad_energy_threshold` (default `0.003`).
+The hotkey is a toggle:
+
+1. Press it: L.U.N.A. prints `(listening...)` (and beeps if `[voice] start_beep = true`).
+2. Speak. Recording stops by itself after about 0.7 s of silence (`silence_ms`) or after 10 s
+   (`max_utterance_s`). Pressing the hotkey again stops it early.
+3. The phrase is recognized (`(heard) ...`), handled like a typed request, and the reply is printed
+   and, with `--voice`, spoken.
+4. Pressing the hotkey while L.U.N.A. is thinking or speaking interrupts that and starts listening
+   again (barge-in).
+
+The microphone is open only while recording, so the Windows microphone indicator is off at idle.
+Speech is stopped before recording starts, so the speakers do not feed back into the microphone.
+
+### Speech recognition (`[stt]`)
+
+Engines are tried in `[stt] chain` order, default `["groq", "local"]`:
+
+- `groq`: Groq Whisper (`whisper-large-v3-turbo`), fast, needs `GROQ_API_KEY` in `.env` (section 3);
+  skipped without the key. Your audio is sent to Groq. A rate limit (429), timeout or no network
+  moves on to the next engine for that phrase.
+- `local`: faster-whisper on the CPU, model `base` (int8). It works offline. `faster-whisper` is a
+  normal dependency, installed by `uv sync`. The model (~150 MB) is downloaded from Hugging Face on
+  first use into `%LOCALAPPDATA%\LUNA\models` and loaded in the background right after listening
+  is enabled, so the first local recognition can be slow once. To keep it elsewhere (for example on
+  drive D) set `[stt.local] model_dir = "D:/LUNA/models"`.
+
+`/listen` prints which engines are active (`Speech recognition: groq -> local.`) and which were
+skipped and why. Other `[stt]` keys: `language_hints` (default `["ru", "en"]`), `prompt` (bias text
+with app or brand names), `timeout_s` (per-engine limit, default 5). `[stt.local] model = "small"`
+is more accurate and about twice as slow. `device = "cuda"` needs NVIDIA cuBLAS 12 and cuDNN 9
+installed separately (not bundled); on CPU the default is the safe choice.
+
+### Microphone and `[voice]` settings
+
+The microphone is the Windows default input device; to pick another set `[voice] input_device`
+to its index or part of its name (a wrong value is reported with the list of available devices).
+Windows must also allow it: Settings -> Privacy -> Microphone -> turn on "Let desktop apps access
+your microphone".
+
+| Key | Default | Meaning |
+|---|---|---|
+| `listen` | `false` | allow opening the microphone (same as `--listen`) |
+| `hotkey` | `"ctrl+alt+space"` | lowercase names joined by `+`: at least one of `ctrl`, `alt`, `shift`, `win` plus exactly one key |
+| `start_beep` | `false` | short beep when listening starts |
+| `input_device` | system default | microphone index or part of its name |
+| `vad_energy_threshold` | `0.003` | minimum RMS level (0..1) counted as speech |
+| `vad_noise_margin` | `3.0` | speech must exceed the noise floor by this factor |
+| `silence_ms` | `700` | silence that ends the phrase |
+| `min_speech_ms` | `200` | shorter sounds are ignored |
+| `preroll_ms` | `300` | audio kept from before speech was detected |
+| `max_utterance_s` | `10` | hard stop of one recording |
+| `frame_ms` | `30` | audio frame size: 10, 20 or 30 |
+
+**Calibration.** Type `/mic`, stay quiet for a moment, then speak normally. It prints the noise
+floor, the speech peak and a suggested `vad_energy_threshold`. Example from a laptop microphone:
+floor about `0.0001`, voice `0.005`-`0.016`, so a threshold of `0.003` works. Put the suggested
+value in `[voice]` and restart.
+
+### Voice input troubleshooting
+
+- **`Voice input disabled: hotkey '...' is already taken by another program; choose another
+  combination in [voice] hotkey`.** Another program owns the combination (Ctrl+Alt+Space was
+  taken on one real PC). Pick a free one, for example:
+
+  ```toml
+  [voice]
+  hotkey = "ctrl+shift+space"
+  ```
+
+- **Other `Voice input disabled: ...` reasons** (the app keeps running in text mode):
+  - `audio backend is not installed; ...`: run `uv sync`.
+  - `no audio input device (microphone) found`: plug in or enable a microphone in Windows Sound
+    settings, check the privacy setting above, then type `/listen on`.
+  - `no speech recognition engine is available (set GROQ_API_KEY or add 'local' to [stt] chain)`:
+    add a key or put `local` in the chain.
+  - `global hotkeys are only supported on Windows`.
+  - `invalid hotkey ...` or a `config error: voice.hotkey`: fix the combination.
+- **Wrong microphone or silence.** Windows chooses the default input device; change it in Sound
+  settings or set `input_device`. Run `/mic`: `No speech heard` means the level is too low or the
+  wrong device is used.
+- **Phrases are cut off or never start.** Lower `vad_energy_threshold` (use the `/mic` value) or
+  raise `silence_ms` (for example `1000`) if you pause while speaking.
+- **Background noise starts recordings.** Raise `vad_energy_threshold` or `vad_noise_margin`.
+- **Recognition is slow.** The local engine runs on the CPU (about 1 s per phrase with `base`).
+  Add `GROQ_API_KEY` so Groq answers first; local is then only the fallback.
+- **Groq 429 or no network.** The phrase is recognized locally instead; the first local use may
+  need to download the model, so it needs the network once.
+- **`uv sync` fails with "access denied" on `luna.exe`.** A running `luna` locks its launcher.
+  Quit it (`exit`) before `uv sync`; a plain `uv run luna ...` may re-sync the same way.
 
 ## Voice (text-to-speech)
 

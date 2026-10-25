@@ -17,6 +17,7 @@ from luna.core.errors import ToolError
 from luna.llm.base import ChatResponse, Message, ToolSchema
 from luna.platform.base import AppEntry
 from luna.search.base import SearchResult
+from luna.stt.base import Transcript
 from luna.tools.base import SafetyLevel, ToolContext, ToolResult
 
 
@@ -279,3 +280,45 @@ class FakeTTS:
         finally:
             with self._lock:
                 self._active -= 1
+
+
+# ===========================================================================
+# STT fakes (issue #80) - keep this section self-contained
+# ===========================================================================
+
+
+class STTCall(NamedTuple):
+    pcm16: bytes
+    sample_rate: int
+    lang_hint: str | None
+    prompt: str | None
+    timeout_s: float
+
+
+class FakeSTT:
+    """Replays a scripted list of ``Transcript`` results; an ``Exception`` item is raised.
+
+    Raises ``ScriptExhausted`` (a ``BaseException``) when called more often than scripted.
+    """
+
+    def __init__(self, script: Sequence[Transcript | Exception], name: str = "fake") -> None:
+        self.name = name
+        self._script = list(script)
+        self.calls: list[STTCall] = []
+
+    def transcribe(
+        self,
+        pcm16: bytes,
+        sample_rate: int = 16_000,
+        *,
+        lang_hint: str | None = None,
+        prompt: str | None = None,
+        timeout_s: float,
+    ) -> Transcript:
+        self.calls.append(STTCall(pcm16, sample_rate, lang_hint, prompt, timeout_s))
+        if not self._script:
+            raise ScriptExhausted(f"FakeSTT {self.name!r} called more often than scripted")
+        item = self._script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item

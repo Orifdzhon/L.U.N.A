@@ -1,0 +1,232 @@
+# Wake-word benchmark phrases for scripts/bench_wake.py (Issue #112, ADR 0004 decision D7).
+#
+# Fields:
+#   id        unique id (also the WAV file name)
+#   label     positive = the assistant must wake up; negative = it must stay quiet
+#   category  wake            the bare keyword
+#             one-breath      keyword and command in one breath ("Луна, открой ютуб")
+#             en              English phrase (Russian-only model; excluded by default, --skip-categories)
+#             contains        a sentence that contains the keyword as a noun (negative)
+#             near-homophone  a different word that sounds close to the keyword (negative)
+#             speech          ordinary speech without the keyword (negative)
+#   lang      ru | en (selects the TTS voice)
+#   text      what is synthesized (--synth) or read aloud (--record)
+#
+# Decisions on the borderline cases:
+#   - "Луна-парк", "луна на небе", "лунный свет" are NEGATIVE. The keyword counts only as an
+#     address to the assistant (at the start of an utterance, as a name); a noun inside a sentence
+#     must not wake it, even though the engine hears the same word.
+#   - "Луначарский", "лунный", "лун" are near-homophones; "она", "Лена", "Лина", "Лана" are the
+#     acoustically closest ordinary words. All NEGATIVE.
+#   - "Луна" alone and "Луна, <command>" are POSITIVE (the command part must not break detection).
+
+# -- positives ---------------------------------------------------------------------------------
+
+[[phrase]]
+id = "wake-1"
+label = "positive"
+category = "wake"
+lang = "ru"
+text = "Луна"
+
+[[phrase]]
+id = "wake-2"
+label = "positive"
+category = "wake"
+lang = "ru"
+text = "Луна, ты здесь?"
+
+[[phrase]]
+id = "breath-youtube"
+label = "positive"
+category = "one-breath"
+lang = "ru"
+text = "Луна, открой ютуб"
+
+[[phrase]]
+id = "breath-time"
+label = "positive"
+category = "one-breath"
+lang = "ru"
+text = "Луна, который час"
+
+[[phrase]]
+id = "breath-telegram"
+label = "positive"
+category = "one-breath"
+lang = "ru"
+text = "Луна, открой телеграм"
+
+[[phrase]]
+id = "breath-search"
+label = "positive"
+category = "one-breath"
+lang = "ru"
+text = "Луна, найди рецепт борща"
+
+[[phrase]]
+id = "breath-weather"
+label = "positive"
+category = "one-breath"
+lang = "ru"
+text = "Луна, какая сегодня погода"
+
+[[phrase]]
+id = "en-telegram"
+label = "positive"
+category = "en"
+lang = "en"
+text = "Luna, open telegram"
+
+# -- negatives: the keyword inside a sentence --------------------------------------------------
+
+[[phrase]]
+id = "neg-moon-sky"
+label = "negative"
+category = "contains"
+lang = "ru"
+text = "Сегодня на небе яркая луна"
+
+[[phrase]]
+id = "neg-moon-sentence"
+label = "negative"
+category = "contains"
+lang = "ru"
+text = "Луна на небе сегодня очень красивая"
+
+[[phrase]]
+id = "neg-moon-park"
+label = "negative"
+category = "contains"
+lang = "ru"
+text = "Мы вчера ходили в Луна-парк"
+
+[[phrase]]
+id = "neg-moon-landing"
+label = "negative"
+category = "contains"
+lang = "ru"
+text = "Американцы высадились на луну в тысяча девятьсот шестьдесят девятом"
+
+[[phrase]]
+id = "neg-moon-full"
+label = "negative"
+category = "contains"
+lang = "ru"
+text = "Сегодня полнолуние, луна светит всю ночь"
+
+# -- negatives: near-homophones ----------------------------------------------------------------
+
+[[phrase]]
+id = "neg-lunnyj"
+label = "negative"
+category = "near-homophone"
+lang = "ru"
+text = "Лунный свет"
+
+[[phrase]]
+id = "neg-lunacharskij"
+label = "negative"
+category = "near-homophone"
+lang = "ru"
+text = "Луначарский"
+
+[[phrase]]
+id = "neg-ona"
+label = "negative"
+category = "near-homophone"
+lang = "ru"
+text = "Она"
+
+[[phrase]]
+id = "neg-lun"
+label = "negative"
+category = "near-homophone"
+lang = "ru"
+text = "Лун"
+
+[[phrase]]
+id = "neg-lena"
+label = "negative"
+category = "near-homophone"
+lang = "ru"
+text = "Лена"
+
+[[phrase]]
+id = "neg-lina"
+label = "negative"
+category = "near-homophone"
+lang = "ru"
+text = "Лина, открой окно"
+
+[[phrase]]
+id = "neg-lana"
+label = "negative"
+category = "near-homophone"
+lang = "ru"
+text = "Лана, который час"
+
+[[phrase]]
+id = "neg-luntik"
+label = "negative"
+category = "near-homophone"
+lang = "ru"
+text = "Лунтик"
+
+[[phrase]]
+id = "neg-luzha"
+label = "negative"
+category = "near-homophone"
+lang = "ru"
+text = "Лужа"
+
+[[phrase]]
+id = "neg-na-lunu"
+label = "negative"
+category = "near-homophone"
+lang = "ru"
+text = "Он смотрит на луну"
+
+# -- negatives: ordinary speech ----------------------------------------------------------------
+
+[[phrase]]
+id = "neg-speech-1"
+label = "negative"
+category = "speech"
+lang = "ru"
+text = "Открой окно, здесь душно"
+
+[[phrase]]
+id = "neg-speech-2"
+label = "negative"
+category = "speech"
+lang = "ru"
+text = "Что у нас сегодня на ужин"
+
+[[phrase]]
+id = "neg-speech-3"
+label = "negative"
+category = "speech"
+lang = "ru"
+text = "Вчера смотрел интересный фильм про космос"
+
+[[phrase]]
+id = "neg-speech-4"
+label = "negative"
+category = "speech"
+lang = "ru"
+text = "Позвони маме и скажи, что я задержусь"
+
+[[phrase]]
+id = "neg-speech-5"
+label = "negative"
+category = "speech"
+lang = "ru"
+text = "Завтра утром будет дождь, возьми зонт"
+
+[[phrase]]
+id = "neg-speech-6"
+label = "negative"
+category = "speech"
+lang = "ru"
+text = "Включи музыку погромче"

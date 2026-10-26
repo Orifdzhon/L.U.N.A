@@ -86,6 +86,45 @@ model: calling `open_app` / `open_website` afterwards is a failure. A turn that 
 request limit counts as `ProviderUnavailable`, so a slow local model may be stopped early; raise
 `--max-failures` for it.
 
+### Wake-word benchmark
+
+`scripts/bench_wake.py` picks the detector settings (ADR 0004, target D7: false accepts
+<= 0.5/h and recall >= 90 %). For every combination of `mode` (grammar / free) x `threshold` x
+`min_word_s` x `report_partials` it streams audio through the real `VoskKeywordSpotter` and reports
+recall, false accepts and FA/hour, wake latency (end of the keyword to the event, p50 / p95) and
+CPU seconds per audio second, as a markdown table (rows meeting D7 first, marked **yes**) and
+optionally JSON. Needs the Vosk model (downloaded on first use to `%LOCALAPPDATA%\LUNA\models`).
+
+```
+uv run python scripts/bench_wake.py --synth                      # smoke run, SAPI voice (SYNTHETIC)
+uv run python scripts/bench_wake.py --record D:\wake-clips --tag 1m   # record your own clips
+uv run python scripts/bench_wake.py --clips D:\wake-clips --negatives D:\wake-long --out wake.json
+```
+
+- `--clips DIR`: `manifest.csv` (`file,label[,keyword_end_s[,note]]`, label `positive` or
+  `negative`) or the folders `positive/` and `negative/`; 16-bit WAV, other rates and stereo are
+  converted. `--record DIR` writes exactly this layout from the default microphone (same capture
+  path as production), prompting for each phrase of `benchmarks/wake_phrases.toml`; DIR must be
+  outside the repository (audio is never committed). Use `--tag 1m` / `--tag 3m` for distances.
+- `--negatives PATH`: a long WAV (or a folder of WAVs) with speech that must not wake the
+  assistant: an hour of room audio, a podcast, TV. Streamed from disk. Convert MP3 to WAV first.
+  Because every grid point re-reads it, it is analysed only for configurations that already reach
+  90 % recall on the clips (`--long-all` forces all).
+- A configuration is `yes` only with >= 1 h of negative audio (`--min-negative-hours`); with less it
+  is `provisional`, because FA/hour from minutes of audio means nothing.
+- `--synth` results are labelled SYNTHETIC: a clean TTS voice proves the pipeline runs, not that the
+  detector works in your room. The English phrase is excluded by default (`--skip-categories en`:
+  the model is Russian).
+- Phrase policy (`benchmarks/wake_phrases.toml`): "Луна" and "Луна, <команда>" in one breath are
+  positive; the word as a noun inside a sentence ("луна на небе", "Луна-парк"), near-homophones
+  ("лунный", "Луначарский", "она", "лун", "Лена") and ordinary speech are negative.
+- Other options: `--modes`, `--thresholds`, `--min-word`, `--partials on|off|both`, `--cooldown`
+  (production default 2 s), `--tail` (silence after each clip, so final results are flushed),
+  `--md FILE`, `--model-dir`, `--config`.
+
+Latency is audio time only: the event's position minus the keyword end (the manifest's
+`keyword_end_s`, else the end the engine reports); processing cost is the separate CPU column.
+
 ## License
 
 [Apache-2.0](LICENSE)

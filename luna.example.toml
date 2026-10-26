@@ -66,8 +66,8 @@ voice_ru = "Irina"          # SAPI voice (fallback): substring of an installed n
 voice_en = "Zira"           # e.g. "Microsoft Zira Desktop"
 rate = 0                    # speech speed, -10 (slow) .. 10 (fast); Edge: 5 % per step
 volume = 100                # 0..100
-edge_timeout_s = 15         # give up on the online voice after this long (> 0)
-fallback_cooldown_s = 60    # after an Edge failure speak with SAPI this long before retrying
+edge_timeout_s = 15         # upper bound for one online chunk (scaled to its length; > 0)
+fallback_cooldown_s = 15    # skip Edge this long after 2 failed chunks in a row (>= 0)
 max_chars = 1500            # longest spoken reply; longer ones are cut at a sentence end (>= 1)
 first_chunk_max_chars = 200 # size limit of the first spoken chunk, for a quick start (>= 1)
 

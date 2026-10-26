@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from luna.tts.text import clean_for_speech, prepare_speech, split_sentences
+from luna.tts.text import clean_for_speech, is_speakable, prepare_speech, split_sentences
 
 WEATHER = (
     "По данным Яндекс.Погоды, сегодня в Душанбе стоит ясная и малооблачная погода [1]:\n\n"
@@ -198,3 +198,15 @@ def test_hostile_input_is_fast(name: str) -> None:
         start = time.perf_counter()
         func(text)
         assert time.perf_counter() - start < 0.2, (name, func.__name__)
+
+
+@pytest.mark.parametrize("text", ["Привет", "hello", "500 ₽", "café", "안녕 abc", "2"])
+def test_is_speakable_true(text: str) -> None:
+    assert is_speakable(text)
+
+
+@pytest.mark.parametrize(
+    "text", ["", "...", "—", "₽ — …", "무엇을 도와드릴까요?", "こんにちは", "  "]
+)
+def test_is_speakable_false(text: str) -> None:
+    assert not is_speakable(text)

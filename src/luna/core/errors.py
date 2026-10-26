@@ -30,6 +30,11 @@ class ProviderRequestError(ProviderError):
     """Our fault (HTTP 400, schema error): retried on another provider at most once."""
 
 
+class NothingToSpeak(ProviderRequestError):
+    """The text has no character the voice can pronounce (punctuation only, a script without a
+    voice such as Hangul). Not a service failure: the caller skips the chunk."""
+
+
 class EmptyResponse(ProviderRequestError):
     """The model returned neither text nor tool calls: a request-shape problem, not downtime,
     so the provider is not put on cooldown."""

@@ -1,3 +1,4 @@
+# ruff: noqa: RUF001
 """Real Edge TTS (online) + playback. Manual:
 ``uv run pytest -m audio tests/integration/test_edge_live.py -s``."""
 
@@ -71,3 +72,43 @@ def test_unreachable_endpoint_times_out_then_sapi(monkeypatch):
     clip = tts.synthesize("Hello, the service is unreachable.", "en")
     assert time.monotonic() - started < 12
     assert clip.pcm
+
+
+# --- #145: no stall longer than 5 s on the replies from the owner's log --------------------------
+
+LOG_REPLIES = [
+    ("Сейчас биткоин стоит примерно 79 764 доллара США (данные CoinMarketCap).", "ru"),
+    ("Источник: coinmarketcap.com.", "ru"),
+    ("Нарцисс — человек, который влюблён в себя.", "ru"),
+    ("Это стоит 500 ₽.", "ru"),
+    ("Сегодня в Москве облачно, около пяти градусов тепла. Вечером возможен дождь.", "ru"),
+    ("Hello, I am Luna. How can I help?", "en"),
+    ("Открываю браузер.", "ru"),
+    ("Сейчас четырнадцать часов тридцать минут.", "ru"),
+    ("Не удалось найти такое приложение. Попробуйте назвать его иначе.", "ru"),
+    ("Готово.", "ru"),
+]
+
+
+@pytest.mark.live
+@pytest.mark.parametrize(("text", "lang"), LOG_REPLIES)
+def test_log_replies_speak_without_a_long_stall(text, lang):
+    """Needs the network. Edge may fail (then FallbackTTS would use SAPI), but never for >5 s
+    per attempt: first audio is bounded and one retry is allowed (so <= ~2 x 5 s worst case)."""
+    from luna.tts.sapi import SapiTTS
+
+    tts = FallbackTTS(EdgeTTS(), SapiTTS())
+    started = time.monotonic()
+    clip = tts.synthesize(text, lang)
+    elapsed = time.monotonic() - started
+    print(f"\n{len(text)} chars -> {clip.duration_s:.2f}s audio in {elapsed:.2f}s")
+    assert clip.pcm
+    assert elapsed < 12  # two bounded Edge attempts at the very worst, plus SAPI
+
+
+@pytest.mark.live
+def test_korean_is_skipped_not_failed():
+    from luna.core.errors import NothingToSpeak
+
+    with pytest.raises(NothingToSpeak):
+        FallbackTTS(EdgeTTS(), SapiTTS()).synthesize("무엇을 도와드릴까요?", "ru")

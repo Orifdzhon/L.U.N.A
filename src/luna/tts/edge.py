@@ -25,8 +25,9 @@ import time
 from collections.abc import Callable
 
 from luna.audio.base import AudioClip
-from luna.core.errors import ProviderRequestError, ProviderUnavailable
+from luna.core.errors import NothingToSpeak, ProviderRequestError, ProviderUnavailable
 from luna.tts.base import TTSProvider
+from luna.tts.text import is_speakable
 
 log = logging.getLogger(__name__)
 
@@ -35,8 +36,13 @@ MAX_MP3_BYTES = 32 * 1024 * 1024
 DECODE_SAMPLE_RATE = 24_000  # native rate of the service's MP3
 VOICE_PATTERN = re.compile(r"^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z0-9]+Neural$")
 
-# (text, voice, rate "+0%", volume "+0%", timeout seconds) -> MP3 bytes. Faked in unit tests.
-Fetcher = Callable[[str, str, str, str, float], bytes]
+FIRST_AUDIO_TIMEOUT_S = 5.0  # no audio byte after this long: the exchange is stalled
+SECONDS_PER_CHAR = 0.05  # total timeout = first-audio timeout + this per character
+ATTEMPTS = 2  # one immediate retry of the same chunk
+
+# (text, voice, rate "+0%", volume "+0%", first-audio timeout s, total timeout s) -> MP3 bytes.
+# Faked in unit tests.
+Fetcher = Callable[[str, str, str, str, float, float], bytes]
 # MP3 bytes -> AudioClip. Faked in unit tests.
 Decoder = Callable[[bytes], AudioClip]
 
@@ -51,25 +57,49 @@ def volume_to_percent(volume: int) -> str:
     return f"{max(0, min(100, int(volume))) - 100:+d}%"
 
 
-def _fetch_mp3(text: str, voice: str, rate: str, volume: str, timeout_s: float) -> bytes:
+def total_timeout(text: str, first_audio_s: float, cap_s: float) -> float:
+    """Whole-exchange timeout scaled to the text length, never above ``cap_s``."""
+    return min(cap_s, first_audio_s + SECONDS_PER_CHAR * len(text))
+
+
+def _fetch_mp3(
+    text: str, voice: str, rate: str, volume: str, first_audio_s: float, total_s: float
+) -> bytes:
     import edge_tts  # lazy: keeps `import luna.tts.edge` cheap
 
     async def run() -> bytes:
         comm = edge_tts.Communicate(
-            text, voice, rate=rate, volume=volume, connect_timeout=5, receive_timeout=15
+            text,
+            voice,
+            rate=rate,
+            volume=volume,
+            connect_timeout=min(5, first_audio_s, total_s),
+            receive_timeout=total_s,
         )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + total_s
+        first_deadline = loop.time() + min(first_audio_s, total_s)
         buf = bytearray()
-        async for chunk in comm.stream():
-            if chunk["type"] == "audio":
-                buf += chunk["data"]
-                if len(buf) > MAX_MP3_BYTES:
-                    raise ProviderUnavailable("Edge TTS output is unreasonably large")
+        stream = comm.stream().__aiter__()
+        try:
+            while True:
+                # Until the first audio byte arrives the short first-audio limit applies.
+                limit = (deadline if buf else min(deadline, first_deadline)) - loop.time()
+                try:
+                    chunk = await asyncio.wait_for(stream.__anext__(), max(0.0, limit))
+                except StopAsyncIteration:
+                    break
+                if chunk["type"] == "audio":
+                    buf += chunk["data"]
+                    if len(buf) > MAX_MP3_BYTES:
+                        raise ProviderUnavailable("Edge TTS output is unreasonably large")
+        finally:
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                await aclose()
         return bytes(buf)
 
-    async def bounded() -> bytes:
-        return await asyncio.wait_for(run(), timeout_s)
-
-    return asyncio.run(bounded())
+    return asyncio.run(run())
 
 
 def _decode_mp3(data: bytes) -> AudioClip:
@@ -95,6 +125,7 @@ class EdgeTTS:
         volume: int = 100,
         *,
         timeout_s: float = 15.0,
+        first_audio_timeout_s: float = FIRST_AUDIO_TIMEOUT_S,
         fetcher: Fetcher | None = None,
         decoder: Decoder | None = None,
     ) -> None:
@@ -104,7 +135,8 @@ class EdgeTTS:
         self._voices = {"ru": voice_ru, "en": voice_en}
         self._rate = rate_to_percent(rate)
         self._volume = volume_to_percent(volume)
-        self._timeout_s = timeout_s
+        self._timeout_s = timeout_s  # upper bound of the length-scaled total timeout
+        self._first_audio_s = first_audio_timeout_s
         self._fetch = fetcher or _fetch_mp3
         self._decode = decoder or _decode_mp3
         if fetcher is None and decoder is None:
@@ -119,6 +151,34 @@ class EdgeTTS:
         except ImportError:  # reported as ProviderUnavailable on the first synthesis
             log.debug("edge-tts or miniaudio is not importable", exc_info=True)
 
+    def _fetch_with_retry(self, text: str, voice: str, total_s: float) -> bytes:
+        """Fetch the MP3; a stalled or failed exchange is retried at once (the service drops
+        about one request in ten with NoAudioReceived or a slow start)."""
+        last: ProviderUnavailable | None = None
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                mp3 = self._fetch(
+                    text, voice, self._rate, self._volume, self._first_audio_s, total_s
+                )
+            except ProviderUnavailable as e:
+                last = e
+            except TimeoutError as e:  # asyncio.TimeoutError is TimeoutError on 3.11+
+                last = ProviderUnavailable(
+                    f"Edge TTS timed out (first audio {self._first_audio_s}s, total {total_s:.0f}s)"
+                )
+                last.__cause__ = e
+            except Exception as e:  # aiohttp / edge_tts / OS errors: "service unusable"
+                last = ProviderUnavailable(f"Edge TTS request failed ({type(e).__name__})")
+                last.__cause__ = e
+            else:
+                if mp3:
+                    return mp3
+                last = ProviderUnavailable("Edge TTS returned no audio")
+            if attempt < ATTEMPTS:
+                log.debug("Edge TTS attempt %d failed (%s); retrying", attempt, last)
+        assert last is not None
+        raise last
+
     def synthesize(self, text: str, lang: str) -> AudioClip:
         if not text or not text.strip():
             raise ProviderRequestError("nothing to speak: empty text")
@@ -129,16 +189,11 @@ class EdgeTTS:
             raise ProviderRequestError(f"unsupported language: {lang!r}")
         # Lone surrogates cannot be sent as UTF-8; the rest is passed on (and escaped) as is.
         clean = text.encode("utf-8", "replace").decode("utf-8")
-        try:
-            mp3 = self._fetch(clean, voice, self._rate, self._volume, self._timeout_s)
-        except ProviderUnavailable:
-            raise
-        except TimeoutError as e:  # asyncio.TimeoutError is TimeoutError on 3.11+
-            raise ProviderUnavailable(f"Edge TTS timed out after {self._timeout_s}s") from e
-        except Exception as e:  # aiohttp / edge_tts / OS errors: all mean "service unusable"
-            raise ProviderUnavailable(f"Edge TTS request failed ({type(e).__name__})") from e
-        if not mp3:
-            raise ProviderUnavailable("Edge TTS returned no audio")
+        if not is_speakable(clean):
+            # Edge answers NoAudioReceived after ~1 s for "...", "—" or Hangul on a RU voice.
+            raise NothingToSpeak("no character the Edge voice can pronounce")
+        total_s = total_timeout(clean, self._first_audio_s, self._timeout_s)
+        mp3 = self._fetch_with_retry(clean, voice, total_s)
         try:
             clip = self._decode(mp3)
         except Exception as e:
@@ -149,11 +204,16 @@ class EdgeTTS:
 
 
 class FallbackTTS:
-    """Use ``primary``; when it is unavailable, speak with ``fallback`` and skip the primary for
-    ``cooldown_s`` so that every sentence does not wait for a failing network call.
+    """Use ``primary``; when it fails for a chunk, speak that chunk with ``fallback``.
 
-    One warning is logged per outage (not per sentence). ``ProviderRequestError`` (input the
-    engine cannot speak) is not a service failure: it propagates and starts no cooldown.
+    The next chunk tries ``primary`` again, so one glitch does not make the rest of the reply
+    robotic. After ``failure_threshold`` failures in a row the primary is skipped for
+    ``cooldown_s`` (a real outage must not make every sentence wait for a failing call); the
+    first success resets the count.
+
+    Each failure is logged (the primary is not called during the backoff, so an outage logs
+    once per probe). ``ProviderRequestError`` (input the engine cannot speak, including
+    ``NothingToSpeak``) is not a service failure: it propagates and counts for nothing.
     """
 
     def __init__(
@@ -161,14 +221,17 @@ class FallbackTTS:
         primary: TTSProvider,
         fallback: TTSProvider,
         *,
-        cooldown_s: float = 60.0,
+        cooldown_s: float = 15.0,
+        failure_threshold: int = 2,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._primary = primary
         self._fallback = fallback
         self._cooldown_s = cooldown_s
+        self._threshold = max(1, failure_threshold)
         self._clock = clock
         self._lock = threading.Lock()
+        self._failures = 0
         self._down_until: float | None = None
         self.name = f"{primary.name}+{fallback.name}"
 
@@ -180,19 +243,21 @@ class FallbackTTS:
                 clip: AudioClip = self._primary.synthesize(text, lang)
             except ProviderUnavailable as e:
                 with self._lock:
-                    first_failure = self._down_until is None
-                    self._down_until = self._clock() + self._cooldown_s
-                if first_failure:
-                    log.warning(
-                        "%s unavailable (%s); speaking with %s and retrying in %.0f s",
-                        self._primary.name,
-                        e,
-                        self._fallback.name,
-                        self._cooldown_s,
-                    )
+                    self._failures += 1
+                    backoff = self._failures >= self._threshold
+                    if backoff:
+                        self._down_until = self._clock() + self._cooldown_s
+                log.warning(
+                    "%s unavailable (%s); speaking this chunk with %s%s",
+                    self._primary.name,
+                    e,
+                    self._fallback.name,
+                    f", retrying in {self._cooldown_s:.0f} s" if backoff else "",
+                )
             else:
                 with self._lock:
-                    recovered = self._down_until is not None
+                    recovered = self._failures > 0
+                    self._failures = 0
                     self._down_until = None
                 if recovered:
                     log.info("%s is back", self._primary.name)

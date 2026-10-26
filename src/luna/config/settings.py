@@ -263,7 +263,13 @@ class WakeWordSettings(_Section):
     follow_up_s: float = Field(default=0.0, ge=0, le=30)  # 0 = off; keep listening after a reply
     # Second stage (ADR 0004 amendment 2): local faster-whisper checks each detection.
     verify: Literal["local", "off"] = "local"
-    verify_words: list[str] = Field(default_factory=lambda: ["луна", "luna"])
+    # Inflected forms Whisper often writes for the address word ("лунный", "лена" stay rejected).
+    verify_words: list[str] = Field(
+        default_factory=lambda: ["луна", "луну", "луне", "луны", "luna"]
+    )
+    # Opt-in: log the stage-2 transcript of REJECTED wakes at INFO, local log only (never sent
+    # anywhere). Off by default: a rejected wake may hold speech that was not meant for L.U.N.A.
+    log_rejects: bool = False
 
     @model_validator(mode="before")
     @classmethod

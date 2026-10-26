@@ -3,6 +3,7 @@
 Fakes only: no vosk, no faster_whisper, no audio device, no network (see wake_support.py).
 """
 
+import logging
 import threading
 import time
 from pathlib import Path
@@ -245,15 +246,41 @@ def test_build_app_wake_failure_still_starts_with_hotkey(tmp_path, wake_apps):
     assert "Wake word disabled" in "\n".join(app.startup_lines())
 
 
-def test_build_app_wake_without_voice_input_reports_only_the_voice_problem(tmp_path, wake_apps):
+def test_build_app_hotkey_taken_keeps_wake_mode(tmp_path, wake_apps, fake_local, caplog):
     from luna.core.errors import ToolError
 
+    caplog.set_level(logging.WARNING, logger="luna.voice.frontend")
     app = make(
-        tmp_path, wake_apps, wake=True, mic=FakeLiveMic(), hotkey=FakeHotkeyListener(ToolError("x"))
+        tmp_path,
+        wake_apps,
+        wake=True,
+        mic=FakeLiveMic(),
+        hotkey=FakeHotkeyListener(ToolError("hotkey is taken")),
     )
-    assert [w for w in app.warnings if w.startswith("Voice input disabled")]
-    assert not [w for w in app.warnings if w.startswith("Wake word disabled")]
-    assert not app.voice_input.wake_active
+    assert app.voice_input.enabled and app.voice_input.wake_active
+    assert not [w for w in app.warnings if w.startswith("Voice input disabled")]
+    assert app.voice_input.status_line() == "Listen: on (no hotkey, wake word only)"
+    assert any("not available" in n for n in app.voice_input.notes)
+    assert sum("works without it" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_listen_without_wake_still_fails_when_the_hotkey_is_taken(tmp_path, wake_apps):
+    from luna.core.errors import ToolError
+
+    app = make(tmp_path, wake_apps, mic=FakeLiveMic(), hotkey=FakeHotkeyListener(ToolError("x")))
+    assert app.voice_input.enable() == "x"
+    assert not app.voice_input.enabled
+
+
+def test_listen_after_wake_without_hotkey_reports_the_missing_hotkey(
+    tmp_path, wake_apps, fake_local
+):
+    from luna.core.errors import ToolError
+
+    app = make(tmp_path, wake_apps, mic=FakeLiveMic(), hotkey=FakeHotkeyListener(ToolError("x")))
+    assert app.voice_input.enable_wake() is None
+    assert "not available" in (app.voice_input.enable() or "")
+    assert app.voice_input.wake_active  # wake is unaffected
 
 
 def voice_wake_unbuilt(app):

@@ -23,13 +23,16 @@ from luna.stt.faster_whisper import SAMPLE_RATE, FasterWhisperSTT
 
 _log = logging.getLogger(__name__)
 
-VERIFY_LEAD_MS = 700  # end of lead_in (the keyword) ...
-VERIFY_AFTER_MS = 700  # ... plus this much audio after the cut -> ~1.4 s window
+VERIFY_LEAD_MS = 1000  # end of lead_in (the keyword) ...
+VERIFY_AFTER_MS = 700  # ... plus this much audio after the cut -> ~1.7 s window
 VERIFY_TIMEOUT_S = 3.0  # no result by then -> fail open (reason "timeout"; enforced by the caller)
 
 _SAMPLE_WIDTH = 2
 _WARM_UP_SILENCE_S = 0.5
 _YO_TO_IE = {0x0451: 0x0435}  # yo to ie
+# Latin lookalike letters Whisper sometimes mixes into a Russian word.
+_LATIN_TO_CYRILLIC = str.maketrans("aceopxykmthb", "асеорхукмтнв")
+_CYRILLIC = re.compile(r"[Ѐ-ӿ]")  # the Cyrillic block
 _TOKEN = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*")  # letter runs with inner hyphens
 
 Clock = Callable[[], float]
@@ -68,7 +71,10 @@ def keyword_first(text: str, words: Sequence[str]) -> bool:
     match = _TOKEN.search(_normalize(text))
     if match is None:
         return False
-    return match.group(0) in {_normalize(w).strip() for w in words}
+    token = match.group(0)
+    if _CYRILLIC.search(token):  # a mixed-script token: read the Latin lookalikes as Cyrillic
+        token = token.translate(_LATIN_TO_CYRILLIC)
+    return token in {_normalize(w).strip() for w in words}
 
 
 def _ms_bytes(ms: int) -> int:

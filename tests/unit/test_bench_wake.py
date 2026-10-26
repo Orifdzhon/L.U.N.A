@@ -544,7 +544,7 @@ def test_window_is_cut_at_the_event_cut_like_production():
     cut = round(1.5 * bench_wake.SAMPLE_RATE) * 2
     expected = production_verify.verify_window(audio[:cut], [audio[cut:]])
     assert r.detections[0].window == expected
-    assert len(expected) == 44_800  # 1.4 s of PCM16
+    assert len(expected) == 54_400  # 1.7 s of PCM16
 
 
 def test_window_survives_small_chunks_and_buffer_trimming():
@@ -570,7 +570,7 @@ def test_window_of_a_late_event_is_cut_at_the_keyword_end_not_at_the_event():
     assert r.detections[0].keyword_end_s == pytest.approx(2.0)
     cut = 2 * bench_wake.SAMPLE_RATE * 2
     assert r.detections[0].window == production_verify.verify_window(audio[:cut], [audio[cut:]])
-    assert len(r.detections[0].window) == 44_800
+    assert len(r.detections[0].window) == 54_400
 
 
 def test_window_at_clip_end_is_shorter_not_padded():

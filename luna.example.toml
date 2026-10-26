@@ -120,7 +120,11 @@ cue = "off"                   # "off" | "beep" when the keyword is heard
 follow_up_s = 0.0             # 0 = off; seconds to keep listening after a reply (try 6)
 verify = "local"              # "local" | "off": second-stage check of each detection with the
                               # [stt.local] faster-whisper model (a bigger model = slower check)
-verify_words = ["луна", "luna"]   # the transcript must START with one of these
+verify_words = ["луна", "луну", "луне", "луны", "luna"]   # the transcript must START with one
+                              # of these (Latin lookalike letters in a Russian word are fixed)
+log_rejects = false           # true: write what the check heard in REJECTED wakes to the local
+                              # log (INFO). Stays on this PC, but may contain speech that was not
+                              # meant for L.U.N.A. - enable only to debug missed wakes
 
 # Desktop shell (tray + window). "Start with Windows" is toggled from the tray menu;
 # the old `autostart` key here is ignored (with a warning if it was true).

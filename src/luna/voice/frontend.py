@@ -229,6 +229,7 @@ class VoiceFrontEnd:
         self._turn: _Turn | None = None
         self._threads: list[threading.Thread] = []
         self._started = False
+        self._hotkey_ok = False
         self._closed = False
         # wake mode (set_live)
         self._live: LiveAudio | None = None
@@ -238,6 +239,7 @@ class VoiceFrontEnd:
         self._verify_timeout_s = verify_timeout_s
         self._rec_lock = threading.Lock()  # live mode: one recording at a time
         self._warned: set[str] = set()
+        self._wake_stats = {"detections": 0, "accepted": 0, "rejected": 0}  # this session
 
     @property
     def state(self) -> VoiceState:
@@ -245,16 +247,34 @@ class VoiceFrontEnd:
 
     # ---- lifecycle -----------------------------------------------------------------
 
-    def start(self) -> None:
-        """Register the hotkey. Raises ``ToolError`` if it is invalid or already taken."""
+    def start(self, *, hotkey_required: bool = True) -> bool:
+        """Register the hotkey. Raises ``ToolError`` if it is invalid or already taken.
+
+        With ``hotkey_required=False`` (wake mode) a registration failure is logged once and the
+        front end still starts, so wake turns work without the hotkey. Returns True when the
+        hotkey is registered.
+        """
         with self._lock:
             if self._closed:
                 raise RuntimeError("VoiceFrontEnd is closed")
             if self._started:
-                return
-        self._hotkey.start(self._voice.hotkey, self._on_press)
+                return self._hotkey_ok
+        registered = True
+        try:
+            self._hotkey.start(self._voice.hotkey, self._on_press)
+        except Exception as exc:
+            if hotkey_required:
+                raise
+            registered = False
+            logger.warning(
+                "hotkey %s unavailable (%s); wake mode works without it",
+                self._voice.hotkey,
+                type(exc).__name__,
+            )
         with self._lock:
             self._started = True
+            self._hotkey_ok = registered
+        return registered
 
     def stop(self) -> None:
         """Unregister the hotkey and cancel the active turn (if any). Idempotent."""
@@ -330,8 +350,15 @@ class VoiceFrontEnd:
             if self._state is not VoiceState.IDLE or self._turn is not None:
                 return False
             kind = "wake" if trigger.event is not None else "follow_up"
+            if kind == "wake":
+                self._wake_stats["detections"] += 1
             self._begin_turn(kind, trigger)
             return True
+
+    @property
+    def wake_stats(self) -> dict[str, int]:
+        """Session counters: first-stage detections and the verifier's verdicts."""
+        return dict(self._wake_stats)
 
     # ---- hotkey (background thread of the listener) ---------------------------------
 
@@ -490,11 +517,15 @@ class VoiceFrontEnd:
             return
         if result.text and result.accepted:  # a rejected wake leaves no trace of its audio
             logger.debug("Verifier heard: %r", result.text)
+        log_rejected = bool(result.text) and not result.accepted and self._wake.log_rejects
         if result.reason == "error":
             outcome = "error"
         else:
             outcome = "accepted" if result.accepted else "rejected"
-        if self._settle(turn, result.accepted, outcome) and outcome == "error":
+        settled = self._settle(turn, result.accepted, outcome)
+        if settled and log_rejected:  # opt-in ([wakeword] log_rejects): local log only
+            logger.info("wake rejected, verifier heard: %r", result.text)
+        if settled and outcome == "error":
             self._warn_once("error", "wake verification error; first stage only")
 
     def _on_verify_timeout(self, turn: _Turn) -> None:
@@ -515,6 +546,7 @@ class VoiceFrontEnd:
             if v is None or not v.pending:
                 return False
             v.pending = False
+            self._wake_stats["accepted" if accepted else "rejected"] += 1
             if v.timer is not None:
                 v.timer.cancel()
             if v.submitted_at is not None:

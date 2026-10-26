@@ -441,7 +441,7 @@ def _assemble(
     )
     wake = settings.wakeword.enabled  # wake mode implies voice input
     if settings.voice.listen or wake:
-        reason = voice_input.enable()
+        reason = voice_input.enable(hotkey_required=not wake)
         if reason is not None:
             warnings.append(f"Voice input disabled: {reason}. Continuing in text mode.")
             wake = False

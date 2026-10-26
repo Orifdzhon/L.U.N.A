@@ -29,8 +29,9 @@ PCM = b"\x01\x00" * 1600
 SPOKEN = Utterance(PCM, 16000, 0.1, "silence")
 NO_SPEECH = Utterance(b"", 16000, 0.0, "no_speech")
 CANCELLED = Utterance(b"", 16000, 0.0, "cancelled")
-LEAD_BYTES = 700 * 32  # 700 ms of 16 kHz 16-bit audio
-WINDOW_BYTES = 2 * LEAD_BYTES
+LEAD_BYTES = 1000 * 32  # 1000 ms of 16 kHz 16-bit audio
+AFTER_BYTES = 700 * 32
+WINDOW_BYTES = LEAD_BYTES + AFTER_BYTES
 
 
 def ok(text: str = "open the browser") -> Transcript:
@@ -252,9 +253,9 @@ def test_accepted_wake_turn(make, caplog):
     (request,) = h.orch.requests
     assert request.text == "open the browser" and request.source == "voice"
     (window,) = h.verifier.calls
-    assert len(window) == WINDOW_BYTES  # 700 ms of lead-in + 700 ms read after the cut
+    assert len(window) == WINDOW_BYTES  # 1000 ms of lead-in + 700 ms read after the cut
     assert window[:LEAD_BYTES] == LEAD_IN[-LEAD_BYTES:]
-    assert window[LEAD_BYTES:] == FRAME * 23 + FRAME[: LEAD_BYTES - 23 * len(FRAME)]
+    assert window[LEAD_BYTES:] == FRAME * 23 + FRAME[: AFTER_BYTES - 23 * len(FRAME)]
     call = h.recorder.calls[0]
     assert call["live"] is not None and call["no_speech_s"] == 5.0
     # speaker.stop and the cue come after the accept, before the reply
@@ -318,6 +319,33 @@ def test_rejected_wake_is_silent(make, caplog):
     h.assert_holds_balanced()
     assert any("wake rejected" in r.getMessage() for r in caplog.records)
     assert "лунный" not in caplog.text
+
+
+def test_log_rejects_on_logs_the_transcript_locally(make, caplog):
+    caplog.set_level(logging.INFO, logger="luna.voice.frontend")
+    h = make(
+        verifier=FakeVerifier(VerifyResult(False, "no_keyword", "лунный")),
+        wake=WakeWordSettings(cue="beep", log_rejects=True),
+    )
+    assert wake(h) is True
+    h.idle()
+    wait_for(lambda: all(not t.is_alive() for t in h.fe._threads))
+    assert any(r.levelno == logging.INFO and "лунный" in r.getMessage() for r in caplog.records)
+    assert h.stt.calls == [] and h.replies == []  # still rejected silently
+
+
+def test_wake_stats_count_detections_and_verdicts(make):
+    h = make(
+        verifier=FakeVerifier(
+            [VerifyResult(False, "no_keyword", "лена"), VerifyResult(True, "keyword", "луна")]
+        )
+    )
+    assert wake(h) is True
+    h.idle()
+    wait_for(lambda: h.fe.wake_stats["rejected"] == 1)
+    assert wake(h) is True
+    wait_for(lambda: h.fe.wake_stats["accepted"] == 1)
+    assert h.fe.wake_stats == {"detections": 2, "accepted": 1, "rejected": 1}
 
 
 def test_after_a_rejection_the_next_wake_is_accepted(make):
@@ -727,3 +755,28 @@ def test_tee_propagates_the_close_error_once():
     with pytest.raises(AudioError):
         tee.read(0)
     assert tee.read(0) is None
+
+
+def test_hotkey_taken_wake_turns_still_start_when_not_required(caplog):
+    from luna.core.errors import ToolError
+
+    caplog.set_level(logging.WARNING, logger="luna.voice.frontend")
+
+    bus = EventBus()
+    fe = VoiceFrontEnd(
+        FakeHotkeyListener(ToolError("taken")),
+        LiveRecorder([]),  # type: ignore[arg-type]
+        FakeSTT([]),
+        FakeOrchestrator(),
+        None,
+        bus,
+        lambda reply: None,
+    )
+    try:
+        with pytest.raises(ToolError):
+            fe.start()
+        assert fe.start(hotkey_required=False) is False
+        assert fe._started
+        assert sum("works without it" in r.getMessage() for r in caplog.records) == 1
+    finally:
+        fe.close()

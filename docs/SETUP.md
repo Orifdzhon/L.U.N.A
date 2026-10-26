@@ -363,6 +363,15 @@ online voice again; after two failed chunks in a row it is skipped for `fallback
 The first audio must arrive within 5 s, and a failed chunk is retried once immediately.
 Text with nothing a voice can pronounce (for example Korean) is skipped, the rest is spoken. Use `provider = "sapi"` to keep everything local.
 
+**Speed.** The first Edge request of a session used to take 4-5 s (DNS, TLS, websocket); L.U.N.A.
+now sends one tiny throw-away request in a background thread at startup and again after about
+4 minutes without speech (never while muted, never blocking the GUI; failures are only logged at
+DEBUG). The first sentence is spoken as soon as it is synthesized, while the next one is prepared.
+Every voice turn logs `tts_first_audio_ms` (reply ready -> first sound) and `total_ms` (end of your
+speech -> first sound) in its INFO line; typed requests log `speech: first audio N ms after the
+reply`. For the Groq `gpt-oss` model the default is `reasoning_effort = "low"` (set it to
+`"medium"` in `[llm.providers.groq]` if answers get too shallow).
+
 **Audio backend:** `sounddevice` is a normal dependency on Windows, so the `uv sync` from section 2
 installs it. (Do not rely on an optional extra: a plain `uv run` re-syncs without extras and would
 uninstall it.)

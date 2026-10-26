@@ -60,6 +60,7 @@ def _default_providers() -> dict[str, ProviderSettings]:
         "groq": ProviderSettings(
             base_url="https://api.groq.com/openai/v1",
             model="openai/gpt-oss-120b",
+            reasoning_effort="low",  # gpt-oss thinks by default; voice replies need speed
             api_key_env="GROQ_API_KEY",
         ),
         # LM Studio (ADR 0002 amendment); Ollama: http://localhost:11434/v1

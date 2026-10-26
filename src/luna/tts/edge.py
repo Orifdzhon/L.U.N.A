@@ -39,6 +39,7 @@ VOICE_PATTERN = re.compile(r"^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z0-9]+Neural$")
 
 FIRST_AUDIO_TIMEOUT_S = 5.0  # no audio byte after this long: the exchange is stalled
 SECONDS_PER_CHAR = 0.05  # total timeout = first-audio timeout + this per character
+WARM_UP_TEXT = "Да"  # tiny, speakable on both voices
 ATTEMPTS = 2  # one immediate retry of the same chunk
 
 # (text, voice, rate "+0%", volume "+0%", first-audio timeout s, total timeout s) -> MP3 bytes.
@@ -181,6 +182,28 @@ class EdgeTTS:
         assert last is not None
         raise last
 
+    def warm_up(self) -> None:
+        """One tiny request whose audio is discarded: the first real request of a session pays
+        for DNS, TLS and the websocket upgrade (4-5 s measured), so do that ahead of time.
+
+        Blocking; the Speaker calls it from a background thread. Never raises: a failure here
+        only means the first reply is as slow as without the warm-up.
+        """
+        started = time.monotonic()
+        try:
+            self._fetch(
+                WARM_UP_TEXT,
+                self._voices["ru"],
+                self._rate,
+                self._volume,
+                self._first_audio_s,
+                total_timeout(WARM_UP_TEXT, self._first_audio_s, self._timeout_s),
+            )
+        except Exception as e:
+            log.debug("Edge TTS warm-up failed (%s)", type(e).__name__, exc_info=True)
+        else:
+            log.debug("Edge TTS warm-up took %.0f ms", (time.monotonic() - started) * 1000)
+
     def synthesize(self, text: str, lang: str) -> AudioClip:
         if not text or not text.strip():
             raise ProviderRequestError("nothing to speak: empty text")
@@ -236,6 +259,12 @@ class FallbackTTS:
         self._failures = 0
         self._down_until: float | None = None
         self.name = f"{primary.name}+{fallback.name}"
+
+    def warm_up(self) -> None:
+        """Warm the primary only (the fallback is local); outside the failure bookkeeping."""
+        warm = getattr(self._primary, "warm_up", None)
+        if warm is not None:
+            warm()
 
     def synthesize(self, text: str, lang: str) -> AudioClip:
         with self._lock:

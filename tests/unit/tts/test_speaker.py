@@ -517,3 +517,88 @@ def test_unspeakable_first_chunk_and_all_chunks(bus):
     assert wait_for(lambda: not sp.active)
     assert player.played == []
     sp.close()
+
+
+class WarmableTTS(FakeTTS):
+    def __init__(self, error=None):
+        super().__init__()
+        self.warm_calls = 0
+        self.error = error
+        self.warmed = threading.Event()
+
+    def warm_up(self):
+        self.warm_calls += 1
+        self.warmed.set()
+        if self.error:
+            raise self.error
+
+
+def test_warmup_runs_once_in_background(bus):
+    tts = WarmableTTS()
+    sp, _, _ = make(bus, tts)
+    sp.start_warmup()
+    sp.start_warmup()  # idempotent
+    assert tts.warmed.wait(WAIT)
+    time.sleep(0.1)
+    assert tts.warm_calls == 1
+    sp.close()
+
+
+def test_warmup_does_not_block_the_caller(bus):
+    class Slow(WarmableTTS):
+        def warm_up(self):
+            time.sleep(1.0)
+            super().warm_up()
+
+    sp, _, _ = make(bus, Slow())
+    assert timed(sp.start_warmup) < FAST
+    sp.close()
+
+
+def test_warmup_errors_are_swallowed(bus):
+    tts = WarmableTTS(error=RuntimeError("boom"))
+    sp, _, player = make(bus, tts)
+    sp.start_warmup()
+    assert tts.warmed.wait(WAIT)
+    sp.speak(reply(FIRST))  # still works
+    wait_for(lambda: len(player.played) == 1)
+    sp.close()
+
+
+def test_no_warmup_thread_for_a_provider_without_warm_up(bus):
+    sp, _, _ = make(bus)  # FakeTTS (like SAPI) has no warm_up
+    sp.start_warmup()
+    assert not [t for t in worker_threads() if t.name.endswith("warm")]
+    sp.close()
+
+
+def test_no_warmup_while_muted(bus):
+    tts = WarmableTTS()
+    sp, _, _ = make(bus, tts)
+    sp.set_muted(True)
+    sp.start_warmup()
+    time.sleep(0.2)
+    assert tts.warm_calls == 0
+    sp.close()
+
+
+def test_warmup_repeats_after_a_long_idle(bus, monkeypatch):
+    from luna.tts import speaker as speaker_mod
+
+    monkeypatch.setattr(speaker_mod, "_WARM_CHECK_S", 0.05)
+    monkeypatch.setattr(speaker_mod, "WARM_IDLE_S", 0.15)
+    tts = WarmableTTS()
+    sp, _, _ = make(bus, tts)
+    sp.start_warmup()
+    wait_for(lambda: tts.warm_calls >= 2)
+    sp.close()
+
+
+def test_first_audio_at_is_set_when_playing_starts(bus):
+    sp, _, player = make(bus)
+    assert sp.first_audio_at is None
+    sp.speak(reply(FIRST))
+    wait_for(lambda: sp.first_audio_at is not None)
+    wait_for(lambda: len(player.played) == 1)
+    sp.speak(reply(FIRST))  # a new utterance resets it
+    sp.close()

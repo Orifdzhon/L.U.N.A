@@ -57,3 +57,19 @@ def test_invalid_values_name_the_field(field, value):
     with pytest.raises(ValidationError) as exc:
         WakeWordSettings(**{field: value})
     assert field in str(exc.value)
+
+
+def test_verify_defaults_and_override(tmp_path):
+    w = Settings().wakeword
+    assert (w.verify, w.verify_words) == ("local", ["луна", "luna"])
+    off = _load(tmp_path, '[wakeword]\nverify = "off"\nverify_words = [" Луна "]\n').wakeword
+    assert (off.verify, off.verify_words) == ("off", ["луна"])
+
+
+def test_verify_cloud_and_blank_words_are_rejected(tmp_path):
+    with pytest.raises(ValidationError):
+        WakeWordSettings(verify="cloud")
+    with pytest.raises(ValidationError):
+        WakeWordSettings(verify_words=[])
+    with pytest.raises(ValidationError):
+        WakeWordSettings(verify_words=[" "])

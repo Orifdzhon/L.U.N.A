@@ -82,3 +82,33 @@ def test_close_is_idempotent_and_first_close_wins():
     tap.close()
     tap.close(AudioError("late"))
     assert tap.read(0) is None
+
+
+def test_peek_does_not_consume():
+    tap = FrameTap([f(1), f(2), f(3)])
+    assert tap.peek(2, 0) == [f(1), f(2)]
+    assert tap.peek(2, 0) == [f(1), f(2)]
+    assert [tap.read(0) for _ in range(3)] == [f(1), f(2), f(3)]
+
+
+def test_peek_returns_what_is_queued_at_timeout():
+    tap = FrameTap([f(1)])
+    start = time.monotonic()
+    assert tap.peek(5, 0.05) == [f(1)]
+    assert time.monotonic() - start >= 0.04
+    assert tap.read(0) == f(1)
+
+
+def test_peek_wakes_when_enough_frames_arrive():
+    tap = FrameTap()
+    threading.Timer(0.02, lambda: [tap.push(f(1)), tap.push(f(2))]).start()
+    assert tap.peek(2, 2.0) == [f(1), f(2)]
+
+
+def test_peek_returns_early_when_closed():
+    tap = FrameTap([f(1)])
+    threading.Timer(0.02, tap.close).start()
+    start = time.monotonic()
+    assert tap.peek(5, 5.0) == []
+    assert time.monotonic() - start < 2.0
+    assert tap.peek(1, 5.0) == []

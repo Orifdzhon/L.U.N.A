@@ -118,6 +118,9 @@ speaking_tail_ms = 400        # extra mute after speech ends
 command_timeout_s = 5.0       # wait for a command after the keyword
 cue = "off"                   # "off" | "beep" when the keyword is heard
 follow_up_s = 0.0             # 0 = off; seconds to keep listening after a reply (try 6)
+verify = "local"              # "local" | "off": second-stage check of each detection with the
+                              # [stt.local] faster-whisper model (a bigger model = slower check)
+verify_words = ["луна", "luna"]   # the transcript must START with one of these
 
 # The section below is accepted but not validated yet; it is owned by a later Issue.
 [ui]

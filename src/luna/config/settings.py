@@ -247,6 +247,9 @@ class WakeWordSettings(_Section):
     command_timeout_s: float = Field(default=5.0, gt=0, le=60)  # wait for a command after the word
     cue: Literal["off", "beep"] = "off"  # sound played when the keyword is heard
     follow_up_s: float = Field(default=0.0, ge=0, le=30)  # 0 = off; keep listening after a reply
+    # Second stage (ADR 0004 amendment 2): local faster-whisper checks each detection.
+    verify: Literal["local", "off"] = "local"
+    verify_words: list[str] = Field(default_factory=lambda: ["луна", "luna"])
 
     @model_validator(mode="before")
     @classmethod
@@ -268,6 +271,13 @@ class WakeWordSettings(_Section):
     def _keywords_valid(cls, value: list[str]) -> list[str]:
         if not value or any(not word.strip() for word in value):
             raise ValueError("keywords must be a non-empty list of non-blank words")
+        return [word.strip().lower() for word in value]
+
+    @field_validator("verify_words")
+    @classmethod
+    def _verify_words_valid(cls, value: list[str]) -> list[str]:
+        if not value or any(not word.strip() for word in value):
+            raise ValueError("verify_words must be a non-empty list of non-blank words")
         return [word.strip().lower() for word in value]
 
 

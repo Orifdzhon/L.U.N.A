@@ -12,7 +12,7 @@ import queue
 import threading
 import weakref
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -34,7 +34,15 @@ def frame_bytes(frame_ms: int, sample_rate: int = SAMPLE_RATE) -> int:
     return sample_rate * frame_ms // 1000 * SAMPLE_WIDTH_BYTES
 
 
-class MicSource(Protocol):
+class FrameSource(Protocol):
+    """Anything a ``Recorder`` can read frames from (a microphone or a ``FrameTap``)."""
+
+    def read(self, timeout_s: float) -> bytes | None:
+        """One frame of ``frame_ms`` (PCM16, mono, 16 kHz); None on timeout or when stopped."""
+        ...
+
+
+class MicSource(FrameSource, Protocol):
     def start(self) -> None:
         """Open the microphone. Raises ``AudioError`` if it cannot be opened."""
         ...
@@ -50,6 +58,72 @@ class MicSource(Protocol):
     def close(self) -> None:
         """Release resources; the source must not be used afterwards."""
         ...
+
+
+class FrameTap:
+    """A ``FrameSource`` fed by another thread (the wake listener): backlog, then live frames.
+
+    ``push()`` never blocks: when ``max_frames`` are already queued the oldest one is dropped
+    and counted in ``dropped`` (a stalled reader cannot grow memory). ``close()`` discards the
+    queued audio and wakes a blocked ``read()``; after it ``read()`` returns None, or raises
+    the ``error`` given to ``close()`` once (the microphone was lost). Thread-safe.
+    """
+
+    def __init__(self, backlog: Iterable[bytes] = (), max_frames: int = 400) -> None:
+        if max_frames <= 0:
+            raise ValueError("max_frames must be positive")
+        self.max_frames = max_frames
+        self.dropped = 0
+        self._frames: deque[bytes] = deque()
+        self._cond = threading.Condition()
+        self._closed = False
+        self._error: AudioError | None = None
+        for frame in backlog:
+            self._append(frame)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def _append(self, frame: bytes) -> None:
+        if len(self._frames) >= self.max_frames:
+            self._frames.popleft()
+            self.dropped += 1
+        self._frames.append(frame)
+
+    def push(self, frame: bytes) -> None:
+        with self._cond:
+            if self._closed:
+                return
+            self._append(frame)
+            self._cond.notify()
+
+    def read(self, timeout_s: float) -> bytes | None:
+        with self._cond:
+            self._cond.wait_for(lambda: self._frames or self._closed, max(0.0, timeout_s))
+            if self._frames:
+                return self._frames.popleft()
+            if self._error is not None:
+                error, self._error = self._error, None
+                raise error
+            return None
+
+    def close(self, error: AudioError | None = None) -> None:
+        with self._cond:
+            if not self._closed:
+                self._closed = True
+                self._error = error
+                self._frames.clear()
+            self._cond.notify_all()
+
+
+@dataclass(frozen=True)
+class LiveSource:
+    """Continue a recording from a live stream instead of opening the microphone."""
+
+    frames: FrameSource  # usually a FrameTap; the Recorder never starts/stops a microphone
+    lead_in: bytes = b""  # audio before the cut point (keyword + context)
+    noise_floor: float | None = None  # the listener's VAD floor; seeds the Recorder's VAD
 
 
 class RingBuffer:

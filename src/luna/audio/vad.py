@@ -24,8 +24,12 @@ class VoiceActivityDetector(Protocol):
         """True if the PCM16 mono ``frame`` (one frame of audio) contains speech."""
         ...
 
-    def reset(self) -> None:
-        """Forget the noise floor; call before each new recording."""
+    def reset(self, noise_floor: float | None = None) -> None:
+        """Prepare for a new recording; call before each one.
+
+        None: forget the noise floor and warm up again (push-to-talk). A value: start from
+        that floor with no warm-up (a live source whose floor is already known).
+        """
         ...
 
 
@@ -69,10 +73,16 @@ class EnergyVAD:
     def noise_floor(self) -> float:
         return self._floor
 
-    def reset(self) -> None:
-        self._seen = 0
-        self._floor = 0.0
+    def reset(self, noise_floor: float | None = None) -> None:
+        if noise_floor is not None and noise_floor < 0:
+            raise ValueError("noise_floor must not be negative")
         self._hangover = 0
+        if noise_floor is None:
+            self._seen = 0
+            self._floor = 0.0
+        else:
+            self._seen = self._warmup_frames  # no warm-up: speech may start at once
+            self._floor = noise_floor
 
     def is_speech(self, frame: bytes) -> bool:
         level = rms_level(frame)

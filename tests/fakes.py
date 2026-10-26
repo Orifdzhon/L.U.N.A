@@ -464,3 +464,37 @@ class FakeWakeWord:
 
     def close(self) -> None:
         self.closed = True
+
+
+# ===========================================================================
+# Live frame source fakes (issue #107) - keep this section self-contained
+# ===========================================================================
+
+
+class FakeFrameSource:
+    """Scripted ``FrameSource`` with a ``close()`` like ``FrameTap`` (records close calls).
+
+    ``read()`` returns the given frames, then None (or raises ``read_error`` once they ran
+    out). ``closed`` becomes true after ``close()``; a closed source returns None.
+    """
+
+    def __init__(self, frames: Sequence[bytes] = (), read_error: Exception | None = None) -> None:
+        self._frames = list(frames)
+        self.read_error = read_error
+        self.closed = False
+        self.close_calls = 0
+        self.reads = 0
+
+    def read(self, timeout_s: float) -> bytes | None:
+        self.reads += 1
+        if self.closed:
+            return None
+        if self._frames:
+            return self._frames.pop(0)
+        if self.read_error is not None:
+            raise self.read_error
+        return None
+
+    def close(self, error: Exception | None = None) -> None:
+        self.closed = True
+        self.close_calls += 1

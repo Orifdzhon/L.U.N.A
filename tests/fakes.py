@@ -7,6 +7,7 @@ Import convention: ``pytest`` puts ``tests/`` on ``sys.path`` (see ``pythonpath`
 from __future__ import annotations
 
 import copy
+import queue
 import threading
 import time
 from collections.abc import Callable, Collection, Sequence
@@ -430,6 +431,8 @@ class FakeWakeWord:
         marker: bool = True,
         error: Exception | None = None,
         name: str = "fake",
+        end_lag_samples: int = 0,
+        report_end: bool = True,
     ) -> None:
         self.name = name
         self.sample_rate = WAKE_SAMPLE_RATE
@@ -438,6 +441,8 @@ class FakeWakeWord:
         self.confidence = confidence
         self.marker = marker
         self.error = error
+        self.end_lag_samples = end_lag_samples  # keyword "ended" this long before the frame end
+        self.report_end = report_end  # False: events carry end_sample=None
         self._trigger_at = frozenset(trigger_at)
         self.frames: list[bytes] = []  # every frame seen (kept across reset)
         self.reset_count = 0
@@ -455,7 +460,8 @@ class FakeWakeWord:
         index = self._index
         self._index += 1
         if index in self._trigger_at or (self.marker and frame.startswith(WAKE_MARKER)):
-            return WakeEvent(self.keyword, self.confidence, (index + 1) * self.frame_samples)
+            end = (index + 1) * self.frame_samples - self.end_lag_samples
+            return WakeEvent(self.keyword, self.confidence, end if self.report_end else None)
         return None
 
     def reset(self) -> None:
@@ -498,3 +504,75 @@ class FakeFrameSource:
     def close(self, error: Exception | None = None) -> None:
         self.closed = True
         self.close_calls += 1
+
+
+# ===========================================================================
+# Wake listener fakes (issue #108) - keep this section self-contained
+# ===========================================================================
+
+
+class FakeLiveMic:
+    """Blocking ``MicSource`` for threaded tests: frames arrive via ``feed()``.
+
+    ``read()`` waits for a frame (at most ``timeout_s``), returns None when stopped or idle.
+    ``fail()`` makes the next ``read()`` raise. ``start()`` raises ``error`` when given.
+    """
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.started = False
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.closed = False
+        self._items: queue.Queue[bytes | Exception | None] = queue.Queue()
+
+    def feed(self, *frames: bytes) -> None:
+        for frame in frames:
+            self._items.put(frame)
+
+    def fail(self, error: Exception) -> None:
+        self._items.put(error)
+
+    def start(self) -> None:
+        if self.error is not None:
+            raise self.error
+        self.started = True
+        self.start_calls += 1
+        while not self._items.empty():  # a fresh stream
+            self._items.get_nowait()
+
+    def stop(self) -> None:
+        self.started = False
+        self.stop_calls += 1
+        self._items.put(None)  # wakes a blocked read()
+
+    def read(self, timeout_s: float) -> bytes | None:
+        if not self.started:
+            return None
+        try:
+            item = self._items.get(timeout=timeout_s)
+        except queue.Empty:
+            return None
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def close(self) -> None:
+        self.closed = True
+        self.stop()
+
+
+class FakeVAD:
+    """``VoiceActivityDetector``: a frame is speech if any byte is non-zero (no warm-up)."""
+
+    def __init__(self, noise_floor: float = 0.0001) -> None:
+        self.noise_floor = noise_floor
+        self.calls = 0
+        self.resets: list[float | None] = []
+
+    def is_speech(self, frame: bytes) -> bool:
+        self.calls += 1
+        return any(frame)
+
+    def reset(self, noise_floor: float | None = None) -> None:
+        self.resets.append(noise_floor)

@@ -1,3 +1,4 @@
+import subprocess
 import sys
 import threading
 
@@ -777,4 +778,6 @@ def test_gui_facing_methods_never_block_on_hanging_enable_wake():
 
 
 def test_no_qt_import():
-    assert "PySide6" not in sys.modules
+    # a fresh interpreter: other tests in this process may import Qt
+    code = "import luna.ui.shell.controller, sys; assert 'PySide6' not in sys.modules"
+    subprocess.run([sys.executable, "-c", code], check=True)

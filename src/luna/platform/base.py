@@ -59,16 +59,36 @@ class HotkeyListener(Protocol):
     def stop(self) -> None: ...
 
 
+@dataclass(frozen=True)
+class LaunchCommand:
+    """How to start L.U.N.A. itself. Built by the application, never from user or LLM text."""
+
+    executable: str
+    args: tuple[str, ...] = ()
+    working_dir: str | None = None
+
+
 @runtime_checkable
 class Autostart(Protocol):
-    def is_enabled(self) -> bool: ...
-
-    def enable(self, command: str) -> None:
-        """Register L.U.N.A.'s own launch command to run at login.
-
-        ``command`` must be built by the application from its own entry point, never from
-        user or LLM text; implementations quote it and refuse an empty command.
-        """
+    def is_enabled(self) -> bool:
+        """Whether L.U.N.A. is registered to run at login. Never raises."""
         ...
 
-    def disable(self) -> None: ...
+    def enable(self, command: LaunchCommand) -> None:
+        """Register (or update) the login entry; raises ``ToolError`` on failure."""
+        ...
+
+    def disable(self) -> None:
+        """Remove the login entry. Idempotent; raises ``ToolError`` on failure."""
+        ...
+
+
+@runtime_checkable
+class SingleInstance(Protocol):
+    def acquire(self) -> bool:
+        """Try to become the only running instance; False if another one already runs."""
+        ...
+
+    def release(self) -> None:
+        """Give the claim up. Idempotent."""
+        ...

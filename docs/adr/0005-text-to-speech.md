@@ -253,3 +253,23 @@ separate process" plan above for the local voice.
      licence (for example `ru_RU-dmitri-medium` / `ru_RU-denis-medium`, CC0, male; or a
      self-trained voice) and a permissively licensed phonemizer (or a GPL-compatible release
      of L.U.N.A.). `en_US-kristin-medium` is public domain.
+
+## Amendment 4 (2026-10-27): Edge primary, Irina fallback, SAPI last (#166)
+
+Owner decision: the Edge voice (Svetlana) is preferred again; the local Piper Irina is the
+fallback, SAPI the last resort. This reverses only the *order* from amendment 3 for
+`provider = "edge"`; `"piper"` (piper -> sapi) and `"sapi"` are unchanged.
+
+1. **Chain.** `FallbackTTS` takes N voices. `provider = "edge"` builds `edge -> piper -> sapi`;
+   a voice that cannot be built (Piper) is skipped with one startup warning, SAPI is added only
+   when installed. Backoff (2 failures in a row -> skipped for `fallback_cooldown_s`) is
+   tracked per voice; the last voice is never skipped.
+2. **Fast fallback.** `[tts.edge] first_audio_s` (default 2.5 s, was a fixed 5 s) is the time
+   Edge gets to deliver the first audio byte, and Edge makes one attempt in the chain (the
+   former immediate retry would double the stall to 5 s). A stalled chunk goes to Irina at once.
+3. **No mid-reply voice switching.** The `Speaker` calls `begin_reply()` before the first chunk
+   of each reply; once a chunk of that reply was spoken by a lower voice, the remaining chunks
+   of the same reply use that voice (or a lower one), so Svetlana and Irina never alternate
+   within one answer. The next reply starts from Edge again (subject to the backoff).
+4. **Warm-up.** The chain warms every voice that supports it (the Edge connection and the Piper
+   model) in the Speaker's background warm-up thread.

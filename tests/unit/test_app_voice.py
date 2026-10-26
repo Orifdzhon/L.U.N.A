@@ -102,11 +102,56 @@ class _FakeSapi:
         return ("Irina",)
 
 
-def test_edge_voice_on_windows_wraps_edge_with_sapi_fallback(made, monkeypatch):
+def test_edge_voice_on_windows_builds_edge_piper_sapi_chain(made, monkeypatch):
     monkeypatch.setattr("luna.tts.sapi.SapiTTS", _FakeSapi)
     app = made(platform="win32", player=FakePlayer())
     assert app.speaker is not None
+    assert app.speaker._tts.name == "edge+piper+sapi"
+
+
+def test_edge_chain_uses_the_short_first_audio_timeout_and_no_retry(made, monkeypatch):
+    monkeypatch.setattr("luna.tts.sapi.SapiTTS", _FakeSapi)
+    app = made(platform="win32", player=FakePlayer())
+    edge = app.speaker._tts._providers[0]
+    assert edge._first_audio_s == 2.5
+    assert edge._attempts == 1
+
+
+def test_edge_first_audio_timeout_is_configurable(tmp_path, monkeypatch):
+    monkeypatch.setattr("luna.tts.sapi.SapiTTS", _FakeSapi)
+    settings = Settings().with_api_keys({})
+    settings.tts.provider = "edge"
+    settings.tts.enabled = True
+    settings.tts.edge.first_audio_s = 1.5
+    settings.search.fetch_pages = 0
+    catalog = FakeAppCatalog([])
+    app = build_app(
+        settings,
+        llm=FakeLLM([]),
+        browser=FakeBrowser(),
+        catalog=catalog,
+        launcher=FakeLauncher(catalog),
+        search=FakeSearch(),
+        log_dir=tmp_path / "logs",
+        platform="win32",
+        player=FakePlayer(),
+    )
+    try:
+        assert app.speaker._tts._providers[0]._first_audio_s == 1.5
+    finally:
+        app.close()
+
+
+def test_edge_chain_skips_piper_that_cannot_be_built_with_one_warning(made, monkeypatch):
+    class Broken:
+        def __init__(self, *a, **k):
+            raise OSError("boom")
+
+    monkeypatch.setattr("luna.tts.sapi.SapiTTS", _FakeSapi)
+    monkeypatch.setattr("luna.tts.piper.PiperTTS", Broken)
+    app = made(platform="win32", player=FakePlayer())
     assert app.speaker._tts.name == "edge+sapi"
+    assert len([w for w in app.warnings if "Piper" in w]) == 1
 
 
 def test_piper_voice_on_windows_wraps_piper_with_sapi_fallback(made, monkeypatch):
@@ -143,7 +188,7 @@ def test_piper_settings_reach_the_provider(made, monkeypatch, tmp_path):
     }
 
 
-def test_edge_voice_without_sapi_still_works_with_a_warning(made, monkeypatch):
+def test_edge_voice_without_sapi_keeps_edge_and_piper(made, monkeypatch):
     class NoVoices(_FakeSapi):
         def list_voices(self):
             return ()
@@ -151,15 +196,14 @@ def test_edge_voice_without_sapi_still_works_with_a_warning(made, monkeypatch):
     monkeypatch.setattr("luna.tts.sapi.SapiTTS", NoVoices)
     app = made(platform="win32", player=FakePlayer())
     assert app.speaker is not None
-    assert app.speaker._tts.name == "edge"
-    assert any("No offline fallback" in w and "no SAPI voices" in w for w in app.warnings)
+    assert app.speaker._tts.name == "edge+piper"  # Irina still stands by
+    assert not any("needs the network" in w for w in app.warnings)
 
 
-def test_edge_voice_on_non_windows_has_no_fallback(made):
+def test_edge_voice_on_non_windows_falls_back_to_piper(made):
     app = made(platform="linux", player=FakePlayer())
     assert app.speaker is not None
-    assert app.speaker._tts.name == "edge"
-    assert any("No offline fallback" in w for w in app.warnings)
+    assert app.speaker._tts.name == "edge+piper"
 
 
 def test_voice_on_missing_audio_extra_degrades_with_hint(made, monkeypatch):

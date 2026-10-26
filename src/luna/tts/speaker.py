@@ -446,6 +446,11 @@ class Speaker:
             try:
                 if stale():
                     return
+                if index == 0:
+                    # A new reply: a chain forgets the voice the previous reply fell back to.
+                    begin = getattr(self._tts, "begin_reply", None)
+                    if begin is not None:
+                        begin()
                 try:
                     clip = self._tts.synthesize(chunk, lang)
                     self._last_synth_at = self._clock()

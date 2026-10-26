@@ -116,12 +116,21 @@ class PiperSettings(_Section):
     num_threads: int = Field(default=2, ge=1, le=16)
 
 
+class EdgeSettings(_Section):
+    """Online voice tuning (provider "edge")."""
+
+    # No audio byte after this long: Edge is stalled and the chunk (and the rest of the reply)
+    # is spoken by the local voice. Upper bound of one attempt; there is no retry in the chain.
+    first_audio_s: float = Field(default=2.5, gt=0, le=30)
+
+
 class TTSSettings(_Section):
     enabled: bool = False
     # "piper": local neural voice, falling back to SAPI; "edge": Microsoft neural voices online,
-    # falling back to SAPI; "sapi": Windows voices only.
+    # falling back to the local Piper voice, then SAPI; "sapi": Windows voices only.
     provider: Literal["piper", "edge", "sapi"] = "piper"
     piper: PiperSettings = Field(default_factory=PiperSettings)
+    edge: EdgeSettings = Field(default_factory=EdgeSettings)
     edge_voice_ru: str = Field(default="ru-RU-SvetlanaNeural", pattern=EDGE_VOICE_PATTERN)
     edge_voice_en: str = Field(default="en-US-JennyNeural", pattern=EDGE_VOICE_PATTERN)
     # Case-insensitive substrings matched against installed SAPI voice names (also the fallback).

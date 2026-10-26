@@ -444,11 +444,115 @@ def test_warm_up_swallows_errors(error):
     make(Fetch(error=error)).warm_up()  # must not raise
 
 
-def test_fallback_warm_up_warms_only_the_primary():
+def test_fallback_warm_up_warms_every_voice_that_supports_it():
     fetch = Fetch()
-    FallbackTTS(make(fetch), FakeTTS()).warm_up()
+    warmed = []
+
+    class Local(FakeTTS):
+        def warm_up(self):
+            warmed.append("piper")
+
+    FallbackTTS(make(fetch), Local(name="piper"), FakeTTS(name="sapi")).warm_up()
     assert len(fetch.calls) == 1
+    assert warmed == ["piper"]
+
+
+def test_a_failing_warm_up_does_not_skip_the_next_voice():
+    warmed = []
+
+    class Bad(FakeTTS):
+        def warm_up(self):
+            raise RuntimeError("x")
+
+    class Good(FakeTTS):
+        def warm_up(self):
+            warmed.append(1)
+
+    FallbackTTS(Bad(name="edge"), Good(name="piper"), FakeTTS(name="sapi")).warm_up()
+    assert warmed == [1]
 
 
 def test_fallback_warm_up_without_primary_support_is_a_noop():
     FallbackTTS(FakeTTS(), FakeTTS()).warm_up()
+
+
+# --- three-voice chain: edge -> piper -> sapi ------------------------------------------------
+
+
+def chain3(edge_script, piper_script=(), clock=None):
+    edge, piper, sapi = (
+        Script(edge_script),
+        Script(piper_script, name="piper"),
+        FakeTTS(name="sapi"),
+    )
+    return FallbackTTS(edge, piper, sapi, clock=clock or Clock()), edge, piper, sapi
+
+
+def test_chain_name_and_healthy_path_uses_only_edge():
+    tts, edge, piper, sapi = chain3([])
+    tts.begin_reply()
+    tts.synthesize("a", "ru")
+    assert tts.name == "edge+piper+sapi"
+    assert len(edge.calls) == 1 and not piper.calls and not sapi.calls
+
+
+def test_edge_failure_moves_the_rest_of_the_reply_to_piper():
+    tts, edge, piper, sapi = chain3([False, True, True])
+    tts.begin_reply()
+    for text in ("one", "two", "three"):
+        tts.synthesize(text, "ru")
+    assert [c.text for c in edge.calls] == ["one"]  # no ping-pong back to Edge
+    assert [c.text for c in piper.calls] == ["one", "two", "three"]
+    assert not sapi.calls
+
+
+def test_next_reply_starts_with_edge_again():
+    tts, edge, piper, _ = chain3([False, True])
+    tts.begin_reply()
+    tts.synthesize("one", "ru")
+    tts.synthesize("two", "ru")
+    tts.begin_reply()
+    tts.synthesize("three", "ru")
+    assert [c.text for c in edge.calls] == ["one", "three"]
+    assert [c.text for c in piper.calls] == ["one", "two"]
+
+
+def test_piper_failure_moves_to_sapi_for_the_rest_of_the_reply():
+    tts, edge, piper, sapi = chain3([False, True, True], [False, True, True])
+    tts.begin_reply()
+    for text in ("one", "two", "three"):
+        tts.synthesize(text, "ru")
+    assert [c.text for c in edge.calls] == ["one"]
+    assert [c.text for c in piper.calls] == ["one"]
+    assert [c.text for c in sapi.calls] == ["one", "two", "three"]
+
+
+def test_backoff_is_tracked_per_voice():
+    tts, edge, piper, sapi = chain3([False, False], [False, False])
+    for text in ("a", "b", "c"):
+        tts.begin_reply()
+        tts.synthesize(text, "ru")
+    # edge and piper each failed twice -> both are skipped, sapi speaks directly
+    assert [c.text for c in edge.calls] == ["a", "b"]
+    assert [c.text for c in piper.calls] == ["a", "b"]
+    assert [c.text for c in sapi.calls] == ["a", "b", "c"]
+
+
+def test_request_error_from_edge_propagates_in_the_chain():
+    tts = FallbackTTS(
+        FakeTTS(error=NothingToSpeak("x"), name="edge"), FakeTTS(name="piper"), FakeTTS(name="sapi")
+    )
+    with pytest.raises(NothingToSpeak):
+        tts.synthesize("...", "ru")
+
+
+def test_a_chain_needs_two_voices():
+    with pytest.raises(ValueError):
+        FallbackTTS(FakeTTS())
+
+
+def test_edge_attempts_one_means_no_retry():
+    fetch = Fetch(error=ProviderUnavailable("stall"))
+    with pytest.raises(ProviderUnavailable):
+        make(fetch, attempts=1).synthesize("a", "ru")
+    assert len(fetch.calls) == 1

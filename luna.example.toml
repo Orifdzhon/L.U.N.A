@@ -61,7 +61,8 @@ margin = 5                  # the best match must beat the runner-up by this muc
 enabled = false             # speak replies aloud; `luna --voice` / `--no-voice` override this
 provider = "piper"          # "piper": local neural voice (Irina / Kristin), nothing leaves the PC,
                             # falls back to SAPI; "edge": Microsoft neural voices online (text is
-                            # sent to Microsoft), falls back to SAPI; "sapi": Windows voices only
+                            # sent to Microsoft), falls back to local Irina, then SAPI;
+                            # "sapi": Windows voices only
 edge_voice_ru = "ru-RU-SvetlanaNeural"  # Edge voices; list: `uv run edge-tts --list-voices`
 edge_voice_en = "en-US-JennyNeural"
 voice_ru = "Irina"          # SAPI voice (fallback): substring of an installed name
@@ -73,7 +74,10 @@ fallback_cooldown_s = 15    # skip Edge this long after 2 failed chunks in a row
 max_chars = 1500            # longest spoken reply; longer ones are cut at a sentence end (>= 1)
 first_chunk_max_chars = 200 # size limit of the first spoken chunk, for a quick start (>= 1)
 
-[tts.piper]                 # provider = "piper": voices are downloaded on first use (~65 MB each)
+[tts.edge]                  # provider = "edge"
+first_audio_s = 2.5         # no audio after this long: Edge is stalled, Irina speaks (> 0)
+
+[tts.piper]                 # provider = "piper" (and the fallback of "edge"): voices are downloaded on first use (~65 MB each)
 voice_ru = "ru_RU-irina-medium"
 voice_en = "en_US-kristin-medium"
 # model_dir = 'C:\Users\you\AppData\Local\LUNA\models'   # default: %LOCALAPPDATA%\LUNA\models

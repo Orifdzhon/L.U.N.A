@@ -256,7 +256,7 @@ def _build_tts(
     warnings: list[str],
     disabled: Callable[[str], None],
 ) -> TTSProvider | None:
-    """The configured TTS provider (Piper or Edge with a SAPI fallback, or SAPI alone), or None."""
+    """The configured voice chain (edge -> piper -> sapi, piper -> sapi, or sapi), or None."""
     sapi = None
     if platform == "win32":
         from luna.tts.sapi import SapiTTS
@@ -277,33 +277,52 @@ def _build_tts(
             disabled(problem)
         return sapi
     from luna.tts.edge import EdgeTTS, FallbackTTS
+    from luna.tts.piper import PiperTTS
 
-    primary: TTSProvider
+    def make_piper() -> TTSProvider | None:
+        try:
+            return PiperTTS(
+                conf.piper.voice_ru,
+                conf.piper.voice_en,
+                conf.rate,
+                conf.volume,
+                model_dir=conf.piper.model_dir,
+                num_threads=conf.piper.num_threads,
+            )
+        except Exception as exc:  # one warning; the chain simply skips the local neural voice
+            warnings.append(f"Local voice (Piper) is unavailable ({type(exc).__name__}).")
+            return None
+
+    chain: list[TTSProvider] = []
     if conf.provider == "piper":
-        from luna.tts.piper import PiperTTS
-
-        primary = PiperTTS(
-            conf.piper.voice_ru,
-            conf.piper.voice_en,
-            conf.rate,
-            conf.volume,
-            model_dir=conf.piper.model_dir,
-            num_threads=conf.piper.num_threads,
-        )
-        if sapi is None:
-            return primary  # local voice: nothing needs the network, a missing fallback is minor
+        piper = make_piper()
+        if piper is not None:
+            chain.append(piper)
     else:
-        primary = EdgeTTS(
-            conf.edge_voice_ru,
-            conf.edge_voice_en,
-            conf.rate,
-            conf.volume,
-            timeout_s=conf.edge_timeout_s,
+        chain.append(
+            EdgeTTS(
+                conf.edge_voice_ru,
+                conf.edge_voice_en,
+                conf.rate,
+                conf.volume,
+                timeout_s=conf.edge_timeout_s,
+                first_audio_timeout_s=conf.edge.first_audio_s,
+                attempts=1,  # a stalled chunk goes to the local voice, not to a slow retry
+            )
         )
-        if sapi is None:
+        piper = make_piper()
+        if piper is not None:
+            chain.append(piper)
+    if sapi is not None:
+        chain.append(sapi)
+    if not chain:
+        disabled(problem)
+        return None
+    if len(chain) == 1:
+        if conf.provider == "edge":
             warnings.append(f"No offline fallback voice: {problem}. Speech needs the network.")
-            return primary
-    return FallbackTTS(primary, sapi, cooldown_s=conf.fallback_cooldown_s)
+        return chain[0]
+    return FallbackTTS(*chain, cooldown_s=conf.fallback_cooldown_s)
 
 
 def _build_speaker(

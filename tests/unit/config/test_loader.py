@@ -165,6 +165,11 @@ def test_legacy_owner_tts_block_loads_and_selects_piper(tmp_path):
     assert _load_text(tmp_path, '[tts]\nprovider = "edge"\n').tts.provider == "edge"
 
 
+def test_edge_first_audio_default_and_override(tmp_path):
+    assert _load_text(tmp_path, "").tts.edge.first_audio_s == 2.5
+    assert _load_text(tmp_path, "[tts.edge]\nfirst_audio_s = 1.5\n").tts.edge.first_audio_s == 1.5
+
+
 def test_piper_section_values(tmp_path):
     settings = _load_text(tmp_path, '[tts.piper]\nnum_threads = 4\nmodel_dir = "D:/models"\n')
     assert settings.tts.piper.num_threads == 4

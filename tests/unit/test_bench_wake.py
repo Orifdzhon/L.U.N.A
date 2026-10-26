@@ -614,6 +614,22 @@ def test_stage2_counts_recall_false_rejects_and_negative_rejects():
     assert s2.wall_s == [0.4] * 4
 
 
+def test_stage2_lists_accepted_negatives_with_category_and_transcript():
+    neg = bench_wake.BenchClip("neg-lena", "negative", ramp(3.0), None, "homophone")
+    res = stage1([ramp_clip("a"), neg, ramp_clip("n2", "negative")])
+    s2 = bench_wake.verify_result(
+        res, FakeVerifier([accept(), accept("Лена, привет"), reject()]), ["луна"]
+    )
+    assert [(n.source, n.category, n.text) for n in s2.accepted_negatives] == [
+        ("neg-lena", "homophone", "Лена, привет")
+    ]
+    res.stage2 = s2
+    text = bench_wake.markdown_report([res], synthetic=True)
+    assert "neg-lena (homophone)" in text and "Лена, привет" in text
+    row = bench_wake.json_report([res], synthetic=True, options={})["results"][0]
+    assert row["stage2"]["accepted_negatives"][0]["category"] == "homophone"
+
+
 def test_stage2_long_negatives_count_as_long(tmp_path):
     path = tmp_path / "long.wav"
     write_wav(path, ramp(3.0))

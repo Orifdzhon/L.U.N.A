@@ -456,6 +456,16 @@ class FalseAccept:
 
 
 @dataclass
+class AcceptedNegative:
+    """A negative the verifier let through: what to look at when analysing FA after stage 2."""
+
+    source: str
+    category: str
+    at_s: float
+    text: str
+
+
+@dataclass
 class Stage2:
     """Metrics after the verification stage (``--verify local``) for one configuration."""
 
@@ -465,6 +475,7 @@ class Stage2:
     fa_clips: int = 0  # accepted detections on negative clips
     fa_long: int = 0
     strict_fa: int = 0  # accepted under the strict rule (clips + long)
+    accepted_negatives: list[AcceptedNegative] = field(default_factory=list)
     negative_rejects: int = 0  # stage-1 false accepts the verifier threw out
     errors: int = 0  # decode errors (counted as rejects: the bench runs fail-closed)
     checks: int = 0
@@ -493,7 +504,8 @@ class ConfigResult:
     false_accepts: list[FalseAccept] = field(default_factory=list)
     # stage 2: windows kept for the verifier, and its outcome (None = not verified)
     pos_windows: dict[str, list[bytes]] = field(default_factory=dict)
-    neg_windows: list[tuple[str, float, bytes, bool]] = field(default_factory=list)  # ..., long
+    # (source, at_s, window, is_long, category)
+    neg_windows: list[tuple[str, float, bytes, bool, str]] = field(default_factory=list)
     stage2: Stage2 | None = None
 
     @property
@@ -608,7 +620,7 @@ def evaluate_config(
                 result.fa_clips += len(runner.detections)
                 result.false_accepts.extend(FalseAccept(clip.id, d.at_s) for d in runner.detections)
                 result.neg_windows.extend(
-                    (clip.id, d.at_s, d.window, False)
+                    (clip.id, d.at_s, d.window, False, clip.category)
                     for d in runner.detections
                     if d.window is not None
                 )
@@ -631,7 +643,7 @@ def evaluate_config(
                     FalseAccept(path.name, d.at_s) for d in runner.detections
                 )
                 result.neg_windows.extend(
-                    (path.name, d.at_s, d.window, True)
+                    (path.name, d.at_s, d.window, True, "")
                     for d in runner.detections
                     if d.window is not None
                 )
@@ -714,7 +726,7 @@ def verify_result(
     """Run the verifier over the windows stage 1 produced for this configuration."""
     s2 = Stage2()
 
-    def check(window: bytes) -> tuple[bool, bool]:
+    def check(window: bytes) -> tuple[bool, bool, str]:
         began = cpu_clock()
         outcome = verifier.verify(window)
         s2.cpu_s.append(cpu_clock() - began)
@@ -722,13 +734,14 @@ def verify_result(
         s2.checks += 1
         if outcome.reason == "error":
             s2.errors += 1
-            return False, False
-        return outcome.accepted, outcome.accepted and keyword_strict(outcome.text, words)
+            return False, False, ""
+        strict = outcome.accepted and keyword_strict(outcome.text, words)
+        return outcome.accepted, strict, outcome.text
 
     for clip_id, windows in result.pos_windows.items():
         loose = strict = False
         for window in windows:
-            ok, strict_ok = check(window)
+            ok, strict_ok, _text = check(window)
             loose, strict = loose or ok, strict or strict_ok
             if loose and strict:
                 break
@@ -736,12 +749,13 @@ def verify_result(
         s2.strict_hits += strict
         if not loose:
             s2.false_rejects.append(clip_id)
-    for _source, _at_s, window, is_long in result.neg_windows:
-        ok, strict_ok = check(window)
+    for source, at_s, window, is_long, category in result.neg_windows:
+        ok, strict_ok, text = check(window)
         if not ok:
             s2.negative_rejects += 1
             continue
         s2.strict_fa += strict_ok
+        s2.accepted_negatives.append(AcceptedNegative(source, category, at_s, text))
         if is_long:
             s2.fa_long += 1
         else:
@@ -893,7 +907,18 @@ def stage2_markdown(results: Sequence[ConfigResult], min_negative_hours: float) 
         if s2.errors:
             note += f"; {s2.errors} decode error(s) counted as rejects"
         lines.append(note)
-    lines.append("")
+    for r in verified:
+        s2 = r.stage2
+        assert s2 is not None
+        lines.append(f"Negatives accepted by stage 2, {r.config.label}:")
+        if not s2.accepted_negatives:
+            lines.append("- none")
+        for neg in s2.accepted_negatives[:MAX_FA_LISTED]:
+            lines.append(
+                f"- {neg.source} ({neg.category or 'long recording'}) at {neg.at_s:.2f} s: "
+                f"heard {neg.text!r}"
+            )
+        lines.append("")
     return lines
 
 
@@ -939,6 +964,15 @@ def json_report(
                 "fa_long": s2.fa_long,
                 "fa_per_hour": r.fa_per_hour2,
                 "strict_fa": s2.strict_fa,
+                "accepted_negatives": [
+                    {
+                        "source": n.source,
+                        "category": n.category,
+                        "at_s": round(n.at_s, 2),
+                        "text": n.text,
+                    }
+                    for n in s2.accepted_negatives[:MAX_FA_LISTED]
+                ],
                 "negative_rejects": s2.negative_rejects,
                 "errors": s2.errors,
                 "checks": s2.checks,

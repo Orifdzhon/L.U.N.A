@@ -2,7 +2,7 @@
 amendment 2).
 
 The service is an unofficial endpoint (it may change or break) and the reply text is sent to
-Microsoft; the owner accepted both. :class:`FallbackTTS` therefore wraps it with SAPI.
+Microsoft; the owner accepted both. :class:`FallbackTTS` therefore chains it with the local voices.
 
 Integration: ``edge-tts`` is asyncio-based and always streams MP3 (24 kHz, 48 kbps, mono; the
 output format is not configurable). ``synthesize`` runs on the Speaker's synthesis thread, so
@@ -129,6 +129,7 @@ class EdgeTTS:
         *,
         timeout_s: float = 15.0,
         first_audio_timeout_s: float = FIRST_AUDIO_TIMEOUT_S,
+        attempts: int = ATTEMPTS,
         fetcher: Fetcher | None = None,
         decoder: Decoder | None = None,
     ) -> None:
@@ -140,6 +141,7 @@ class EdgeTTS:
         self._volume = volume_to_percent(volume)
         self._timeout_s = timeout_s  # upper bound of the length-scaled total timeout
         self._first_audio_s = first_audio_timeout_s
+        self._attempts = max(1, attempts)  # 1 when a local voice stands by (no slow retry)
         self._fetch = fetcher or _fetch_mp3
         self._decode = decoder or _decode_mp3
         if fetcher is None and decoder is None:
@@ -158,7 +160,7 @@ class EdgeTTS:
         """Fetch the MP3; a stalled or failed exchange is retried at once (the service drops
         about one request in ten with NoAudioReceived or a slow start)."""
         last: ProviderUnavailable | None = None
-        for attempt in range(1, ATTEMPTS + 1):
+        for attempt in range(1, self._attempts + 1):
             try:
                 mp3 = self._fetch(
                     text, voice, self._rate, self._volume, self._first_audio_s, total_s
@@ -177,7 +179,7 @@ class EdgeTTS:
                 if mp3:
                     return mp3
                 last = ProviderUnavailable("Edge TTS returned no audio")
-            if attempt < ATTEMPTS:
+            if attempt < self._attempts:
                 log.debug("Edge TTS attempt %d failed (%s); retrying", attempt, last)
         assert last is not None
         raise last
@@ -229,68 +231,97 @@ class EdgeTTS:
 
 
 class FallbackTTS:
-    """Use ``primary``; when it fails for a chunk, speak that chunk with ``fallback``.
+    """A chain of voices: use the first healthy one; the last is the unconditional last resort.
 
-    The next chunk tries ``primary`` again, so one glitch does not make the rest of the reply
-    robotic. After ``failure_threshold`` failures in a row the primary is skipped for
-    ``cooldown_s`` (a real outage must not make every sentence wait for a failing call); the
-    first success resets the count.
+    When a voice fails for a chunk (``ProviderUnavailable``), that chunk goes to the next voice.
+    After ``failure_threshold`` failures in a row a voice is skipped for ``cooldown_s`` (a real
+    outage must not make every sentence wait for a failing call); the first success resets the
+    count. ``ProviderRequestError`` (input the engine cannot speak, including ``NothingToSpeak``)
+    is not a service failure: it propagates and counts for nothing.
 
-    Each failure is logged (the primary is not called during the backoff, so an outage logs
-    once per probe). ``ProviderRequestError`` (input the engine cannot speak, including
-    ``NothingToSpeak``) is not a service failure: it propagates and counts for nothing.
+    Reply scope: after :meth:`begin_reply` the chain remembers the level a reply has fallen to
+    and speaks the rest of that reply with the same voice (no Svetlana/Irina ping-pong inside
+    one answer). The next ``begin_reply`` starts again from the first voice. Without
+    ``begin_reply`` every chunk starts from the first healthy voice.
     """
 
     def __init__(
         self,
-        primary: TTSProvider,
-        fallback: TTSProvider,
-        *,
+        *providers: TTSProvider,
         cooldown_s: float = 15.0,
         failure_threshold: int = 2,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._primary = primary
-        self._fallback = fallback
+        if len(providers) < 2:
+            raise ValueError("a fallback chain needs at least two providers")
+        self._providers = providers
         self._cooldown_s = cooldown_s
         self._threshold = max(1, failure_threshold)
         self._clock = clock
         self._lock = threading.Lock()
-        self._failures = 0
-        self._down_until: float | None = None
-        self.name = f"{primary.name}+{fallback.name}"
+        self._failures = [0] * len(providers)
+        self._down_until: list[float | None] = [None] * len(providers)
+        self._reply_level: int | None = None  # None: no reply scope (begin_reply not used)
+        self.name = "+".join(p.name for p in providers)
+
+    def begin_reply(self) -> None:
+        """A new reply starts: forget the level the previous reply fell to."""
+        with self._lock:
+            self._reply_level = 0
 
     def warm_up(self) -> None:
-        """Warm the primary only (the fallback is local); outside the failure bookkeeping."""
-        warm = getattr(self._primary, "warm_up", None)
-        if warm is not None:
-            warm()
+        """Warm every voice that supports it (Edge connection, Piper model); each never raises
+        out of here, so one failing warm-up does not skip the next."""
+        for provider in self._providers:
+            warm = getattr(provider, "warm_up", None)
+            if warm is None:
+                continue
+            try:
+                warm()
+            except Exception:
+                log.debug("%s warm-up failed", provider.name, exc_info=True)
 
     def synthesize(self, text: str, lang: str) -> AudioClip:
+        last = len(self._providers) - 1
         with self._lock:
-            skip_primary = self._down_until is not None and self._clock() < self._down_until
-        if not skip_primary:
+            start = self._reply_level or 0
+        for index in range(start, last):
+            provider = self._providers[index]
+            with self._lock:
+                down = self._down_until[index]
+                skip = down is not None and self._clock() < down
+            if skip:
+                continue
             try:
-                clip: AudioClip = self._primary.synthesize(text, lang)
+                clip: AudioClip = provider.synthesize(text, lang)
             except ProviderUnavailable as e:
                 with self._lock:
-                    self._failures += 1
-                    backoff = self._failures >= self._threshold
+                    self._failures[index] += 1
+                    backoff = self._failures[index] >= self._threshold
                     if backoff:
-                        self._down_until = self._clock() + self._cooldown_s
+                        self._down_until[index] = self._clock() + self._cooldown_s
+                nxt = self._providers[index + 1].name
                 log.warning(
-                    "%s unavailable (%s); speaking this chunk with %s%s",
-                    self._primary.name,
+                    "%s unavailable (%s); speaking this %s with %s%s",
+                    provider.name,
                     e,
-                    self._fallback.name,
+                    "reply" if self._reply_level is not None else "chunk",
+                    nxt,
                     f", retrying in {self._cooldown_s:.0f} s" if backoff else "",
                 )
-            else:
-                with self._lock:
-                    recovered = self._failures > 0
-                    self._failures = 0
-                    self._down_until = None
-                if recovered:
-                    log.info("%s is back", self._primary.name)
-                return clip
-        return self._fallback.synthesize(text, lang)
+                continue
+            with self._lock:
+                recovered = self._failures[index] > 0
+                self._failures[index] = 0
+                self._down_until[index] = None
+                self._remember(index)
+            if recovered:
+                log.info("%s is back", provider.name)
+            return clip
+        with self._lock:
+            self._remember(last)
+        return self._providers[last].synthesize(text, lang)
+
+    def _remember(self, index: int) -> None:
+        if self._reply_level is not None:
+            self._reply_level = max(self._reply_level, index)

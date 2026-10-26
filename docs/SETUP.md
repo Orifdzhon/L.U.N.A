@@ -178,7 +178,7 @@ model_dir = "D:/LUNA/models"
 `[wakeword] model_dir` defaults to the same folder as `[stt.local] model_dir`. Other keys
 (`threshold`, `cooldown_s`, `cue`, `follow_up_s`, `verify`, ...) are annotated in
 `luna.example.toml`. `[stt] language` (default `"ru"`) applies to wake commands too. Spoken
-replies fall back from Edge to SAPI when the network fails (see [Voice](#voice-text-to-speech)).
+replies fall back from Edge to the local Irina voice (then SAPI) when the network fails (see [Voice](#voice-text-to-speech)).
 
 ### Conversation mode (`follow_up_s`)
 
@@ -399,10 +399,12 @@ distribution the voice and the phonemizer must be replaced** (ADR 0005, amendmen
 
 **Privacy and network (Edge):** with `provider = "edge"` the text of each spoken reply is sent to
 Microsoft's Edge text-to-speech service (through the unofficial `edge-tts` library; the endpoint
-may change or break without notice). If the service is unreachable or fails, L.U.N.A. speaks the
-same chunk with the Windows SAPI voices instead and logs a warning. The next chunk tries the
-online voice again; after two failed chunks in a row it is skipped for `fallback_cooldown_s`.
-The first audio must arrive within 5 s, and a failed chunk is retried once immediately.
+may change or break without notice). The chain is Edge (Svetlana) -> local Piper Irina -> SAPI.
+If Edge is unreachable, fails or does not deliver the first audio within `[tts.edge] first_audio_s`
+(2.5 s), that chunk is spoken by Irina and logged as a warning; the rest of the same reply stays
+with Irina (no switching between voices inside one answer), the next reply tries Edge again.
+After two failed chunks in a row Edge is skipped for `fallback_cooldown_s`. Edge and Irina are
+both warmed at startup. If Irina is not downloaded yet (offline first run), SAPI is used instead.
 Text with nothing a voice can pronounce (for example Korean) is skipped, the rest is spoken. Use `provider = "sapi"` to keep everything local.
 
 **Speed.** The first Edge request of a session used to take 4-5 s (DNS, TLS, websocket); L.U.N.A.
@@ -432,7 +434,8 @@ Without either flag the config decides.
 | Key | Default | Range / meaning |
 |---|---|---|
 | `enabled` | `false` | speak replies |
-| `provider` | `"piper"` | `"piper"` (local neural voice, SAPI fallback), `"edge"` (online neural voices, SAPI fallback) or `"sapi"` (Windows voices only) |
+| `provider` | `"piper"` | `"piper"` (local neural voice, SAPI fallback), `"edge"` (online Svetlana, then local Irina, then SAPI) or `"sapi"` (Windows voices only) |
+| `[tts.edge] first_audio_s` | `2.5` | > 0; how long Edge may take to deliver the first audio before the chunk (and the rest of the reply) moves to Irina |
 | `[tts.piper] voice_ru` | `"ru_RU-irina-medium"` | Piper voice for Russian replies (only this voice is pinned for now) |
 | `[tts.piper] voice_en` | `"en_US-kristin-medium"` | Piper voice for English replies |
 | `[tts.piper] model_dir` | unset | where the voices are stored; unset = `%LOCALAPPDATA%\LUNA\models` |
@@ -481,8 +484,8 @@ install the language pack). A voice added there may be OneCore-only; if it does 
 list above it cannot be used. Then set `voice_ru` / `voice_en` to part of its name.
 
 Known limits: the SAPI voices sound robotic and are Windows-only; that is why Piper is the default
-and SAPI only the last resort. Edge needs the network, each sentence takes about 1.5 s to
-synthesize and the service sometimes stalls.
+and SAPI only the last resort. Edge sounds best but needs the network, each sentence takes about
+1.5 s to synthesize and the service sometimes stalls (then Irina takes over).
 
 ## 8. Troubleshooting
 

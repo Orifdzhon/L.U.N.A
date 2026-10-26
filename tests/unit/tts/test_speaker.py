@@ -602,3 +602,20 @@ def test_first_audio_at_is_set_when_playing_starts(bus):
     wait_for(lambda: len(player.played) == 1)
     sp.speak(reply(FIRST))  # a new utterance resets it
     sp.close()
+
+
+def test_speaker_marks_each_reply_start_on_a_chain(bus):
+    class Chain(FakeTTS):
+        begins = 0
+
+        def begin_reply(self):
+            self.begins += 1
+
+    tts = Chain()
+    sp, _, _ = make(bus, tts=tts)
+    ev = Events(bus)
+    sp.speak(reply(), "r1")
+    ev.wait(Status.IDLE)
+    assert tts.begins == 1  # once per reply, not per chunk
+    assert len(tts.calls) == 3
+    sp.close()

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import threading
 import time
@@ -73,8 +74,9 @@ def _fetch_mp3(
             voice,
             rate=rate,
             volume=volume,
-            connect_timeout=min(5, first_audio_s, total_s),
-            receive_timeout=total_s,
+            # edge-tts rejects non-int timeouts (TypeError); our own deadlines below are exact.
+            connect_timeout=max(1, math.ceil(min(5, first_audio_s, total_s))),
+            receive_timeout=max(1, math.ceil(total_s)),
         )
         loop = asyncio.get_running_loop()
         deadline = loop.time() + total_s

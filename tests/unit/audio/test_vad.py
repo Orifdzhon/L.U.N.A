@@ -99,3 +99,21 @@ def test_invalid_parameters_rejected():
         EnergyVAD(threshold=0)
     with pytest.raises(ValueError):
         EnergyVAD(margin=0.5)
+
+
+def test_reset_with_noise_floor_skips_warmup():
+    vad = EnergyVAD()
+    vad.reset(noise_floor=0.001)
+    assert vad.noise_floor == 0.001
+    assert vad.is_speech(tone()[0])
+
+
+def test_reset_with_noise_floor_raises_the_threshold():
+    vad = EnergyVAD()
+    vad.reset(noise_floor=0.1)
+    assert vad.is_speech(tone()[0]) is False  # rms ~0.14 < 0.1 * 3
+
+
+def test_reset_rejects_negative_noise_floor():
+    with pytest.raises(ValueError):
+        EnergyVAD().reset(noise_floor=-0.1)

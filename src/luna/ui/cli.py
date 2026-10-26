@@ -15,7 +15,7 @@ import threading
 from collections.abc import Callable
 from typing import TextIO
 
-from luna.app import App
+from luna.app import WAKE_MIC_NOTICE, App
 from luna.core.errors import AudioError
 from luna.core.events import (
     CLOSED,
@@ -33,6 +33,7 @@ from luna.voice.frontend import (
     DETAIL_NOT_CAUGHT,
     DETAIL_STT_FAILED,
 )
+from luna.wakeword.listener import WakeState
 
 PROMPT = "> "
 BOM = chr(0xFEFF)  # PowerShell pipes / editors may prefix a line with a byte order mark
@@ -42,7 +43,8 @@ HELP_TEXT = (
     "Type a request, e.g. 'открой ютуб', 'open telegram', 'какой курс доллара?'.\n"
     "Commands: /help, /providers, /clear (forget the conversation), exit (or Ctrl+C twice).\n"
     "Voice (needs --voice): /mute (toggle), /stop (stop speaking), /voice (settings).\n"
-    "Listening: /listen [on|off] (hotkey push-to-talk), /mic (3 s microphone level check)."
+    "Listening: /listen [on|off] (hotkey push-to-talk), /mic (3 s microphone level check).\n"
+    "Wake word: /wake [on|off] (say «Луна, ...»; /wake shows the state)."
 )
 # Status details of a voice turn worth telling the user about.
 _VOICE_NOTES = {
@@ -179,6 +181,8 @@ class Repl:
             self._show_voice()
         elif name == "/listen":
             self._listen(text.split()[1:])
+        elif name == "/wake":
+            self._wake(text.split()[1:])
         elif name == "/mic":
             self._mic_check()
         else:
@@ -228,7 +232,9 @@ class Repl:
                     continue
                 if event is CLOSED:
                     return
-                if isinstance(event, TranscriptReady):
+                if getattr(event, "state", None) is WakeState.FAILED:
+                    self._say_async(f"wake failed: {event.detail}. Hotkey works; /wake on retries.")
+                elif isinstance(event, TranscriptReady):
                     self._say_async(f"(heard) {event.text}")
                 elif isinstance(event, StatusChanged):
                     if event.status is Status.LISTENING:
@@ -256,6 +262,29 @@ class Repl:
         if want:
             for note in voice.notes:
                 self._say(note)
+
+    def _wake(self, args: list[str]) -> None:
+        voice = self._app.voice_input
+        if voice is None:
+            self._say("Voice input is not available.")
+            return
+        word = args[0].lower() if args else ""
+        if len(args) > 1 or word not in ("", "on", "off"):
+            self._say("Usage: /wake [on|off]")
+            return
+        if word == "on":
+            reason = voice.enable_wake(self._say)
+            if reason is not None:
+                self._say(f"Wake word disabled: {reason}. Continuing with the hotkey.")
+                return
+            self._say("🌙 listening for «Луна»")
+            self._say(voice.wake_status_line())
+            self._say(WAKE_MIC_NOTICE)
+        elif word == "off":
+            voice.disable_wake()
+            self._say("Wake word off: the microphone is closed (hotkey push-to-talk stays).")
+        else:
+            self._say(voice.wake_status_line())
 
     def _mic_check(self) -> None:
         voice = self._app.voice_input

@@ -19,6 +19,7 @@ from luna.platform.base import AppEntry
 from luna.search.base import SearchResult
 from luna.stt.base import Transcript
 from luna.tools.base import SafetyLevel, ToolContext, ToolResult
+from luna.wakeword.base import WAKE_SAMPLE_RATE, WakeEvent
 
 
 class ScriptExhausted(BaseException):
@@ -402,3 +403,64 @@ class FakeSTT:
         if isinstance(item, Exception):
             raise item
         return item
+
+
+# ===========================================================================
+# Wake-word fakes (issue #104) - keep this section self-contained
+# ===========================================================================
+
+WAKE_MARKER = b"WAKE"  # a frame starting with these bytes triggers FakeWakeWord
+
+
+class FakeWakeWord:
+    """Scripted ``WakeWordDetector``.
+
+    Fires on the frame indices in ``trigger_at`` (0-based, counted since construction or the
+    last ``reset()``) and, if ``marker`` is true, on any frame that starts with ``WAKE_MARKER``.
+    ``end_sample`` of the event is the end of the triggering frame.
+    """
+
+    def __init__(
+        self,
+        trigger_at: Collection[int] = (),
+        *,
+        keyword: str = "luna",
+        confidence: float | None = 0.9,
+        frame_samples: int = 480,
+        marker: bool = True,
+        error: Exception | None = None,
+        name: str = "fake",
+    ) -> None:
+        self.name = name
+        self.sample_rate = WAKE_SAMPLE_RATE
+        self.frame_samples = frame_samples
+        self.keyword = keyword
+        self.confidence = confidence
+        self.marker = marker
+        self.error = error
+        self._trigger_at = frozenset(trigger_at)
+        self.frames: list[bytes] = []  # every frame seen (kept across reset)
+        self.reset_count = 0
+        self.closed = False
+        self._index = 0
+
+    def process(self, frame: bytes) -> WakeEvent | None:
+        if self.closed:
+            raise RuntimeError("FakeWakeWord is closed")
+        if self.error is not None:
+            raise self.error
+        if len(frame) != self.frame_samples * 2:
+            raise ValueError(f"expected {self.frame_samples * 2} bytes, got {len(frame)}")
+        self.frames.append(frame)
+        index = self._index
+        self._index += 1
+        if index in self._trigger_at or (self.marker and frame.startswith(WAKE_MARKER)):
+            return WakeEvent(self.keyword, self.confidence, (index + 1) * self.frame_samples)
+        return None
+
+    def reset(self) -> None:
+        self.reset_count += 1
+        self._index = 0
+
+    def close(self) -> None:
+        self.closed = True

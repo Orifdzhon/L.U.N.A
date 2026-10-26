@@ -93,3 +93,10 @@ rest of this ADR (PySide6, autostart) stays proposed until slice 5.
   the owner's PC (they use `ctrl+shift+space`). `ERROR_HOTKEY_ALREADY_REGISTERED` becomes a
   `ToolError` saying the hotkey is taken and pointing to `[voice] hotkey`; the app continues in
   text mode.
+
+## Note (2026-10-26): refined by ADR 0009
+
+The slice-5 design is [ADR 0009](0009-desktop-shell-mvp.md) (proposed): PySide6-Essentials,
+a plain small window instead of the frameless popup, autostart via a per-user Startup-folder
+shortcut instead of the HKCU `Run` value, and `pythonw.exe -m luna --tray` instead of a
+`luna-gui` launcher. The hotkey decisions above are unchanged.

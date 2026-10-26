@@ -21,7 +21,7 @@ added in later slices.
 | Wake word | Opt-in wake mode (slice 4): one always-on mic stream owned by `WakeListener`, energy-VAD gate, Vosk `small-ru` grammar spotter ("луна") as stage 1, local faster-whisper `base` check "starts with Луна" as stage 2 (`[wakeword] verify = "local"`), half-duplex while speaking; the hotkey keeps working | `verify = "off"`; custom ONNX model only if #115 misses the targets; Porcupine rejected | [0004](adr/0004-wake-word.md) + slice-4 amendment + amendment 2 |
 | TTS | `FallbackTTS`: Edge online neural voices (`ru-RU-SvetlanaNeural`, `en-US-JennyNeural`) → Windows SAPI (Irina / Zira) on failure; playback via `sounddevice` | `[tts] provider = "sapi"` (local only); Piper later/optional (#63) | [0005](adr/0005-text-to-speech.md) + amendments 1-2 |
 | Web search | `ddgs` metasearch + `trafilatura` extraction | self-hosted SearXNG; Tavily free key | [0006](adr/0006-web-search.md) |
-| Desktop shell | PySide6 (tray + window), Win32 `RegisterHotKey`, HKCU `Run` autostart | tkinter + pystray | [0007](adr/0007-desktop-shell.md) |
+| Desktop shell | Slice 5: `PySide6-Essentials` tray + small window driven by a toolkit-free `ShellController`; `luna` / `pythonw -m luna --tray`; named-mutex single instance; Win32 `RegisterHotKey`; autostart = per-user Startup-folder shortcut (off by default) | tkinter + pystray | [0007](adr/0007-desktop-shell.md), [0009](adr/0009-desktop-shell-mvp.md) |
 | Open apps/sites | `Get-StartApps` index + aliases + `rapidfuzz`; `webbrowser` for sites | `.lnk` scan | [0008](adr/0008-opening-apps-and-websites.md) |
 | Concurrency | **Threads + queues**, Qt on the main thread | asyncio (rejected, §5) | this doc |
 
@@ -57,13 +57,13 @@ added in later slices.
 | LLM providers | `luna.llm` | `LLMProvider` protocol, `OpenAICompatProvider`, `LLMChain` (fallback + cooldown; default order Groq → Gemini → local LM Studio). |
 | Tools | `luna.tools` | `Tool` protocol, `ToolRegistry`, safety levels, built-in tools: `open_app`, `open_website`, `web_search`, `get_datetime`. |
 | Search | `luna.search` | `SearchProvider` protocol, `DdgsSearch`, `SearxngSearch`, page fetch + extraction. |
-| Platform | `luna.platform` | OS adapters behind protocols: app catalog/launcher, browser, hotkey, autostart. `luna.platform.windows` implements them. |
+| Platform | `luna.platform` | OS adapters behind protocols: app catalog/launcher, browser, hotkey, autostart (Startup-folder shortcut, slice 5), single instance (named mutex, slice 5). `luna.platform.windows` implements them. |
 | Audio | `luna.audio` | `AudioClip`, `AudioPlayer` protocol + interruptible `sounddevice` playback (slice 2); `MicSource` / `SoundDeviceMic` capture, `RingBuffer`, `EnergyVAD`, utterance `Recorder` (slice 3); `FrameSource` / `FrameTap` / `LiveSource` so a recording can continue from the wake listener's live stream (slice 4). |
 | STT | `luna.stt` | `STTProvider` protocol, `Transcript`, `STTChain` (fallback + cooldown), `GroqWhisperSTT` (default), `FasterWhisperSTT` (local CPU fallback). |
 | TTS | `luna.tts` | `TTSProvider` protocol, `EdgeTTS` (default, online neural voices), `SapiTTS` (local fallback), `FallbackTTS`, speech text preparation (`text`), `Speaker` worker (explicit `speak(reply)` from the UI; exposes `active` + activity listeners for half-duplex); `PiperTTS` later/optional. |
 | Wake word | `luna.wakeword` | `WakeWordDetector` protocol, `WakeEvent`, `VoskKeywordSpotter`, `WakeListener` (owns the always-on mic stream, VAD gate, holds/tail/cooldown, taps, follow-up window), `WakeVerifier` second stage (`FasterWhisperVerifier` sharing the local STT model, `PassThroughVerifier`; ADR 0004 amendment 2). `OnnxWakeWord` only after spike #116. |
 | Voice front-end | `luna.voice` | `VoiceFrontEnd`: turn state machine IDLE → LISTENING → TRANSCRIBING → HANDLING (§4.2) for hotkey, wake and follow-up turns; barge-in; latency spans. `WakeModelStore` (`voice/wake_model.py`: lazy verified Vosk model download). `VoiceInput`: lazy assembly (STT chain, mic, recorder, hotkey, wake listener), degraded start, `/mic` diagnostic, `/wake on` / `/wake off`. |
-| UI | `luna.ui` | `cli` (REPL, slice 1) and `qt` (tray, popup window, status indicator, slice 5). |
+| UI | `luna.ui` | `cli` (REPL, slice 1); `shell` (slice 5, no Qt imports: `ShellController`, icon-state derivation, conversation model, view protocols); `qt` (slice 5: thin PySide6 views - tray icon + menu, small window, GUI-thread dispatcher - and `run_tray`). ADR 0009. |
 | Logging | `luna.logs` | App log (rotating text) and action log (JSONL, F9). |
 
 ## 2. Package layout (src layout)
@@ -106,7 +106,9 @@ src/luna/
     base.py               # AppCatalog, AppLauncher, BrowserOpener, HotkeyListener, Autostart
     windows/apps.py       # Get-StartApps index, launch via shell:AppsFolder
     windows/hotkey.py     # RegisterHotKey via ctypes
-    windows/autostart.py  # HKCU\...\Run via winreg
+    windows/autostart.py  # Startup-folder shortcut L.U.N.A.lnk (ADR 0009; PowerShell WScript.Shell)
+    windows/single_instance.py  # named mutex Local\LUNA-instance (ADR 0009)
+    fallback.py           # non-Windows: NoAutostart (unsupported), ProcessLocalInstance (always acquires)
   audio/
     capture.py            # MicSource, SoundDeviceMic (RawInputStream → bounded queue), RingBuffer
     vad.py                # VoiceActivityDetector, EnergyVAD (adaptive noise floor)
@@ -138,10 +140,21 @@ src/luna/
     input.py              # VoiceInput: lazy assembly, degraded start, /mic levels
   ui/
     cli.py
-    qt/app.py, tray.py, window.py
+    shell/                # slice 5, toolkit-free (never imports Qt)
+      views.py            # TrayView, WindowView, UiThread protocols
+      state.py            # IconState, derive_icon_state(), ConversationLine, Conversation
+      launch.py           # own_launch_command(): the autostart LaunchCommand
+      controller.py       # ShellController
+    qt/                   # slice 5, the only package that imports PySide6
+      dispatch.py         # QtUiThread: post(fn) → GUI thread via a queued Signal
+      icons.py            # state icons drawn with QPainter (no image assets)
+      tray.py             # QtTrayView: QSystemTrayIcon + QMenu + showMessage
+      window.py           # QtWindowView: conversation, input line, status line
+      app.py              # run_tray(settings, args) -> int: QApplication, wiring, quit
   logs/
     setup.py              # logging config, secret redaction filter
     action_log.py         # JSONL writer
+    windowless.py         # slice 5: stdio replacement, excepthooks, faulthandler (pythonw)
   data/
     site_aliases.toml     # "ютуб" → https://www.youtube.com, ...
     app_aliases.toml      # "хром" → "Google Chrome", "телега" → "Telegram", ...
@@ -610,10 +623,110 @@ class HotkeyListener(Protocol):       # press-only (no key-up): hence toggle pus
     # thread; raises ToolError if the combination is invalid or already taken.
     def stop(self) -> None: ...
 
+# slice 5 (ADR 0009): `enable(command: str)` is replaced before anyone implements it
+@dataclass(frozen=True)
+class LaunchCommand:
+    executable: Path              # <venv>\Scripts\pythonw.exe (absolute)
+    args: tuple[str, ...]         # ("-m", "luna", "--tray", "--minimized"[, "--config", <abs>])
+    working_dir: Path             # cwd at enable time: ./luna.toml and ./.env are found there
+
 class Autostart(Protocol):
-    def is_enabled(self) -> bool: ...
-    def enable(self, command: str) -> None: ...
-    def disable(self) -> None: ...
+    def is_enabled(self) -> bool: ...                # never raises: False if unknown
+    def enable(self, command: LaunchCommand) -> None: ...   # ToolError on failure
+    def disable(self) -> None: ...                   # idempotent; ToolError on failure
+# Windows (luna/platform/windows/autostart.py): StartupFolderAutostart(startup_dir=None,
+#   writer=None). startup_dir None → SHGetKnownFolderPath(FOLDERID_Startup) via ctypes, fallback
+#   %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup. The file is exactly "L.U.N.A.lnk";
+#   is_enabled() = it exists; disable() deletes only that file. ShortcutWriter (injectable):
+#   powershell -NoProfile -NonInteractive -Command <fixed script> with LUNA_LNK, LUNA_TARGET,
+#   LUNA_ARGS, LUNA_CWD in the child environment ($s = (New-Object -ComObject WScript.Shell)
+#   .CreateShortcut($env:LUNA_LNK); ...; $s.Save()); timeout 10 s; nothing interpolated into the
+#   script. Args are joined with subprocess.list2cmdline. Tests: tmp_path + fake writer only.
+# Other OSes (luna/platform/fallback.py): NoAutostart: is_enabled False, enable → ToolError.
+
+class SingleInstance(Protocol):   # slice 5
+    def acquire(self) -> bool: ...   # True: we are the only instance; keep the object alive
+    def release(self) -> None: ...   # idempotent; the OS also releases on any process exit
+# Windows: NamedMutexInstance(name="Local\\LUNA-instance"): CreateMutexW(NULL, FALSE, name);
+#   GetLastError() == ERROR_ALREADY_EXISTS (183) → False (close that handle); ctypes behind a
+#   small _Kernel32 wrapper that tests replace (pattern of hotkey.py). Other OSes:
+#   ProcessLocalInstance (always True) until a lock-file version is needed.
+```
+
+```python
+# luna/ui/shell/views.py (slice 5, ADR 0009): implemented by luna/ui/qt, faked in tests
+class UiThread(Protocol):
+    def post(self, fn: Callable[[], None]) -> None: ...   # any thread; fn runs on the UI thread
+
+class TrayView(Protocol):            # all methods: UI thread only
+    def set_state(self, state: IconState, tooltip: str) -> None: ...
+    def set_menu(self, menu: TrayMenuState) -> None: ...  # checks, enabled flags, labels
+    def notify(self, title: str, text: str) -> None: ...  # balloon/toast; no-op if unsupported
+    def show(self) -> None: ...
+    def hide(self) -> None: ...
+
+class WindowView(Protocol):          # all methods: UI thread only
+    def append(self, line: ConversationLine) -> None: ...
+    def set_status(self, text: str) -> None: ...
+    def set_input_busy(self, busy: bool) -> None: ...     # typed request running: input read-only
+    def show(self) -> None: ...                           # show + raise + activate
+    def hide(self) -> None: ...
+    @property
+    def visible(self) -> bool: ...
+
+@dataclass(frozen=True)
+class TrayMenuState:
+    wake_checked: bool
+    wake_enabled: bool             # False while enable/disable runs or wake is unavailable
+    wake_label: str                # "Listen for «Луна»" / "Starting wake word…"
+    voice_checked: bool            # not muted
+    voice_enabled: bool            # False when [tts] enabled = false (no Speaker)
+    autostart_checked: bool
+    autostart_enabled: bool        # False while toggling or on unsupported platforms
+
+# luna/ui/shell/state.py
+class IconState(enum.Enum):
+    IDLE = "idle"; WAKE = "wake"; RECORDING = "recording"
+    THINKING = "thinking"; SPEAKING = "speaking"; ERROR = "error"
+
+def derive_icon_state(status: Status | None, wake_state: str, error_active: bool) -> IconState: ...
+# Pure. error_active (transient 5 s after StatusChanged(ERROR), or wake_state == "FAILED") → ERROR;
+# LISTENING → RECORDING; SPEAKING → SPEAKING; THINKING → THINKING; otherwise wake_state in
+# {"ARMED", "HELD"} → WAKE, else IDLE.
+
+@dataclass(frozen=True)
+class ConversationLine:
+    kind: Literal["user", "assistant", "action", "system"]
+    text: str                      # action: "open_website: ok" (+ summary unless untrusted, ≤ 120 chars)
+
+class Conversation:               # bounded deque of ConversationLine ([ui] history_lines), memory only
+
+# luna/ui/shell/launch.py
+def own_launch_command(executable: Path, config: Path | None, cwd: Path) -> LaunchCommand: ...
+# executable = sys.executable with the name pythonw.exe (same folder); args = -m luna --tray
+# --minimized [+ --config <config.resolve()>]. Never takes window, transcript or LLM text.
+
+# luna/ui/shell/controller.py
+class ShellController:            # every public method runs on the UI thread
+    def __init__(self, app: App, tray: TrayView, window: WindowView, ui: UiThread, *,
+                 autostart: Autostart, launch: Callable[[], LaunchCommand],
+                 conf: UISettings, clock: Clock = time.monotonic,
+                 start_thread: Callable[[str, Callable[[], None]], None] = <daemon thread>) -> None: ...
+    def start(self, *, wake: bool, minimized: bool) -> None: ...
+    # sets VoiceInput sinks, starts luna-ui-events + luna-ui-worker, shows startup_lines() as
+    # system lines, shows the window unless minimized, notifies degraded-start warnings once,
+    # queues enable_wake(progress) on the worker when wake is True
+    def on_event(self, event: object) -> None: ...         # posted by luna-ui-events
+    def submit(self, text: str) -> None: ...               # window Enter
+    def cancel(self) -> None: ...                          # window Esc
+    def toggle_window(self) -> None: ...                   # tray left click / "Open L.U.N.A."
+    def window_closed(self) -> None: ...                   # X button: hide + one notification
+    def set_wake(self, on: bool) -> None: ...              # worker: enable_wake / disable_wake
+    def set_voice(self, on: bool) -> None: ...             # Speaker.set_muted(not on)
+    def set_autostart(self, on: bool) -> None: ...         # worker: autostart.enable/disable
+    def quit(self) -> None: ...                            # §4.4 shutdown order
+    @property
+    def icon_state(self) -> IconState: ...
 ```
 
 ## 4. Pipeline and event flow
@@ -799,8 +912,66 @@ Rules:
 
 `EventBus` (thread-safe, `queue.Queue` per subscriber) carries
 `StatusChanged(IDLE|LISTENING|THINKING|SPEAKING|ERROR)`, `TranscriptReady`,
-`ReplyReady`, `ActionExecuted`, `ProviderSwitched`. The CLI prints them; the Qt UI
-receives them via a `QObject` bridge that re-emits them as Qt signals on the GUI thread.
+`ReplyReady`, `ActionExecuted`, `ProviderSwitched`, and (slice 4) `WakeStateChanged`
+(forwarded from the wake listener). `ActionExecuted` is declared but not published; the actions
+of a turn are read from `Reply.actions`. The CLI prints them; the tray shell (slice 5) reads one
+subscription on the `luna-ui-events` thread and posts each event to the GUI thread through
+`UiThread.post` (§4.4).
+
+### 4.4 Desktop shell (slice 5, ADR 0009)
+
+**Start (tray mode)** — `luna` with no mode flag, `luna --tray`, or `pythonw -m luna --tray --minimized`:
+
+1. `__main__`: parse args, load settings, apply flags; if `sys.stdout`/`sys.stderr` is `None`
+   (pythonw) → `logs.windowless.install()` (devnull streams, excepthooks, faulthandler);
+   `setup_logging(console=<stderr is a real stream>)`.
+2. `SingleInstance.acquire()`; taken → exit code 3 with "L.U.N.A. is already running (see the tray
+   icon)" (stderr in `--text`, `QMessageBox` in tray mode). Same guard in `--text`.
+3. `run_tray`: `QApplication`, `setQuitOnLastWindowClosed(False)`; `wake = settings.wakeword.enabled`;
+   `app = build_app(settings, start_wake=False)` (fast: no model download on the GUI thread).
+4. Views + `ShellController(app, ...)`; `controller.start(wake=wake, minimized=args.minimized or
+   [ui] start_minimized)`; tray icon shown; window shown unless minimized; if
+   `QSystemTrayIcon.isSystemTrayAvailable()` is false the window is always shown and a system line
+   says so.
+5. `wake` → `luna-ui-worker` runs `voice_input.enable_wake(progress)`; progress lines →
+   `ui.post(window.set_status)` + log INFO; the menu item shows "Starting wake word…" and is
+   disabled until it returns; a reason → system line + notification, push-to-talk stays.
+6. `QApplication.exec()`.
+
+**Events → views** (UI thread, `ShellController.on_event`):
+
+| Event | Window | Tray |
+|---|---|---|
+| `StatusChanged(s)` | status line | `derive_icon_state(s, wake_state, error_active)`; `ERROR` → error for 5 s + detail in the status line |
+| `WakeStateChanged(state)` | status line "Wake: …" | `WAKE` while `ARMED`/`HELD`; `FAILED` → persistent `ERROR` + notification "Wake word stopped: <reason>"; menu unchecked |
+| `TranscriptReady` | user line | — |
+| `ReplyReady` | assistant line + one action line per `reply.actions` entry | — |
+| `ProviderSwitched` | status line "LLM: <provider>" ("offline" for `local`) | — |
+
+**Speech:** as in the CLI, replies are spoken by the shell, not by a bus subscriber: voice turns via
+the `VoiceInput` sinks (`on_reply` → speak, `on_stale_reply` → never spoken), typed requests when
+`Orchestrator.handle` returns; apologies of cancelled / timed-out turns are not spoken (the CLI's
+`_is_silent` rule moves to a shared helper). Display comes only from `ReplyReady`, so each reply
+appears once.
+
+**Typed request:** `submit(text)` (UI thread) → user line, `window.set_input_busy(True)`, thread
+`luna-ui-req-<n>` runs `orchestrator.handle(Request(text, "text"), cancel)` → `ui.post(done)`: speak
+(unless silent/muted), `set_input_busy(False)`. Esc sets `cancel`. A text starting with `/` is not
+a command in the window: "Commands are in the tray menu" (the CLI keeps its slash commands).
+
+**Tray menu actions:** *Listen for «Луна»* → `set_wake(on)` (worker: `enable_wake` / `disable_wake`);
+*Voice replies* → `Speaker.set_muted(not on)` (cuts current speech); *Start with Windows* →
+worker: `autostart.enable(launch())` / `disable()`, then the check mark is re-read from
+`is_enabled()` (failure → notification, mark unchanged); *Open L.U.N.A.* / left click → toggle
+window; *Quit* → shutdown. All toggles are session-only.
+
+**Shutdown** (`quit()`, also on Ctrl+C in a console-started tray, or the OS session ending):
+1. start a daemon watchdog: after 10 s → log CRITICAL + `os._exit(0)`;
+2. tray hidden, window hidden, input disabled, cancel any typed request;
+3. close the bus subscription (`luna-ui-events` exits), stop accepting worker jobs (a running
+   `enable_wake` finishes on its own: `VoiceInput` discards the result after `close()`);
+4. `app.close()` on the UI thread (hotkey, mic, turns, orchestrator, speaker, bus; bounded joins);
+5. `instance.release()`, `QApplication.quit()`.
 
 ## 5. Concurrency model — threads, not asyncio
 
@@ -808,7 +979,11 @@ receives them via a `QObject` bridge that re-emits them as Qt signals on the GUI
 
 | Thread | Work |
 |---|---|
-| Main | Qt event loop (slice 5) or the CLI REPL (slice 1–4) |
+| Main | Qt event loop in tray mode (slice 5) or the CLI REPL (`--text`). Only the main thread touches Qt objects; everything else reaches it through `UiThread.post` (a queued `Signal`) |
+| `luna-ui-events` (slice 5, tray mode) | blocks on one `EventBus` subscription and posts each event to the GUI thread; exits on `CLOSED` |
+| `luna-ui-worker` (slice 5, tray mode) | one **daemon** thread + `queue.Queue` for blocking shell actions: `enable_wake` (model download/load), `disable_wake` (joins `luna-wake`), autostart toggles (PowerShell, ≤ 10 s). Jobs run one at a time; results are posted to the GUI thread. Not a `ThreadPoolExecutor`: its threads are joined at interpreter exit and would block quitting during a download |
+| `luna-ui-req-<n>` (slice 5, one per typed request, daemon) | `orchestrator.handle(...)` for text typed in the window, like the REPL's wait; turns stay serialized by the orchestrator's turn lock |
+| `luna-ui-quit-watchdog` (slice 5, daemon, only during shutdown) | `os._exit(0)` if shutdown takes more than 10 s |
 | PortAudio callback | copies frames to a bounded queue only (never blocks; drops the oldest frame if full); exists while recording (push-to-talk) or for the whole time wake mode is on |
 | `luna-wake` (slice 4, while wake mode is on) | the only reader of the mic in wake mode: ring buffer, tap push, EnergyVAD gate, Vosk decoding (inside speech segments only), hold/tail/cooldown/window logic; calls `VoiceFrontEnd.on_wake` (non-blocking). Started by `WakeListener.start()`, joined by `stop()` |
 | `luna-hotkey` | Win32 message loop for `RegisterHotKey` (registers, pumps `GetMessageW`, unregisters) |
@@ -838,6 +1013,15 @@ subscribes to Speaker activity (the follow-up window is driven by the listener's
 follows the same order: it checks under the front end lock that its turn is still current and
 unverified, records the verdict, releases the lock, and only then calls `speaker.stop()`,
 publishes status, beeps or sets `turn.cancel`.
+
+GUI-thread rule (slice 5): the GUI thread never blocks on core work. It may call only
+non-blocking core methods (`Speaker.set_muted/stop`, `VoiceInput` state properties,
+`wake_status_line()`, setting a `cancel` event); anything that loads models, joins threads,
+waits for a turn or runs a subprocess goes to `luna-ui-worker` or `luna-ui-req-<n>`. The one
+exception is `App.close()` during shutdown (bounded joins, watchdog). Callbacks from core
+threads (`VoiceInput` sinks, wake `progress`) only call `ui.post(...)`; they never touch Qt and
+never take a shell lock, so the slice-4 lock order is unaffected (the shell has no locks of its
+own: its state lives on the GUI thread).
 
 Why not asyncio:
 - The heavy work is blocking C/C++ code (CTranslate2, ONNX Runtime, Vosk, PortAudio)
@@ -937,9 +1121,23 @@ provider = "ddgs"               # "ddgs" | "searxng" | "tavily"
 max_results = 5
 fetch_pages = 3
 
-[ui]
-autostart = false
+[ui]                            # slice 5: UISettings (ADR 0009)
+start_minimized = false         # tray mode starts with the window hidden (autostart adds --minimized)
+notifications = true            # error balloons/toasts (wake failed, degraded start, autostart failure)
+history_lines = 200             # conversation lines kept in the window (memory only), 20..2000
+# autostart = false             # LEGACY: accepted and ignored; autostart is the Startup-folder
+                                # shortcut, toggled only from the tray menu ("Start with Windows").
+                                # `true` logs one warning saying so.
 ```
+
+`[ui]` compatibility: the owner's file has `[ui] autostart = false`; it must load unchanged.
+`autostart` is dropped (warning only if `true`); every other unknown key is an error
+(`extra="forbid"`), like the legacy keys of `[stt]` and `[wakeword]`.
+
+Command line (slice 5): `luna` with no mode flag = tray mode (owner decision D3 in ADR 0009;
+before slice 5 it printed the usage); `--tray` = tray mode explicitly; `--minimized` = start with
+the window hidden; `--text` = CLI (unchanged). `--voice/--no-voice`, `--listen/--no-listen`,
+`--wake/--no-wake` and `--config` work in both modes. `--text --tray` is a usage error.
 
 `[wakeword]` compatibility (#103): the owner's existing file has the old example block
 `engine = "vosk"`, `keywords = ["луна"]`, `hotkey = "ctrl+alt+space"`. It must load unchanged:
@@ -962,6 +1160,14 @@ wake mode" and implies listening (`[voice] listen`).
   placeholder with the length).
 - Timing spans (wake→end of speech→STT→LLM→first audio) are logged at INFO to
   validate latency targets N4.
+- **Windowless mode (slice 5, `pythonw`):** there is no console, so `luna.log` is the only
+  diagnostic channel. `logs.windowless.install(log_dir)` runs before anything else when
+  `sys.stdout` or `sys.stderr` is `None`: both become UTF-8 `os.devnull` writers (libraries such
+  as tqdm call `.write` on them), `sys.excepthook` and `threading.excepthook` log unhandled
+  exceptions at CRITICAL (PySide6 reports exceptions in slots through `sys.excepthook`),
+  `faulthandler.enable()` writes native crashes to `logs\crash.log` (file kept open). The console
+  handler is only added when stderr is a real stream. Startup lines, warnings and wake progress
+  go to the log (INFO) and to the window; the window conversation itself is never logged.
 
 ## 8. Error handling and provider fallback
 
@@ -995,6 +1201,12 @@ wake mode" and implies listening (`[voice] listen`).
   cannot be loaded at `/wake on`, wake mode starts with `PassThroughVerifier` and a note
   ("Wake verification unavailable (<reason>); every detection starts a turn"); a decode error or
   a verdict later than 3 s accepts the wake with one WARNING per reason. Never deaf, never a crash.
+- Desktop shell (slice 5): every degraded-start warning becomes a system line in the window and
+  at most one notification; the tray keeps running with whatever works (text input always). No
+  system tray available → the window stays visible instead. A failed autostart toggle → ToolError
+  text in a notification, the check mark re-read from `is_enabled()`. Notifications are
+  rate-limited to one per reason per 5 minutes. A shell exception in a Qt slot is logged
+  (`sys.excepthook`) and never ends the event loop.
 
 ## 9. Safety
 
@@ -1022,6 +1234,15 @@ wake mode" and implies listening (`[voice] listen`).
   addresses. Known residual risk: DNS rebinding between check and connect is not pinned yet
   (ADR 0006, Amendment 1).
 - Logs never contain secrets.
+- Desktop shell (slice 5, ADR 0009): no new network access, nothing new leaves the machine.
+  Text typed in the window is untrusted user input with exactly the CLI's trust level (same
+  Router → Assistant → `ToolRegistry` path, same safety levels); the window never executes
+  commands of its own. The conversation is kept in memory only; notifications never contain
+  transcripts or reply text. The autostart shortcut is built only from `sys.executable`, fixed
+  flags, the working directory and an explicit `--config` path, never from window, transcript or
+  LLM text, and is created only by an explicit click on "Start with Windows". Agents and tests
+  never touch the real Startup folder (fake writer + `tmp_path`); the real toggle is a manual
+  owner check.
 
 ## 10. Testing strategy
 
@@ -1029,9 +1250,10 @@ wake mode" and implies listening (`[voice] listen`).
 |---|---|---|
 | Unit (CI, every PR) | router patterns RU/EN, alias + fuzzy resolution, ToolRegistry safety rules, LLMChain fallback/cooldown, assistant loop (tool round-trips, untrusted → no tools), config loading, action log format, voice state machine with synthetic frames | `pytest`; fakes in `tests/fakes.py` (`FakeLLM` replays scripted `ChatResponse`s, `FakeSTT`, `FakeTTS`, `FakeSearch`, `FakeAppCatalog`, `FakeLauncher`, `FakeBrowser`, fake clock) |
 | Provider contract (CI) | request/response mapping of `OpenAICompatProvider`, ddgs/SearXNG parsing, Groq STT client | recorded HTTP fixtures via `respx` (httpx mock); no network |
-| Platform (CI on `windows-latest`) | `Get-StartApps` JSON parsing, autostart registry logic | parsing tested on fixture JSON; registry calls behind an injectable `winreg`-like wrapper, real registry never touched in tests |
+| Platform (CI on `windows-latest`) | `Get-StartApps` JSON parsing, autostart shortcut logic, single-instance mutex | parsing tested on fixture JSON; the shortcut writer and `kernel32` calls are injectable; the real Startup folder and registry are never touched in tests |
 | Integration (opt-in) | real Gemini/Groq/Ollama tool calls, real search, faster-whisper on fixture WAVs | markers `live`, `gpu`, `audio`; `pytest -m live` run manually with keys |
 | Wake word (CI, slice 4) | `WakeGate` holds/tail/cooldown/window with a fake clock; listener with `FakeMic` frames + `FakeWakeWord` (scripted events at given positions): cut/lead_in/backlog math, one-breath and pause cases, reply-containing-keyword never fires while held, `/wake off` closes the mic, mic loss → `FAILED`; `Recorder(live=...)` never calls `mic.start/stop`; Speaker activity transitions; settings legacy keys; `keyword_first` table (accept "Луна, открой", "луна.", "Luna"; reject "лунный", "Лена", "она", "Луначарский", "Луна-парк", "на луну", ""); `verify_window` math; `FrameTap.peek` non-consuming; front end with `FakeVerifier` (scripted verdict/delay/exception): accept, silent reject cancels the recording, fail open on error/timeout, hotkey override, deferred status/cue | `pytest`; no `vosk` or `faster_whisper` import, no model, no microphone (real engines only under the `audio` marker / `bench_wake.py`) |
+| Desktop shell (CI, slice 5) | `derive_icon_state` table; `Conversation` bound + action-line formatting (untrusted summary hidden); `ShellController` with `FakeTrayView`, `FakeWindowView`, an immediate `FakeUiThread`, a synchronous `start_thread`, `FakeAutostart` and the existing fakes (`FakeLLM`, `FakeSTT`, fake `VoiceInput`): events → icon/status/lines, typed request → one user + one assistant line and speech, silent apologies not spoken, wake toggle via worker incl. failure reason and `FAILED` → error + one notification, mute, autostart toggle + failure, close → hide + one notification, quit order (subscription closed, `app.close()` once); `own_launch_command` (pythonw path, flags, `--config` only when given); `StartupFolderAutostart` with `tmp_path` + fake writer (create/exists/delete exactly `L.U.N.A.lnk`, env passed, never the real folder); `NamedMutexInstance` with a fake `_Kernel32`; `[ui]` settings incl. legacy `autostart`; `windowless.install` with `None` streams; Qt views smoke-tested with `QT_QPA_PLATFORM=offscreen` (set in `tests/conftest.py`, no CI change) | `pytest`; no real tray, no Startup folder, no registry; the real shortcut writer only under the `desktop` marker writing into `tmp_path` |
 | Manual (owner) | microphone, wake word false accepts/hour, latency, tray, autostart, real app launch | checklist `docs/MANUAL_CHECKS.md`, listed in each PR |
 
 CI: GitHub Actions on `windows-latest`, `uv sync --frozen`, `ruff check`,
@@ -1058,7 +1280,7 @@ fallback runs on the CPU, so the whole GPU is left to the local LLM. Measured ST
 | Wake verification (stage 2, `verify = "local"`) | CPU | 0 | 0 extra: **shares** the faster-whisper `base` instance above (but wake mode now always loads it, even when Groq answers STT) | ~1 s decode burst (est. from the ~1 s per ~2 s clip measurement; 30 s encoder window is fixed) per Vosk detection, in parallel with the recording; measured by the bench extension and #115 |
 | Edge TTS (default) / SAPI fallback | remote / CPU | 0 | ~20–50 MB (est.) | MP3 decode via `miniaudio` |
 | Piper medium voices (2) — optional, later | CPU | 0 | ~200 MB | separate process, not in the default total |
-| Qt UI — slice 5 | CPU | ~0 | ~100 MB (est.) | |
+| Qt UI (PySide6-Essentials) — slice 5, tray mode only | CPU | ~0 (est.) | ~60–100 MB (est., to be measured in the slice-5 manual check) | idle when hidden; 82 MB wheel on disk |
 | **Default total (cloud LLM, Groq STT)** | | **~0 GB** by L.U.N.A. | ~0.5–1 GB (est.) | GPU entirely free for games/other apps |
 | Local LLM in LM Studio (owner: ~9B q4) | GPU | most of the 6 GB (owner's setup, not measured here) | | used as the last LLM fallback; this is why GPU STT was dropped |
 | **Offline total (local LLM + local STT)** | | LLM only | LLM host + ~0.5 GB | STT and the LLM host share the 4 CPU cores; latency to be checked in #87 |
@@ -1080,7 +1302,7 @@ Each slice ends in something the owner can run. Later slices only add adapters.
 | 2 | Voice out | `SapiTTS` (Irina / Zira); speech text clean-up and sentence splitting; voice by `Reply.lang`; `sounddevice` interruptible playback; `Speaker` worker; CLI `--voice`, `/mute`, `/stop`. Piper later/optional (#63) | CLI replies are spoken in RU/EN |
 | 3 | Voice in (push-to-talk) — **code merged** (PRs #90–#98, 2026-10-26); STT benchmark #87 and manual checks #88 open | `SoundDeviceMic` capture, `EnergyVAD` + `Recorder`, `STTChain` (`GroqWhisperSTT` → `FasterWhisperSTT` CPU `base`), `WindowsHotkeyListener`, `VoiceFrontEnd` toggle PTT with barge-in, `VoiceInput` + CLI `--listen` / `/listen` / `/mic`, degraded start | hotkey → speak → action + spoken reply; latency spans logged |
 | 4 | Wake word (Issues #102–#116 + verification Issues, ADR 0004 amendment 2) | opt-in wake mode: `WakeListener` owning one always-on stream, energy-VAD gate, `VoskKeywordSpotter` for "луна" (lazy model download) + local faster-whisper second stage (`[wakeword] verify`), `Recorder` continuing from the live stream (one-breath commands), half-duplex gating with Speaker activity, optional cue and follow-up window (off); conditional ONNX spike #116 | "Луна, открой YouTube" works in one breath and with a pause; a spoken reply never wakes it; `/wake off` closes the mic; recall and FA/hour measured in #115 |
-| 5 | Desktop shell | PySide6 tray, popup reply window with text input, status indicator, autostart toggle, settings file shortcut | MVP definition of done (spec §6) |
+| 5 | Desktop shell ([ADR 0009](adr/0009-desktop-shell-mvp.md)) | `PySide6-Essentials` tray icon with state colours and a 5-item menu (open, wake on/off, voice replies, start with Windows, quit), small window (conversation, text input, status line; close hides), `luna` / `pythonw -m luna --tray --minimized`, single instance, windowless logging, Startup-folder autostart (off by default), `[ui]` settings. Post-MVP: popup at the tray, settings dialog / persisted toggles, open config/logs, activate the running instance, installer | MVP definition of done (spec §6): runs from the tray without a console, starts with Windows when enabled, voice and typed requests show their replies in the window; CI green |
 | 6 | Hardening | offline mode switch, game mode, provider status in tray, custom wake-word model if it beats Vosk, packaging (PyInstaller) investigation | owner's choice |
 
 ## 13. Open questions for the owner
@@ -1099,3 +1321,7 @@ See the decision list in each ADR. Summary:
 6. Game mode / unloading models while gaming.
 7. ~~STT provider order~~ — **decided** (owner, 2026-10-26, D1): Groq first, local CPU `base`
    fallback, no GPU STT (ADR 0003 amendment).
+8. Desktop shell (slice 5): decisions D1-D9 in [ADR 0009](adr/0009-desktop-shell-mvp.md) —
+   toolkit (PySide6-Essentials), autostart mechanism (Startup-folder shortcut), `luna` without
+   flags = tray mode, single instance also for `--text`, session-only tray toggles, error-only
+   notifications, plain window with English labels, legacy `[ui] autostart`, autostart flags.

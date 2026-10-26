@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from luna.audio.base import SAMPLE_WIDTH_BYTES
-from luna.audio.capture import SAMPLE_RATE, FrameSource, LiveSource, MicSource
+from luna.audio.capture import SAMPLE_RATE, FrameSource, FrameTap, LiveSource, MicSource
 from luna.audio.vad import VoiceActivityDetector
 from luna.config.settings import VoiceSettings
 from luna.core.clock import Clock
@@ -86,10 +86,6 @@ class Recorder:
         """
         self._stop.clear()
         conf = self._conf
-        if live is None:
-            self._vad.reset()
-        else:
-            self._vad.reset(noise_floor=live.noise_floor)
         source: FrameSource = self._mic if live is None else live.frames
         frame_s = conf.frame_ms / 1000
         preroll_frames = conf.preroll_ms // conf.frame_ms
@@ -111,8 +107,13 @@ class Recorder:
             return Utterance(pcm, SAMPLE_RATE, len(pcm) / SAMPLE_WIDTH_BYTES / SAMPLE_RATE, reason)
 
         try:
+            if no_speech_s is not None and no_speech_s <= 0:
+                raise ValueError("no_speech_s must be positive")
             if live is None:
+                self._vad.reset()
                 self._mic.start()
+            else:
+                self._vad.reset(noise_floor=live.noise_floor)
             last_frame_at = self._clock()
             while True:
                 if cancel.is_set():
@@ -121,7 +122,8 @@ class Recorder:
                     return result("stopped", True)
                 frame = source.read(READ_TIMEOUT_S)
                 if frame is None:
-                    if live is not None and getattr(source, "closed", False):
+                    if isinstance(source, FrameTap) and source.closed:
+                        source.read(0)  # raises the stored error (e.g. microphone lost), once
                         return result("cancelled", False)
                     if self._clock() - last_frame_at > self._stall_s:
                         raise AudioError("microphone delivered no audio")
@@ -162,6 +164,9 @@ class Recorder:
             if live is None:
                 self._mic.stop()
             else:
-                close = getattr(source, "close", None)
-                if close is not None:
-                    close()
+                if isinstance(source, FrameTap):
+                    source.close()
+                else:
+                    close = getattr(source, "close", None)
+                    if close is not None:
+                        close()

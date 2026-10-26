@@ -169,3 +169,33 @@ def test_stop_after_speech_keeps_audio_with_lead_in():
 
     u, *_ = record(StoppingSource(tone(20)), lead_in=LEAD, stop=stop)
     assert u.reason == "stopped" and u.pcm16.startswith(LEAD)
+
+
+def test_error_close_after_a_timed_out_read_is_raised_not_cancelled():
+    class RacyTap(FrameTap):
+        """The read times out (None); the listener closes with an error right after it."""
+
+        def read(self, timeout_s):
+            if not self.closed:
+                self.close(AudioError("microphone lost"))
+                return None
+            return super().read(timeout_s)
+
+    tap = RacyTap()
+    with pytest.raises(AudioError, match="microphone lost"):
+        record(tap)
+    assert tap.closed
+
+
+def test_tap_is_closed_even_if_the_vad_reset_fails():
+    tap = FrameTap(tone(5))
+    with pytest.raises(ValueError):
+        record(tap, floor=-1.0)
+    assert tap.closed
+
+
+def test_no_speech_s_must_be_positive():
+    tap = FrameTap()
+    with pytest.raises(ValueError):
+        record(tap, no_speech_s=0)
+    assert tap.closed

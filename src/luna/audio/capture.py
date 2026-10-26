@@ -73,7 +73,7 @@ class FrameTap:
         if max_frames <= 0:
             raise ValueError("max_frames must be positive")
         self.max_frames = max_frames
-        self.dropped = 0
+        self._dropped = 0
         self._frames: deque[bytes] = deque()
         self._cond = threading.Condition()
         self._closed = False
@@ -85,10 +85,15 @@ class FrameTap:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def dropped(self) -> int:
+        with self._cond:
+            return self._dropped
+
     def _append(self, frame: bytes) -> None:
         if len(self._frames) >= self.max_frames:
             self._frames.popleft()
-            self.dropped += 1
+            self._dropped += 1
         self._frames.append(frame)
 
     def push(self, frame: bytes) -> None:

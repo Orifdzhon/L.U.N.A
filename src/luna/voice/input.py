@@ -167,6 +167,7 @@ class VoiceInput:
         self._wake: _Wake | None = None
         self._wake_local: FasterWhisperSTT | None = None  # built for the verifier when needed
         self._wake_failure: str | None = None
+        self._hotkey_failure: str | None = None  # set when only wake mode could start
         self._wake_building = False
         self.notes: list[str] = []  # non-fatal facts, e.g. "groq skipped (no key)"
 
@@ -189,7 +190,11 @@ class VoiceInput:
         self._on_reply, self._on_stale = on_reply, on_stale_reply
 
     def status_line(self) -> str:
-        return f"Listen: on ({self.hotkey_label})" if self._enabled else "Listen: off"
+        if not self._enabled:
+            return "Listen: off"
+        if self._hotkey_failure:
+            return "Listen: on (no hotkey, wake word only)"
+        return f"Listen: on ({self.hotkey_label})"
 
     @property
     def wake_active(self) -> bool:
@@ -220,24 +225,34 @@ class VoiceInput:
             line += " - verification off — false wakes may be sent to cloud STT"
         if state == "FAILED" and self._wake_failure:
             line += f" ({self._wake_failure}; /wake on retries)"
+        parts = self._parts
+        if parts is not None and (stats := parts.frontend.wake_stats)["detections"]:
+            line += (
+                f" | session: {stats['detections']} detected, "
+                f"{stats['accepted']} accepted, {stats['rejected']} rejected"
+            )
         return line
 
     # ---- lifecycle -------------------------------------------------------------------
 
-    def enable(self) -> str | None:
-        """Start listening. Returns None on success or the reason it cannot be done."""
+    def enable(self, *, hotkey_required: bool = True) -> str | None:
+        """Start listening. Returns None on success or the reason it cannot be done.
+
+        ``hotkey_required=False`` (wake mode) tolerates a hotkey that cannot be registered
+        (taken by another program): voice turns still work, only push-to-talk is missing.
+        """
         with self._lock:
             if self._closed:
                 return "the application is shutting down"
             if self._enabled:
-                return None
+                return self._hotkey_failure if hotkey_required else None
             try:
                 parts = self._parts or self._build()
             except _Degraded as exc:
                 return str(exc)
             self._parts = parts
             try:
-                parts.frontend.start()
+                registered = parts.frontend.start(hotkey_required=hotkey_required)
             except ToolError as exc:
                 self._teardown()
                 return str(exc)
@@ -245,6 +260,11 @@ class VoiceInput:
                 logger.warning("hotkey start failed", exc_info=True)
                 self._teardown()
                 return f"could not register the hotkey ({type(exc).__name__})"
+            self._hotkey_failure = (
+                None if registered else f"the hotkey {self.hotkey_label} is not available"
+            )
+            if not registered:
+                self.notes.append(f"{self._hotkey_failure}; wake mode works without it.")
             self._enabled = True
             if parts.local is not None and self._warmup is None:
                 self._warmup = parts.local.start_warm_up()
@@ -256,6 +276,7 @@ class VoiceInput:
             self.disable_wake()
             parts = self._parts
             self._enabled = False
+            self._hotkey_failure = None
         if parts is not None:
             parts.frontend.stop()
 
@@ -294,7 +315,7 @@ class VoiceInput:
                 return None
             if self._settings.wakeword.engine == "off":
                 return "[wakeword] engine is off"
-            reason = self.enable()
+            reason = self.enable(hotkey_required=False)
             if reason is not None:
                 return reason
             parts = self._parts

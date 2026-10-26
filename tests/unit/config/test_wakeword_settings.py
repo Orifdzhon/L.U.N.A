@@ -61,7 +61,11 @@ def test_invalid_values_name_the_field(field, value):
 
 def test_verify_defaults_and_override(tmp_path):
     w = Settings().wakeword
-    assert (w.verify, w.verify_words) == ("local", ["луна", "luna"])
+    assert (w.verify, w.verify_words) == (
+        "local",
+        ["луна", "луну", "луне", "луны", "luna"],
+    )
+    assert w.log_rejects is False
     off = _load(tmp_path, '[wakeword]\nverify = "off"\nverify_words = [" Луна "]\n').wakeword
     assert (off.verify, off.verify_words) == ("off", ["луна"])
 
@@ -73,3 +77,10 @@ def test_verify_cloud_and_blank_words_are_rejected(tmp_path):
         WakeWordSettings(verify_words=[])
     with pytest.raises(ValidationError):
         WakeWordSettings(verify_words=[" "])
+
+
+def test_log_rejects_is_opt_in_and_owner_config_loads_unchanged(tmp_path):
+    assert _load(tmp_path, "[wakeword]\nlog_rejects = true\n").wakeword.log_rejects is True
+    old = _load(tmp_path, '[wakeword]\nenabled = true\nverify_words = ["луна", "luna"]\n')
+    assert old.wakeword.log_rejects is False
+    assert old.wakeword.verify_words == ["луна", "luna"]

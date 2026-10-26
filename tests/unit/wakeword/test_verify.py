@@ -38,6 +38,39 @@ def test_keyword_first_rejects(text):
     assert not keyword_first(text, WORDS)
 
 
+INFLECTED = ["луна", "луну", "луне", "луны", "luna"]
+
+
+LATIN_A = chr(0x61)  # Latin a, looks like Cyrillic a
+LATIN_Y = chr(0x79)  # Latin y, looks like Cyrillic u
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Луну, открой",
+        "луне",
+        "Лун" + LATIN_A + ", привет",
+        "л" + LATIN_Y + "на открой",
+        "Лун" + LATIN_A,
+        "Luna",
+    ],
+)
+def test_keyword_first_accepts_inflections_and_homoglyphs(text):
+    assert keyword_first(text, INFLECTED)
+
+
+@pytest.mark.parametrize(
+    "text", ["лунный", "Лена", "она", "Луной", "lyna", "лун" + LATIN_A + "-парк"]
+)
+def test_keyword_first_still_rejects_look_alikes(text):
+    assert not keyword_first(text, INFLECTED)
+
+
+def test_verify_lead_is_one_second():
+    assert VERIFY_LEAD_MS == 1000
+
+
 def test_keyword_first_yo_and_custom_words():
     assert keyword_first("Ёлка, привет", ["елка"])
     assert not keyword_first("Луна", ["сириус"])

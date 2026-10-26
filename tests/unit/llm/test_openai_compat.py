@@ -13,7 +13,7 @@ from luna.core.errors import (
     RateLimited,
     ToolUseRejected,
 )
-from luna.llm.base import LLMProvider, Message, ToolCall, ToolSchema
+from luna.llm.base import ACTIVE_MODEL_TOKEN, LLMProvider, Message, ToolCall, ToolSchema
 from luna.llm.openai_compat import (
     MAX_PROVIDER_EXTRA_BYTES,
     MAX_RETRY_AFTER_S,
@@ -670,3 +670,18 @@ def test_other_failed_precondition_stays_request_error(error: dict) -> None:
     respx.post(URL).respond(400, json=[{"error": error}])
     with pytest.raises(ProviderRequestError):
         ask(make())
+
+
+@respx.mock
+def test_active_model_token_is_filled_in_system_messages_only() -> None:
+    route = respx.post(URL).respond(json=completion())
+    make().chat(
+        [
+            Message("system", f"you run on {ACTIVE_MODEL_TOKEN}"),
+            Message("user", f"say {ACTIVE_MODEL_TOKEN}"),
+        ],
+        timeout_s=5,
+    )
+    msgs = sent(route)["messages"]
+    assert msgs[0]["content"] == "you run on groq/test-model"
+    assert msgs[1]["content"] == f"say {ACTIVE_MODEL_TOKEN}"

@@ -144,6 +144,9 @@ class STTLocalSettings(_Section):
 class STTSettings(_Section):
     # Order = fallback order. Provisional default (owner decision D1): groq first, local fallback.
     chain: list[Literal["groq", "local"]] = Field(default_factory=lambda: ["groq", "local"])
+    # Language sent to the engines: "ru" (default), "en", any ISO code, or "auto" = detect.
+    language: str = "ru"
+    # Deprecated and ignored: superseded by ``language`` (kept so an old luna.toml still loads).
     language_hints: list[str] = Field(default_factory=lambda: ["ru", "en"])
     prompt: str = Field(default="", max_length=500)  # bias text for brand / app names
     timeout_s: float = Field(default=5.0, gt=0)
@@ -162,6 +165,14 @@ class STTSettings(_Section):
                 )
                 data = {k: v for k, v in data.items() if k not in legacy}
         return data
+
+    @field_validator("language")
+    @classmethod
+    def _language_valid(cls, value: str) -> str:
+        value = value.strip().lower() if isinstance(value, str) else value
+        if value != "auto" and not re.fullmatch(r"[a-z]{2,3}", str(value)):
+            raise ValueError("language must be 'auto' or an ISO code like 'ru' or 'en'")
+        return value
 
     @field_validator("chain")
     @classmethod

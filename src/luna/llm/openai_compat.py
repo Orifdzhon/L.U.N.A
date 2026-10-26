@@ -32,7 +32,7 @@ from luna.core.errors import (
     RateLimited,
     ToolUseRejected,
 )
-from luna.llm.base import ChatResponse, Message, ToolCall, ToolSchema
+from luna.llm.base import ChatResponse, Message, ToolCall, ToolSchema, fill_active_model
 from luna.logs.redact import redact_text
 
 log = logging.getLogger(__name__)
@@ -133,7 +133,9 @@ class OpenAICompatProvider:
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "model": self.model,
-            "messages": [_message_to_wire(m, self.name) for m in messages],
+            "messages": [
+                _message_to_wire(m, self.name, f"{self.name}/{self.model}") for m in messages
+            ],
         }
         if tools:
             params["tools"] = [
@@ -345,14 +347,17 @@ def _extra_content_for(call: ToolCall, provider: str) -> dict[str, Any] | None:
     return content if isinstance(content, dict) and content else None
 
 
-def _message_to_wire(message: Message, provider: str) -> dict[str, Any]:
+def _message_to_wire(message: Message, provider: str, active_model: str = "") -> dict[str, Any]:
     if message.role == "tool":
         return {
             "role": "tool",
             "tool_call_id": message.tool_call_id,
             "content": message.content,
         }
-    wire: dict[str, Any] = {"role": message.role, "content": message.content}
+    content = message.content
+    if message.role == "system":
+        content = fill_active_model(content, active_model)
+    wire: dict[str, Any] = {"role": message.role, "content": content}
     if message.tool_calls:
         wire["tool_calls"] = []
         for call in message.tool_calls:

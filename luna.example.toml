@@ -74,7 +74,7 @@ first_chunk_max_chars = 200 # size limit of the first spoken chunk, for a quick 
 [stt]
 # Engines are tried in this order; "groq" is skipped when GROQ_API_KEY is missing.
 chain = ["groq", "local"]     # groq | local, no duplicates, not empty
-language_hints = ["ru", "en"]
+language = "ru"               # language of your speech: ru | en | any ISO code | auto (detect)
 prompt = ""                   # optional bias text with app / brand names (<= 500 chars)
 timeout_s = 5.0               # per-engine limit, seconds (> 0)
 # Old keys provider / model / device / compute_type are ignored with a warning.

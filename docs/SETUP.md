@@ -175,7 +175,7 @@ Engines are tried in `[stt] chain` order, default `["groq", "local"]`:
   drive D) set `[stt.local] model_dir = "D:/LUNA/models"`.
 
 `/listen` prints which engines are active (`Speech recognition: groq -> local.`) and which were
-skipped and why. Other `[stt]` keys: `language_hints` (default `["ru", "en"]`), `prompt` (bias text
+skipped and why. Other `[stt]` keys: `language` (default `"ru"`; `"en"`, another ISO code, or `"auto"` to let the engine detect; auto-detect often mis-hears Russian as Korean or Chinese), `prompt` (bias text
 with app or brand names), `timeout_s` (per-engine limit, default 5). `[stt.local] model = "small"`
 is more accurate and about twice as slow. `device = "cuda"` needs NVIDIA cuBLAS 12 and cuDNN 9
 installed separately (not bundled); on CPU the default is the safe choice.

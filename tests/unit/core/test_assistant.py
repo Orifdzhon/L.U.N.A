@@ -549,3 +549,24 @@ def test_answer_prompt_forbids_claiming_no_internet() -> None:
 
     assert "never say you lack internet" in build_answer_prompt("en", "NOW")
     assert "никогда не говори" in build_answer_prompt("ru", "NOW")
+
+
+@pytest.mark.parametrize("lang", ["en", "ru"])
+def test_identity_block_in_both_prompts(lang: str) -> None:
+    from luna.core.prompts import build_answer_prompt, build_system_prompt
+    from luna.llm.base import ACTIVE_MODEL_TOKEN
+
+    for prompt in (build_system_prompt(lang, "NOW"), build_answer_prompt(lang, "NOW")):
+        assert "Orif" in prompt and "Apache-2.0" in prompt
+        assert "OpenAI, Google" in prompt  # stated as NOT made by them
+        assert ACTIVE_MODEL_TOKEN in prompt
+        assert "created by OpenAI" not in prompt and "компанией OpenAI" not in prompt
+
+
+def test_prompt_with_identity_reaches_the_llm(tmp_path: Path) -> None:
+    from luna.llm.base import ACTIVE_MODEL_TOKEN
+
+    w = World(tmp_path, [say("Orif made me")])
+    w.ask("who created you?")
+    system = w.llm.calls[0].messages[0].content or ""
+    assert "Orif" in system and ACTIVE_MODEL_TOKEN in system  # the provider fills the token in

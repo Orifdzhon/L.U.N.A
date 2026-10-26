@@ -740,7 +740,7 @@ class VoiceFrontEnd:
     def _transcribe(
         self, turn: _Turn, utt: Utterance, spans: dict[str, float]
     ) -> Transcript | None:
-        hints = self._stt_conf.language_hints
+        language = self._stt_conf.language
         while not self._stt_lock.acquire(timeout=0.05):  # a superseded turn may still be busy
             if turn.cancel.is_set():
                 return None
@@ -749,7 +749,7 @@ class VoiceFrontEnd:
             transcript = self._stt.transcribe(
                 utt.pcm16,
                 utt.sample_rate,
-                lang_hint=hints[0] if len(hints) == 1 else None,
+                lang_hint=None if language == "auto" else language,
                 prompt=self._stt_conf.prompt or None,
                 timeout_s=self._stt_conf.timeout_s,
             )

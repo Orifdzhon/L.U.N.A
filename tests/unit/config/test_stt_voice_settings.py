@@ -110,3 +110,29 @@ def test_custom_stt_key_env_registered():
     s.with_api_keys({"MY_STT_KEY": "k-1234"})
     assert "k-1234" in s.secret_values()
     assert s.available_stt_engines() == ["groq", "local"]
+
+
+def test_language_defaults_to_ru():
+    assert Settings().stt.language == "ru"
+
+
+@pytest.mark.parametrize("value", ["ru", "en", "auto", "de"])
+def test_language_accepted(tmp_path, value):
+    assert _load(tmp_path, f'[stt]\nlanguage = "{value}"\n').stt.language == value
+
+
+@pytest.mark.parametrize("value", ["", "russian", "r", "ru-RU", "1"])
+def test_language_invalid_is_config_error(tmp_path, value):
+    with pytest.raises(ConfigError):
+        _load(tmp_path, f'[stt]\nlanguage = "{value}"\n')
+
+
+def test_owner_legacy_stt_config_still_loads(tmp_path, caplog):
+    text = (
+        '[stt]\nprovider = "faster_whisper"\nmodel = "base"\ndevice = "cuda"\n'
+        'compute_type = "float16"\nlanguage_hints = ["ru", "en"]\n'
+    )
+    with caplog.at_level("WARNING"):
+        s = _load(tmp_path, text)
+    assert s.stt.language == "ru"
+    assert "deprecated [stt] keys" in caplog.text

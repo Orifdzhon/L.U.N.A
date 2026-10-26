@@ -251,6 +251,16 @@ def test_happy_path_events_request_and_reply(make):
     assert h.replies[0].text == "answer"
     call = h.stt.calls[0]
     assert call.pcm16 == PCM and call.prompt is None and call.timeout_s == 5.0
+    assert call.lang_hint == "ru"  # [stt] language defaults to ru: no Whisper auto-detect
+
+
+@pytest.mark.parametrize(("language", "expected"), [("auto", None), ("en", "en")])
+def test_stt_language_setting_reaches_the_engine(make, language, expected):
+    h = make([SPOKEN])
+    h.fe._stt_conf = STTSettings(language=language)
+    h.hotkey.press()
+    wait_for(lambda: bool(h.replies))
+    assert h.stt.calls[0].lang_hint == expected
 
 
 def test_press_while_speaking_stops_speech_before_mic(make):

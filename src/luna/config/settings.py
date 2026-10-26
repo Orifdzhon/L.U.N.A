@@ -233,6 +233,44 @@ class VoiceSettings(_Section):
         return self
 
 
+class WakeWordSettings(_Section):
+    enabled: bool = False  # opt-in (--wake / /wake); the microphone is never opened otherwise
+    engine: Literal["vosk", "off"] = "vosk"
+    keywords: list[str] = Field(default_factory=lambda: ["луна"])
+    threshold: float = Field(default=0.5, ge=0, le=1)  # detector confidence, 0..1
+    cooldown_s: float = Field(default=2.0, ge=0)  # ignore repeated triggers for this long
+    model: str = Field(default="small-ru", min_length=1)
+    # None = resolved later to %LOCALAPPDATA%\LUNA\models (like [stt.local]).
+    model_dir: Path | None = None
+    mute_while_speaking: bool = True  # do not listen while L.U.N.A. speaks (no self-trigger)
+    speaking_tail_ms: int = Field(default=400, ge=0, le=5000)  # extra mute after speech ends
+    command_timeout_s: float = Field(default=5.0, gt=0, le=60)  # wait for a command after the word
+    cue: Literal["off", "beep"] = "off"  # sound played when the keyword is heard
+    follow_up_s: float = Field(default=0.0, ge=0, le=30)  # 0 = off; keep listening after a reply
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "hotkey" in data:
+            _log.warning("[wakeword] hotkey is ignored, use [voice] hotkey")
+            data = {k: v for k, v in data.items() if k != "hotkey"}
+        return data
+
+    @field_validator("engine", mode="before")
+    @classmethod
+    def _engine_known(cls, value: Any) -> Any:
+        if value == "onnx":
+            raise ValueError("engine 'onnx' is not supported yet; use 'vosk' or 'off'")
+        return value
+
+    @field_validator("keywords")
+    @classmethod
+    def _keywords_valid(cls, value: list[str]) -> list[str]:
+        if not value or any(not word.strip() for word in value):
+            raise ValueError("keywords must be a non-empty list of non-blank words")
+        return [word.strip().lower() for word in value]
+
+
 class Settings(_Section):
     app: AppSettings = Field(default_factory=AppSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
@@ -241,8 +279,8 @@ class Settings(_Section):
     tts: TTSSettings = Field(default_factory=TTSSettings)
     stt: STTSettings = Field(default_factory=STTSettings)
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
-    # Not validated yet: owned by later Issues (wake word, UI); accepted and ignored.
-    wakeword: dict[str, Any] = Field(default_factory=dict)
+    wakeword: WakeWordSettings = Field(default_factory=WakeWordSettings)
+    # Not validated yet: owned by a later Issue (UI); accepted and ignored.
     ui: dict[str, Any] = Field(default_factory=dict)
 
     # env-variable name -> secret value; never serialized, never in repr().

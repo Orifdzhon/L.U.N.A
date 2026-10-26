@@ -18,7 +18,7 @@ added in later slices.
 | Runtime | Python 3.13, `uv`, `ruff`, `pytest`, src layout | Python 3.12 if a dependency breaks | [0001](adr/0001-python-version-packaging-tooling.md) |
 | LLM | One OpenAI-compatible client; chain Groq `openai/gpt-oss-120b` → Gemini `gemini-3.5-flash-lite` → local LM Studio (`[llm] chain = ["groq", "gemini", "local"]`) | native `google-genai` SDK if the compat layer breaks | [0002](adr/0002-llm-providers-and-tool-calling.md) + amendments |
 | STT | `STTChain`: Groq `whisper-large-v3-turbo` → local `faster-whisper` `base` on CPU int8; toggle push-to-talk hotkey + energy VAD | `[stt.local] device = "auto"` (CUDA probed; unused on the reference PC); `small` model | [0003](adr/0003-speech-to-text.md) + amendment |
-| Wake word | Opt-in wake mode (slice 4): one always-on mic stream owned by `WakeListener`, energy-VAD gate, Vosk `small-ru` grammar spotter ("луна"), half-duplex while speaking; the hotkey keeps working | custom ONNX model only if #115 misses the targets; Porcupine rejected | [0004](adr/0004-wake-word.md) + slice-4 amendment |
+| Wake word | Opt-in wake mode (slice 4): one always-on mic stream owned by `WakeListener`, energy-VAD gate, Vosk `small-ru` grammar spotter ("луна") as stage 1, local faster-whisper `base` check "starts with Луна" as stage 2 (`[wakeword] verify = "local"`), half-duplex while speaking; the hotkey keeps working | `verify = "off"`; custom ONNX model only if #115 misses the targets; Porcupine rejected | [0004](adr/0004-wake-word.md) + slice-4 amendment + amendment 2 |
 | TTS | `FallbackTTS`: Edge online neural voices (`ru-RU-SvetlanaNeural`, `en-US-JennyNeural`) → Windows SAPI (Irina / Zira) on failure; playback via `sounddevice` | `[tts] provider = "sapi"` (local only); Piper later/optional (#63) | [0005](adr/0005-text-to-speech.md) + amendments 1-2 |
 | Web search | `ddgs` metasearch + `trafilatura` extraction | self-hosted SearXNG; Tavily free key | [0006](adr/0006-web-search.md) |
 | Desktop shell | PySide6 (tray + window), Win32 `RegisterHotKey`, HKCU `Run` autostart | tkinter + pystray | [0007](adr/0007-desktop-shell.md) |
@@ -61,7 +61,7 @@ added in later slices.
 | Audio | `luna.audio` | `AudioClip`, `AudioPlayer` protocol + interruptible `sounddevice` playback (slice 2); `MicSource` / `SoundDeviceMic` capture, `RingBuffer`, `EnergyVAD`, utterance `Recorder` (slice 3); `FrameSource` / `FrameTap` / `LiveSource` so a recording can continue from the wake listener's live stream (slice 4). |
 | STT | `luna.stt` | `STTProvider` protocol, `Transcript`, `STTChain` (fallback + cooldown), `GroqWhisperSTT` (default), `FasterWhisperSTT` (local CPU fallback). |
 | TTS | `luna.tts` | `TTSProvider` protocol, `EdgeTTS` (default, online neural voices), `SapiTTS` (local fallback), `FallbackTTS`, speech text preparation (`text`), `Speaker` worker (explicit `speak(reply)` from the UI; exposes `active` + activity listeners for half-duplex); `PiperTTS` later/optional. |
-| Wake word | `luna.wakeword` | `WakeWordDetector` protocol, `WakeEvent`, `VoskKeywordSpotter`, `WakeListener` (owns the always-on mic stream, VAD gate, holds/tail/cooldown, taps, follow-up window). `OnnxWakeWord` only after spike #116. |
+| Wake word | `luna.wakeword` | `WakeWordDetector` protocol, `WakeEvent`, `VoskKeywordSpotter`, `WakeListener` (owns the always-on mic stream, VAD gate, holds/tail/cooldown, taps, follow-up window), `WakeVerifier` second stage (`FasterWhisperVerifier` sharing the local STT model, `PassThroughVerifier`; ADR 0004 amendment 2). `OnnxWakeWord` only after spike #116. |
 | Voice front-end | `luna.voice` | `VoiceFrontEnd`: turn state machine IDLE → LISTENING → TRANSCRIBING → HANDLING (§4.2) for hotkey, wake and follow-up turns; barge-in; latency spans. `WakeModelStore` (`voice/wake_model.py`: lazy verified Vosk model download). `VoiceInput`: lazy assembly (STT chain, mic, recorder, hotkey, wake listener), degraded start, `/mic` diagnostic, `/wake on` / `/wake off`. |
 | UI | `luna.ui` | `cli` (REPL, slice 1) and `qt` (tray, popup window, status indicator, slice 5). |
 | Logging | `luna.logs` | App log (rotating text) and action log (JSONL, F9). |
@@ -129,6 +129,8 @@ src/luna/
     base.py               # WakeWordDetector, WakeEvent (#104)
     vosk_spotter.py       # VoskKeywordSpotter, lazy `import vosk` (#105)
     listener.py           # WakeListener, WakeGate, WakeState (#108, #109)
+    verify.py             # WakeVerifier, VerifyResult, FasterWhisperVerifier, PassThroughVerifier,
+                          # keyword_first(), verify_window() (ADR 0004 amendment 2)
     onnx_wakeword.py      # only if spike #116 wins
   voice/
     wake_model.py         # WakeModelStore: download, SHA-256, safe unzip (#106, PR #118)
@@ -256,6 +258,11 @@ class FasterWhisperSTT:
     def warm_up(self) -> None: ...                    # blocking load
     def start_warm_up(self) -> threading.Thread: ...  # background load, errors logged
     resolved_device: str | None                       # "cpu" / "cuda" after loading
+    # ADR 0004 amendment 2: short-clip decode for the wake verifier, same model + decode lock
+    def transcribe_short(self, pcm16: bytes, *, language: str = "ru",
+                         max_new_tokens: int = 12) -> Transcript: ...
+    # beam 1, without_timestamps=True, condition_on_previous_text=False, vad_filter=False,
+    # NO initial_prompt / hotwords; same silence filter and errors as transcribe()
 ```
 
 ```python
@@ -275,6 +282,10 @@ class FrameTap:                                   # slice 4 (#107): a FrameSourc
     def __init__(self, backlog: Iterable[bytes] = (), max_frames: int = 400) -> None: ...
     def push(self, frame: bytes) -> None: ...     # listener thread; never blocks, drops oldest
     def read(self, timeout_s: float) -> bytes | None: ...   # backlog first, then live frames
+    def peek(self, n_frames: int, timeout_s: float) -> list[bytes]: ...   # amendment 2
+    # waits until n_frames are queued, the tap is closed, or the timeout; returns the first
+    # min(n, queued) frames WITHOUT consuming them (the wake verifier window, taken by the
+    # turn thread before its Recorder starts reading the same tap)
     def close(self, error: AudioError | None = None) -> None: ...
     # close() wakes a blocked read(): afterwards read() returns None (closed=True), or raises
     # `error` once (microphone lost). Idempotent, thread-safe.
@@ -340,15 +351,20 @@ class VoiceFrontEnd:
     def stop(self) -> None: ...       # unregisters, cancels the active turn
     def close(self, timeout: float = 2.0) -> None: ...
     # slice 4 (#110, #113):
-    def set_live(self, live: LiveAudio | None, wake: WakeWordSettings | None = None) -> None: ...
+    def set_live(self, live: LiveAudio | None, wake: WakeWordSettings | None = None,
+                 verifier: WakeVerifier | None = None) -> None: ...
     # called by VoiceInput on /wake on|off; with live set, EVERY turn (hotkey, wake, follow-up)
     # records from live.open_tap(...) instead of opening the mic. set_live(None) cancels a turn
-    # that is still LISTENING on a tap (later stages finish normally).
+    # that is still LISTENING on a tap (later stages finish normally). verifier None = no second
+    # stage (same as PassThroughVerifier); the front end owns the single "luna-verify" worker.
     def on_wake(self, trigger: WakeTrigger) -> bool: ...
     # runs on the luna-wake thread, never blocks: False if not IDLE / stopped / closed (the
     # listener then closes the tap); True: a turn of kind "wake" (or "follow_up" when
-    # trigger.event is None) starts: optional cue, hold "turn:<id>", Recorder.record(live=trigger.source,
-    # no_speech_s=wake.command_timeout_s). Transcript that is only the keyword → IDLE silently.
+    # trigger.event is None) starts: hold "turn:<id>", Recorder.record(live=trigger.source,
+    # no_speech_s=wake.command_timeout_s). Kind "wake" with a verifier: the verification runs in
+    # parallel with the recording; StatusChanged(LISTENING), cue and speaker.stop() wait for the
+    # accept; a reject cancels the recording silently (§4.2). Transcript that is only the
+    # keyword → IDLE silently.
 
 class LiveAudio(Protocol):            # implemented by WakeListener; what the front end needs
     def open_tap(self, preroll_ms: int, *, skip_ms: int = 0) -> LiveSource: ...
@@ -365,8 +381,11 @@ class VoiceInput:
     def measure(self, seconds: float = 3.0) -> MicLevels: ...   # /mic: floor, peak, suggestion
     # slice 4 (#111): wake mode needs the push-to-talk parts, so enable_wake() calls enable()
     def enable_wake(self, progress: Callable[[str], None] | None = None) -> str | None: ...
-    # blocking: first call downloads the model (progress lines), loads Vosk, starts the
-    # listener (opens the mic), frontend.set_live(listener); returns the degrade reason or None
+    # blocking: first call downloads the model (progress lines), loads Vosk, builds and warms
+    # the verifier ([wakeword] verify = "local": FasterWhisperVerifier on the chain's
+    # FasterWhisperSTT instance, or one built from [stt.local]; a failed warm-up → note +
+    # PassThroughVerifier), starts the listener (opens the mic), frontend.set_live(listener,
+    # wake, verifier); returns the degrade reason or None
     def disable_wake(self) -> None: ...   # frontend.set_live(None), then listener.stop() (mic closed)
     def close(self) -> None: ...
     # /mic while wake mode is on reads through a tap (no second stream); refused during a turn
@@ -481,6 +500,42 @@ class WakeListener:            # implements LiveAudio
     def set_hold(self, reason: str, active: bool) -> None: ...
     def open_window(self, seconds: float) -> None: ...
 # WakeGate (same module): pure, clock-driven hold/tail/cooldown/window logic, unit-tested alone.
+
+# luna/wakeword/verify.py: second stage (ADR 0004 amendment 2, D15)
+VERIFY_LEAD_MS = 700        # end of lead_in (the keyword) ...
+VERIFY_AFTER_MS = 700       # ... + this much audio after the cut  → ~1.4 s window
+VERIFY_TIMEOUT_S = 3.0      # no result by then → fail open (reason "timeout")
+
+@dataclass(frozen=True)
+class VerifyResult:
+    accepted: bool
+    reason: Literal["keyword", "no_keyword", "empty", "off", "error", "timeout"]
+    text: str = ""              # what the verifier heard; logged at DEBUG only
+    latency_s: float = 0.0      # decode wall time
+
+class WakeVerifier(Protocol):
+    name: str                   # "local" | "off"
+    def warm_up(self) -> None: ...                 # blocking; ProviderUnavailable if unusable
+    def verify(self, pcm16: bytes) -> VerifyResult: ...
+    # 16 kHz mono PCM16; never raises: a decode error → VerifyResult(True, "error") (fail open)
+    def close(self) -> None: ...
+
+class FasterWhisperVerifier:    # name "local"
+    def __init__(self, stt: FasterWhisperSTT, words: Sequence[str], *,
+                 fail_open: bool = True, clock: Clock = time.perf_counter) -> None: ...
+    # verify(): stt.transcribe_short(pcm16, language="ru") → keyword_first(text, words)
+    # warm_up(): stt.warm_up() + one decode of 0.5 s of silence (primes CTranslate2)
+    # close(): no-op - the model belongs to the STT provider
+
+class PassThroughVerifier:      # name "off": verify() → VerifyResult(True, "off"); also the
+    def __init__(self, reason: str | None = None) -> None: ...   # degraded fallback
+
+def keyword_first(text: str, words: Sequence[str]) -> bool: ...
+# NFC, lower, ё→е; tokens = letter runs with inner hyphens; True iff tokens[0] in words.
+# Exact match, no fuzzy distance ("лена", "луну", "она" are 1-2 edits away from "луна").
+def verify_window(lead_in: bytes, after: Sequence[bytes], lead_ms: int = VERIFY_LEAD_MS,
+                  after_ms: int = VERIFY_AFTER_MS) -> bytes: ...
+# last lead_ms of lead_in + first after_ms of the frames after the cut; shared with bench_wake.py
 ```
 
 ```python
@@ -667,12 +722,23 @@ luna-wake: mic.read() → position += 480 → ring (2 s) → [tap.push if a tap 
                   tap = FrameTap(backlog); trigger = WakeTrigger(LiveSource(tap, lead_in, vad.noise_floor), event)
                   enter HELD (cooldown); release the listener lock; frontend.on_wake(trigger)
                     └─ False (frontend busy) → tap.close(); stays HELD until the cooldown ends
-VoiceFrontEnd.on_wake (luna-wake thread, non-blocking): IDLE only → speaker.stop(); new turn
-           kind="wake"; set_hold("turn:<id>", True); start thread luna-voice
-luna-voice: [cue beep if [wakeword] cue = "beep"] → Recorder.record(cancel, stop=turn.stop,
-           live=trigger.source, no_speech_s=command_timeout_s (5 s))
+VoiceFrontEnd.on_wake (luna-wake thread, non-blocking): IDLE only → new turn kind="wake";
+           set_hold("turn:<id>", True); start thread luna-voice
+           (verify = "off" / no verifier: speaker.stop() here, as before)
+luna-voice: verify = "local" (ADR 0004 amendment 2; kind "wake" only):
+             after = tap.peek(VERIFY_AFTER_MS / 30 frames, timeout ≈ 0.9 s)   ← non-consuming
+             window = verify_window(lead_in, after)  (~1.4 s: keyword + 700 ms after the cut)
+             future = luna-verify.submit(verifier.verify, window)
+               accept → speaker.stop(); StatusChanged(LISTENING); cue beep if enabled
+               reject → turn.cancel.set() → Recorder returns "cancelled" → IDLE SILENTLY
+                        (no status, no beep, no STT; INFO "wake rejected" with verify_ms)
+           verify = "off": StatusChanged(LISTENING); [cue beep if [wakeword] cue = "beep"]
+           → Recorder.record(cancel, stop=turn.stop, live=trigger.source,
+                             no_speech_s=command_timeout_s (5 s))   ← runs WHILE verifying
            └─ backlog frames are VAD'ed like live audio → one-breath command already inside
            └─ no speech within 5 s → IDLE silently (no STT, nothing leaves the machine)
+           → recording ended: wait for the verify result (VERIFY_TIMEOUT_S = 3 s from submit;
+             timeout or error → fail open); rejected → IDLE silently
            → STTChain → strip leading "Луна"/"Luna" → empty → IDLE silently
            → Orchestrator.handle(Request(..., source="voice")) → on_reply → Speaker.speak (hold "speaking")
            finally: set_hold("turn:<id>", False)  ← after speak(), so holds overlap, no gap
@@ -690,13 +756,31 @@ Rules:
 - **Holds** are a set of names (`set_hold(name, active)` is idempotent); turn holds carry the
   request id, so a superseded turn releasing its hold cannot unmute the detector under a new turn.
 - **Cue (D8):** `[wakeword] cue = "beep"` plays the 80 ms beep on the turn thread after the tap is
-  open; it is shorter than `min_speech_ms`, so the VAD ignores its echo. Off by default.
+  open (with verification: on the `luna-verify` thread when the verifier accepts, so a rejected
+  wake never beeps); it is shorter than `min_speech_ms`, so the VAD ignores its echo. Off by default.
+- **Second stage (D15, ADR 0004 amendment 2, `[wakeword] verify = "local"` default):**
+
+  | Situation | Behaviour |
+  |---|---|
+  | Verifier accepts (first token of the ~1.4 s window is `луна`/`luna`) | turn continues; status/cue published now; the recording was never interrupted |
+  | Verifier rejects ("лунный", "Лена", "она", noise, ...) | recording cancelled, turn hold released, **no status, no beep, nothing spoken or sent**; the listener re-arms after the detection's 2 s cooldown |
+  | Verifier error / no result within 3 s | **fail open**: treated as accepted, WARNING once per reason; at `/wake on` a model that cannot load → `PassThroughVerifier` + a note |
+  | Hotkey press while unverified | usual early stop; verification is overridden (late result ignored) |
+  | Recording ends before the verdict (short command) | the turn waits for the verdict (≤ 3 s from submit), then STT or silent exit |
+  | Hotkey turn, follow-up turn (`event is None`) | not verified |
+
+  The verifier transcript is never used as the command transcript (the command goes through
+  `STTChain` as before). One `luna-verify` worker: checks never overlap; the decode lock of the
+  shared `FasterWhisperSTT` serializes them with a local-STT fallback call.
 - **Status:** a wake turn publishes the same `StatusChanged` sequence as a hotkey turn; the
   listener publishes `WakeStateChanged` (`armed`/`held`/`off`/`failed`) for the indicator.
-  INFO line per wake turn: `wake_to_listening_ms`, `capture_ms`, `stt_ms`, `handle_ms`, confidence.
-  No audio, no transcript at INFO.
+  INFO line per wake turn: `wake_to_listening_ms`, `verify` (accepted/rejected/error/timeout/off),
+  `verify_ms`, `capture_ms`, `stt_ms`, `handle_ms`, confidence. No audio, no transcript at INFO
+  (the verifier's text at DEBUG only).
 - **Privacy:** before a keyword, audio lives only in the 2 s ring buffer and the tap queue in
-  memory; nothing is stored or sent. `/wake off` closes the stream at once and clears both.
+  memory; nothing is stored or sent. The verification window is decoded locally; a rejected wake
+  never leaves the machine, only accepted wakes reach `STTChain` (Groq first). `/wake off`
+  closes the stream at once and clears both.
   The REPL shows `Wake: on|paused|off|failed` and warns on `/wake on` that the mic stays open.
 
 **Follow-up window** (D9, #113; `[wakeword] follow_up_s = 0` = off, ~6 when on; wake mode only)
@@ -730,12 +814,14 @@ receives them via a `QObject` bridge that re-emits them as Qt signals on the GUI
 | `luna-hotkey-cb` | runs `VoiceFrontEnd._on_press` from a bounded queue (8): flips state, signals events, starts a turn thread; never records or waits |
 | `luna-voice` (one per turn, daemon) | record (VAD) → STT → `Orchestrator.handle(request, cancel)` and waits for it; a press can cancel the turn and start the next one at once |
 | `stt-warm-up` (daemon, once) | loads the local faster-whisper model in the background when listening is enabled |
+| `luna-verify` (slice 4, one worker while wake mode is on with `verify = "local"`) | `ThreadPoolExecutor(max_workers=1)` owned by `VoiceFrontEnd`: runs `WakeVerifier.verify` (~1 s CPU decode) in parallel with the turn's recording; its done-callback only sets the turn's events and publishes status/cue under the front end's rules (it takes the front end lock briefly, never the listener lock first). Shut down on `set_live(None)` / `close()`; a running decode cannot be interrupted, its result is ignored |
 | `luna-speaker`, `luna-speaker-cancel`, `luna-speaker-tts` | `Speaker` worker: synthesize chunk N+1 while chunk N plays (slice 2); activity callbacks (slice 4) run on these threads or the caller of `speak()`/`stop()` |
 | `luna-req-<id>` (one per request, daemon) | orchestrator turn: router, LLM calls, tools. Turns are serialized by a turn lock, so typed and voice requests never run concurrently (no races on dialog state); the caller (REPL or `luna-voice`) waits for the reply, the timeout or its cancel event |
 | Piper subprocess | later/optional: separate **process** (license boundary, ADR 0005) |
 
-Wake mode adds exactly one long-lived thread (`luna-wake`) plus the long-lived PortAudio
-callback. The model download and Vosk model load run synchronously in the caller of
+Wake mode adds one long-lived thread (`luna-wake`) plus the long-lived PortAudio callback, and,
+with verification on, the `luna-verify` worker (idle except for ~1 s after each Vosk detection,
+while the listener is held, so it never competes with Vosk decoding). The model download and Vosk model load run synchronously in the caller of
 `VoiceInput.enable_wake()` (REPL / startup; one-time, with progress lines; Ctrl+C aborts),
 not in an extra thread. CPU budget on the reference i3-12100F (4C/8T), measured in #115:
 < 1 % total in a quiet room (VAD only), <= 5 % total averaged over room speech/TV, and zero
@@ -747,7 +833,10 @@ lock, never the reverse. Speaker activity callbacks only call `WakeListener.set_
 listener calls `on_wake` and publishes events after releasing its own lock; the front end never
 subscribes to Speaker activity (the follow-up window is driven by the listener's re-arm).
 `WakeListener.stop()` joins `luna-wake`, so it is never called while holding the front end's lock
-(`disable_wake`: `set_live(None)` returns first, then `stop()`).
+(`disable_wake`: `set_live(None)` returns first, then `stop()`). The `luna-verify` done-callback
+follows the same order: it checks under the front end lock that its turn is still current and
+unverified, records the verdict, releases the lock, and only then calls `speaker.stop()`,
+publishes status, beeps or sets `turn.cancel`.
 
 Why not asyncio:
 - The heavy work is blocking C/C++ code (CTranslate2, ONNX Runtime, Vosk, PortAudio)
@@ -836,6 +925,10 @@ speaking_tail_ms = 400          # detector stays muted this long after speech en
 command_timeout_s = 5.0         # wait this long for the command after the keyword
 cue = "off"                     # "off" | "beep" (D8)
 follow_up_s = 0.0               # 0 = off (D9); ~6 when on; max 30
+verify = "local"                # "local" | "off": 2nd stage, faster-whisper [stt.local] model checks
+                                # that the utterance starts with the address (ADR 0004 amendment 2);
+                                # [stt.local] model = "small" makes it ~2x slower
+verify_words = ["луна", "luna"] # accepted first words (exact, lower case, ё = е)
 # hotkey = "..."                # LEGACY: accepted, ignored with one warning (the hotkey is [voice] hotkey)
 
 [search]
@@ -897,6 +990,10 @@ wake mode" and implies listening (`[voice] listen`).
   be opened → `enable_wake()` returns the reason, push-to-talk stays on if it could start. A mic
   lost while wake mode is on → listener `FAILED`, `WakeStateChanged(failed, reason)`, the mic is
   closed, `/wake on` retries (no automatic reconnect in slice 4).
+- The wake verifier **fails open** (ADR 0004 amendment 2, item 9): if the faster-whisper model
+  cannot be loaded at `/wake on`, wake mode starts with `PassThroughVerifier` and a note
+  ("Wake verification unavailable (<reason>); every detection starts a turn"); a decode error or
+  a verdict later than 3 s accepts the wake with one WARNING per reason. Never deaf, never a crash.
 
 ## 9. Safety
 
@@ -933,7 +1030,7 @@ wake mode" and implies listening (`[voice] listen`).
 | Provider contract (CI) | request/response mapping of `OpenAICompatProvider`, ddgs/SearXNG parsing, Groq STT client | recorded HTTP fixtures via `respx` (httpx mock); no network |
 | Platform (CI on `windows-latest`) | `Get-StartApps` JSON parsing, autostart registry logic | parsing tested on fixture JSON; registry calls behind an injectable `winreg`-like wrapper, real registry never touched in tests |
 | Integration (opt-in) | real Gemini/Groq/Ollama tool calls, real search, faster-whisper on fixture WAVs | markers `live`, `gpu`, `audio`; `pytest -m live` run manually with keys |
-| Wake word (CI, slice 4) | `WakeGate` holds/tail/cooldown/window with a fake clock; listener with `FakeMic` frames + `FakeWakeWord` (scripted events at given positions): cut/lead_in/backlog math, one-breath and pause cases, reply-containing-keyword never fires while held, `/wake off` closes the mic, mic loss → `FAILED`; `Recorder(live=...)` never calls `mic.start/stop`; Speaker activity transitions; settings legacy keys | `pytest`; no `vosk` import, no model, no microphone (Vosk only under the `audio` marker / `bench_wake.py`) |
+| Wake word (CI, slice 4) | `WakeGate` holds/tail/cooldown/window with a fake clock; listener with `FakeMic` frames + `FakeWakeWord` (scripted events at given positions): cut/lead_in/backlog math, one-breath and pause cases, reply-containing-keyword never fires while held, `/wake off` closes the mic, mic loss → `FAILED`; `Recorder(live=...)` never calls `mic.start/stop`; Speaker activity transitions; settings legacy keys; `keyword_first` table (accept "Луна, открой", "луна.", "Luna"; reject "лунный", "Лена", "она", "Луначарский", "Луна-парк", "на луну", ""); `verify_window` math; `FrameTap.peek` non-consuming; front end with `FakeVerifier` (scripted verdict/delay/exception): accept, silent reject cancels the recording, fail open on error/timeout, hotkey override, deferred status/cue | `pytest`; no `vosk` or `faster_whisper` import, no model, no microphone (real engines only under the `audio` marker / `bench_wake.py`) |
 | Manual (owner) | microphone, wake word false accepts/hour, latency, tray, autostart, real app launch | checklist `docs/MANUAL_CHECKS.md`, listed in each PR |
 
 CI: GitHub Actions on `windows-latest`, `uv sync --frozen`, `ruff check`,
@@ -957,6 +1054,7 @@ fallback runs on the CPU, so the whole GPU is left to the local LLM. Measured ST
 | faster-whisper on CUDA (`device="auto"`/`"cuda"`) | GPU | ~1–1.5 GB for `large-v3-turbo` (est.) | | **not used**: decoding fails on the owner's PC (`cublas64_12.dll` missing); `auto` falls back to CPU |
 | EnergyVAD + mic capture | CPU | 0 | < 5 MB | pure Python RMS per 30 ms frame; mic open only while recording, or all the time in wake mode |
 | Wake word: Vosk small-ru (45 MB on disk), wake mode only — slice 4 | CPU | 0 | ~150–300 MB (est., **pending #115**) | decodes only inside VAD speech segments; target < 1 % total CPU in silence, <= 5 % total with room speech (§5); model loaded on the first `/wake on`, kept until exit |
+| Wake verification (stage 2, `verify = "local"`) | CPU | 0 | 0 extra: **shares** the faster-whisper `base` instance above (but wake mode now always loads it, even when Groq answers STT) | ~1 s decode burst (est. from the ~1 s per ~2 s clip measurement; 30 s encoder window is fixed) per Vosk detection, in parallel with the recording; measured by the bench extension and #115 |
 | Edge TTS (default) / SAPI fallback | remote / CPU | 0 | ~20–50 MB (est.) | MP3 decode via `miniaudio` |
 | Piper medium voices (2) — optional, later | CPU | 0 | ~200 MB | separate process, not in the default total |
 | Qt UI — slice 5 | CPU | ~0 | ~100 MB (est.) | |
@@ -980,7 +1078,7 @@ Each slice ends in something the owner can run. Later slices only add adapters.
 | 1 | **Text core** | CLI REPL `uv run luna --text`; router; `open_website`, `open_app` (Get-StartApps), `web_search` (ddgs + trafilatura); Assistant with `LLMChain` (Gemini → Groq → Ollama); small latency/accuracy benchmark script over ~20 RU/EN prompts | typing "открой ютуб", "open telegram", "какой курс доллара?", "что такое черная дыра?" gives correct actions/answers; tests pass |
 | 2 | Voice out | `SapiTTS` (Irina / Zira); speech text clean-up and sentence splitting; voice by `Reply.lang`; `sounddevice` interruptible playback; `Speaker` worker; CLI `--voice`, `/mute`, `/stop`. Piper later/optional (#63) | CLI replies are spoken in RU/EN |
 | 3 | Voice in (push-to-talk) — **code merged** (PRs #90–#98, 2026-10-26); STT benchmark #87 and manual checks #88 open | `SoundDeviceMic` capture, `EnergyVAD` + `Recorder`, `STTChain` (`GroqWhisperSTT` → `FasterWhisperSTT` CPU `base`), `WindowsHotkeyListener`, `VoiceFrontEnd` toggle PTT with barge-in, `VoiceInput` + CLI `--listen` / `/listen` / `/mic`, degraded start | hotkey → speak → action + spoken reply; latency spans logged |
-| 4 | Wake word (Issues #102–#116) | opt-in wake mode: `WakeListener` owning one always-on stream, energy-VAD gate, `VoskKeywordSpotter` for "луна" (lazy model download), `Recorder` continuing from the live stream (one-breath commands), half-duplex gating with Speaker activity, optional cue and follow-up window (off); conditional ONNX spike #116 | "Луна, открой YouTube" works in one breath and with a pause; a spoken reply never wakes it; `/wake off` closes the mic; recall and FA/hour measured in #115 |
+| 4 | Wake word (Issues #102–#116 + verification Issues, ADR 0004 amendment 2) | opt-in wake mode: `WakeListener` owning one always-on stream, energy-VAD gate, `VoskKeywordSpotter` for "луна" (lazy model download) + local faster-whisper second stage (`[wakeword] verify`), `Recorder` continuing from the live stream (one-breath commands), half-duplex gating with Speaker activity, optional cue and follow-up window (off); conditional ONNX spike #116 | "Луна, открой YouTube" works in one breath and with a pause; a spoken reply never wakes it; `/wake off` closes the mic; recall and FA/hour measured in #115 |
 | 5 | Desktop shell | PySide6 tray, popup reply window with text input, status indicator, autostart toggle, settings file shortcut | MVP definition of done (spec §6) |
 | 6 | Hardening | offline mode switch, game mode, provider status in tray, custom wake-word model if it beats Vosk, packaging (PyInstaller) investigation | owner's choice |
 
@@ -992,7 +1090,7 @@ See the decision list in each ADR. Summary:
 3. ~~Voice~~ — **decided** (owner, 2026-10-23): SAPI "Irina" (RU) and "Zira" (EN) by default;
    Piper with male CC0 voices later/optional (ADR 0005 amendment).
 4. Dialog: one command per wake word vs. a short follow-up window; "Луна, стоп".
-   **Decided** (owner, 2026-10-26 D2/D6 and 2026-10-27 D9/D10): push-to-talk is one command per
+   **Decided** (owner, 2026-10-26 D2/D6 and 2026-10-26 D9/D10): push-to-talk is one command per
    press (toggle, §4.2); in wake mode an optional follow-up window exists but is off by default;
    "Луна, стоп" during speech is deferred to slice 6 (half-duplex until then).
 5. ~~Hotkey combination~~ — **decided** (owner, 2026-10-26, D3): default `Ctrl+Alt+Space`,

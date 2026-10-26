@@ -26,7 +26,7 @@ from luna.core.events import (
     TranscriptReady,
 )
 from luna.core.models import Reply, Request
-from luna.core.prompts import fallback_text
+from luna.ui.replies import is_silent
 from luna.voice.frontend import (
     DETAIL_AUDIO_FAILED,
     DETAIL_NO_SPEECH,
@@ -53,9 +53,6 @@ _VOICE_NOTES = {
     DETAIL_STT_FAILED: "(speech recognition failed)",
     DETAIL_AUDIO_FAILED: "(microphone error)",
 }
-# Apologies for a cancelled / timed-out turn are shown but not spoken.
-_SILENT_KINDS = ("cancelled", "timeout")
-
 InputFn = Callable[[str], str]
 
 
@@ -309,7 +306,7 @@ class Repl:
 
     def _speak(self, reply: Reply) -> None:
         speaker = self._app.speaker
-        if speaker is None or speaker.muted or _is_silent(reply):
+        if speaker is None or speaker.muted or is_silent(reply):
             return
         self._speech_pending = True
         speaker.speak(reply)
@@ -378,12 +375,6 @@ class Repl:
 
 def _ignore(reply: Reply) -> None:
     return None
-
-
-def _is_silent(reply: Reply) -> bool:
-    return any(
-        reply.text == fallback_text(kind, lang) for kind in _SILENT_KINDS for lang in ("ru", "en")
-    )
 
 
 def run_repl(app: App, input_fn: InputFn | None = None, out: TextIO | None = None) -> int:

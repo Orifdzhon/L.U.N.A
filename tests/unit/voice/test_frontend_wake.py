@@ -18,7 +18,7 @@ from luna.core.errors import AudioError, ProviderUnavailable
 from luna.core.events import CLOSED, EventBus, Status, StatusChanged
 from luna.core.models import Reply, Request
 from luna.stt.base import Transcript
-from luna.voice.frontend import VoiceFrontEnd, VoiceState
+from luna.voice.frontend import VoiceFrontEnd, VoiceState, _TeeTap
 from luna.wakeword.base import WakeEvent
 from luna.wakeword.listener import WakeTrigger
 from luna.wakeword.verify import VerifyResult
@@ -572,3 +572,158 @@ def test_push_to_talk_without_live_uses_the_microphone_path(make):
     assert h.recorder.calls[0]["no_speech_s"] is None
     assert h.live.hold_log == [] and h.live.taps == []
     assert h.statuses()[0] is Status.LISTENING
+
+
+# ---- late verdicts, stale work, tap closed, start failure --------------------------------
+
+
+class GatedVerifier(FakeVerifier):
+    """``verify`` waits for ``gate`` (every call, or only the first with ``first_only``)."""
+
+    def __init__(self, result=None, *, first_only: bool = False) -> None:
+        super().__init__(result)
+        self.gate = threading.Event()
+        self.entered = threading.Event()
+        self.first_only = first_only
+        self._n = 0
+
+    def verify(self, pcm16: bytes):
+        self._n += 1
+        self.entered.set()
+        if not self.first_only or self._n == 1:
+            self.gate.wait(5)
+        return super().verify(pcm16)
+
+
+def test_slow_reject_after_the_recording_ended_sends_nothing(make):
+    verifier = GatedVerifier(VerifyResult(False, "no_keyword", "лунный"))
+    h = make(script=[SPOKEN], verifier=verifier)
+    assert wake(h) is True
+    wait_for(lambda: verifier.entered.is_set())
+    wait_for(lambda: h.recorder.active == 0 and bool(h.recorder.calls))
+    time.sleep(0.1)  # the recording is over; the turn waits for the verdict
+    assert h.stt.calls == [] and h.statuses() == []
+    verifier.gate.set()  # the reject arrives late
+    h.idle()
+    wait_for(lambda: all(not t.is_alive() for t in h.fe._threads))
+    assert h.stt.calls == [] and h.orch.requests == [] and h.replies == []
+    assert h.statuses() == [] and h.beeps == 0 and "stop_speech" not in h.log
+    h.assert_holds_balanced()
+
+
+def test_late_verdict_does_not_touch_a_newer_turn(make):
+    verifier = GatedVerifier(VerifyResult(True, "keyword", "луна"))
+    h = make(script=["block", "block"], verifier=verifier)
+    wake(h)
+    wait_for(lambda: verifier.entered.is_set())
+    h.hotkey.press()  # overrides the pending wake turn
+    wait_for(lambda: len(h.recorder.calls) == 2)
+    stops, beeps = h.log.count("stop_speech"), h.beeps
+    verifier.gate.set()  # the stale accept arrives now
+    time.sleep(0.2)
+    assert h.log.count("stop_speech") == stops and h.beeps == beeps
+    assert h.statuses() == [Status.LISTENING]  # only the hotkey turn announced itself
+    assert not h.recorder.calls[1]["cancel"].is_set()
+    assert h.fe.state is VoiceState.LISTENING
+    h.fe.stop()
+
+
+def test_overridden_turn_drops_its_queued_verification(make):
+    verifier = GatedVerifier(first_only=True)
+    h = make(script=["block", "block", "block", "frames"], verifier=verifier)
+    wake(h)  # wake 0: its decode occupies the single worker
+    wait_for(lambda: verifier.entered.is_set())
+    h.hotkey.press()
+    wait_for(lambda: len(h.recorder.calls) == 2)
+    h.hotkey.press()  # early stop of the hotkey turn
+    wait_for(lambda: bool(h.replies))
+    h.idle()
+    assert wake(h) is True  # wake A queues behind the stuck decode
+    wait_for(lambda: len(h.recorder.calls) == 3)
+    wait_for(lambda: h.fe._turn is not None and h.fe._turn.verify.future is not None)
+    queued = h.fe._turn.verify.future
+    h.hotkey.press()  # overrides A
+    assert queued.cancelled()
+    wait_for(lambda: len(h.replies) == 2)
+    verifier.gate.set()
+    h.idle()
+    wait_for(lambda: len(verifier.calls) == 1)
+    time.sleep(0.1)
+    assert len(verifier.calls) == 1  # only wake 0 ever ran; A's work never reached the model
+
+
+def test_closed_tap_ends_the_turn_without_waiting_for_the_verdict(make):
+    verifier = GatedVerifier()
+    h = make(script=["block"], verifier=verifier)
+    trigger = h.live.trigger()
+    assert h.fe.on_wake(trigger) is True
+    wait_for(lambda: verifier.entered.is_set())
+    started = time.monotonic()
+    trigger.source.frames.close()  # the listener closed the tap
+    h.idle()
+    assert time.monotonic() - started < 1.5
+    assert h.stt.calls == [] and h.statuses() == []
+    h.assert_holds_balanced()
+    verifier.gate.set()
+
+
+def test_thread_start_failure_leaves_the_front_end_usable(make, monkeypatch):
+    h = make(verifier=None)
+
+    def boom(self):
+        raise RuntimeError("no threads")
+
+    with monkeypatch.context() as m:
+        m.setattr(threading.Thread, "start", boom)
+        with pytest.raises(RuntimeError):
+            wake(h)
+    assert h.fe.state is VoiceState.IDLE and h.fe._turn is None
+    h.assert_holds_balanced()
+    assert wake(h) is True
+    wait_for(lambda: bool(h.replies))
+
+
+# ---- _TeeTap -----------------------------------------------------------------------------
+
+
+def _frames(n: int) -> list[bytes]:
+    return [bytes([i + 1]) * 960 for i in range(n)]
+
+
+def test_tee_fires_once_with_the_first_frames_in_order():
+    fired: list[list[bytes]] = []
+    frames = _frames(5)
+    tee = _TeeTap(FrameTap(frames), 3, fired.append)
+    assert [tee.read(0) for _ in range(5)] == frames  # nothing lost or reordered
+    assert fired == [frames[:3]]
+    tee.close()
+    assert len(fired) == 1
+
+
+def test_tee_fires_with_a_partial_list_on_close():
+    fired: list[list[bytes]] = []
+    frames = _frames(2)
+    tee = _TeeTap(FrameTap(frames), 24, fired.append)
+    tee.read(0)
+    tee.read(0)
+    assert fired == []
+    tee.close()
+    tee.close()
+    assert fired == [frames]
+    assert tee.closed and tee.read(0) is None
+
+
+def test_tee_fires_empty_when_closed_unread():
+    fired: list[list[bytes]] = []
+    _TeeTap(inner := FrameTap(_frames(2)), 3, fired.append).close()
+    assert fired == [[]] and inner.closed
+
+
+def test_tee_propagates_the_close_error_once():
+    inner = FrameTap()
+    tee = _TeeTap(inner, 3, lambda frames: None)
+    inner.close(AudioError("mic lost"))
+    assert tee.closed
+    with pytest.raises(AudioError):
+        tee.read(0)
+    assert tee.read(0) is None

@@ -113,6 +113,7 @@ class _Verify:
     submitted_at: float | None = None
     ms: float | None = None
     timer: threading.Timer | None = None
+    future: Future[VerifyResult] | None = None
     done: threading.Event = field(default_factory=threading.Event)
 
 
@@ -142,7 +143,7 @@ class _TeeTap(FrameTap):
     """
 
     def __init__(self, inner: FrameTap, want: int, on_ready: Callable[[list[bytes]], None]) -> None:
-        super().__init__()
+        # No super().__init__(): every FrameTap method is overridden and delegates to ``inner``.
         self._inner = inner
         self._want = max(1, want)
         self._on_ready = on_ready
@@ -404,6 +405,10 @@ class VoiceFrontEnd:
             self._threads.append(thread)
             thread.start()
         except BaseException:
+            self._drop_verify(turn)
+            if self._turn is turn:
+                self._turn = None
+                self._state = VoiceState.IDLE
             self._release_hold(turn)
             raise
 
@@ -435,6 +440,8 @@ class VoiceFrontEnd:
         v.outcome = "overridden"
         if v.timer is not None:
             v.timer.cancel()
+        if v.future is not None:
+            v.future.cancel()  # drops work still queued behind a running decode
         v.done.set()
 
     def _submit_verify(self, turn: _Turn, frames: list[bytes]) -> None:
@@ -465,6 +472,11 @@ class VoiceFrontEnd:
         except RuntimeError:  # executor shut down meanwhile (set_live / close)
             self._settle(turn, True, "error")
             return
+        with self._lock:
+            v.future = future
+            stale = not v.pending
+        if stale:
+            future.cancel()
         future.add_done_callback(lambda f: self._on_verdict(turn, f))
 
     def _on_verdict(self, turn: _Turn, future: Future[VerifyResult]) -> None:
@@ -476,7 +488,7 @@ class VoiceFrontEnd:
             if self._settle(turn, True, "error"):
                 self._warn_once("error", f"wake verification failed ({type(exc).__name__})")
             return
-        if result.text:
+        if result.text and result.accepted:  # a rejected wake leaves no trace of its audio
             logger.debug("Verifier heard: %r", result.text)
         if result.reason == "error":
             outcome = "error"
@@ -497,7 +509,7 @@ class VoiceFrontEnd:
             logger.warning(message)
 
     def _settle(self, turn: _Turn, accepted: bool, outcome: str) -> bool:
-        """Apply the verdict once; True if this call decided."""
+        """Apply the verdict once; True only if it was applied (False: late or overridden)."""
         with self._lock:
             v = turn.verify
             if v is None or not v.pending:
@@ -510,7 +522,7 @@ class VoiceFrontEnd:
             if self._turn is not turn or turn.cancel.is_set():
                 v.outcome = "overridden"
                 v.done.set()
-                return True
+                return False
             v.outcome = outcome
             v.accepted = accepted
             if accepted:
@@ -606,6 +618,8 @@ class VoiceFrontEnd:
             if utt is None:
                 return
             reason = utt.reason
+            if utt.reason == "cancelled":  # also: the listener closed the tap; no verdict wait
+                return
             if not self._await_verdict(turn):
                 return
             if turn.cancel.is_set() or utt.reason == "cancelled":
@@ -666,7 +680,7 @@ class VoiceFrontEnd:
             if self._turn is turn:
                 self._turn = None
                 self._state = VoiceState.IDLE
-                if not handled:
+                if not handled and turn.announced:  # an unannounced wake turn ends silently
                     self._bus.publish(StatusChanged(Status.IDLE, turn.request_id))
 
     def _record(self, turn: _Turn, spans: dict[str, float]) -> Utterance | None:

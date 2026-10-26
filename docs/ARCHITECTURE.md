@@ -1090,7 +1090,7 @@ See the decision list in each ADR. Summary:
 3. ~~Voice~~ — **decided** (owner, 2026-10-23): SAPI "Irina" (RU) and "Zira" (EN) by default;
    Piper with male CC0 voices later/optional (ADR 0005 amendment).
 4. Dialog: one command per wake word vs. a short follow-up window; "Луна, стоп".
-   **Decided** (owner, 2026-10-26 D2/D6 and 2026-10-27 D9/D10): push-to-talk is one command per
+   **Decided** (owner, 2026-10-26 D2/D6 and 2026-10-26 D9/D10): push-to-talk is one command per
    press (toggle, §4.2); in wake mode an optional follow-up window exists but is off by default;
    "Луна, стоп" during speech is deferred to slice 6 (half-duplex until then).
 5. ~~Hotkey combination~~ — **decided** (owner, 2026-10-26, D3): default `Ctrl+Alt+Space`,

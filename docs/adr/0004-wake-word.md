@@ -1,7 +1,7 @@
 # ADR 0004 — Wake word "Луна"
 
-- Status: **accepted (with amendment of 2026-10-27)** - owner decisions D7-D14 on Issue #102;
-  **amendment 2 (local wake verification, D15, 2026-10-26): proposed**
+- Status: **accepted (with amendment of 2026-10-26)** - owner decisions D7-D14 on Issue #102;
+  **amendment 2 (local wake verification, D15, 2026-10-26): accepted** (owner, 2026-10-26)
 - Date: 2026-10-22
 - Risk: **highest technical risk of the MVP** (spec open question 7)
 
@@ -130,9 +130,9 @@ Always available (`RegisterHotKey`, ADR 0007). Default `Ctrl+Alt+Space`.
   https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip), accessed 2026-10-26:
   https://alphacephei.com/vosk/models
 
-## Amendment (slice 4, 2026-10-27): owner decisions D7-D14 and the slice-4 design (Issue #102)
+## Amendment (slice 4, 2026-10-26): owner decisions D7-D14 and the slice-4 design (Issue #102)
 
-Owner decisions of 2026-10-27 (comment on Issue #102; questions in ROADMAP "Slice 4"). Facts that
+Owner decisions of 2026-10-26 (comment on Issue #102; questions in ROADMAP "Slice 4"). Facts that
 shaped the design: `Recorder.record()` opens the microphone and stops it in `finally`, so an
 always-on stream needs one owner; replies are played through speakers next to a webcam microphone
 (Logitech C270), so the assistant hears itself; the owner's microphone is quiet (noise floor
@@ -237,7 +237,7 @@ in §4.2, threads in §5, settings in §6.
   "samples fed - 250 ms". There is no separate flush: the listener calls `reset()` at the end of
   each VAD segment.
 
-## Amendment 2 (2026-10-26): local second-stage wake verification (D15) - proposed
+## Amendment 2 (2026-10-26): local second-stage wake verification (D15) - accepted
 
 ### Context
 
@@ -333,7 +333,7 @@ hides most of it. The real numbers come from the bench extension (item 12) and #
    are deferred** until accepted: on a verified wake turn `StatusChanged(LISTENING)` and the
    optional beep (D8) happen when the verifier accepts; `speaker.stop()` (reachable only with
    `mute_while_speaking = false`) also moves to the accept.
-9. **Verifier errors: fail open** (recommended; **the owner may flip it**). A decode exception or no
+9. **Verifier errors: fail open** (**owner decision 2026-10-26**). A decode exception or no
    result `VERIFY_TIMEOUT_S` (3 s) after submission counts as `accepted=True, reason="error" |
    "timeout"` with a WARNING log (once per distinct reason per session). If the model cannot be
    loaded at `/wake on`, wake mode still starts with `PassThroughVerifier` and the REPL says "Wake
@@ -341,7 +341,7 @@ hides most of it. The real numbers come from the bench extension (item 12) and #
    *Why open:* failing closed makes the assistant deaf without feedback (the owner would debug a
    "broken microphone"); failing open degrades to the amendment-1 baseline, which was designed to
    be livable (silent exits, hotkey). The cost of open is an occasional unneeded Groq upload,
-   which the ADR 0003 amendment accepts. Fail-closed is one constant if the owner prefers it.
+   which the ADR 0003 amendment accepts. (`fail_open=False` exists for tests and the bench only.)
 10. **What is not verified.** Hotkey turns and follow-up-window turns (`WakeTrigger.event is
     None`: there is no keyword). A hotkey press on a wake turn that is still unverified is the
     usual early stop (toggle table) **and overrides verification** (the user clearly wants to
@@ -386,12 +386,13 @@ hides most of it. The real numbers come from the bench extension (item 12) and #
 | #114 | docs: `[wakeword] verify`, what a rejected wake looks like (nothing), manual check "лунный свет" / "Лена" do not start a turn. |
 | #115 | measure both stages; D7 verdict on the two-stage pipeline; record verify latency and stage-2 false rejects; tune stage-1 threshold for recall. |
 
-### Owner decisions needed
+### Owner decisions (2026-10-26, in chat): amendment accepted
 
-- **Fail open vs. fail closed** on verifier errors (recommendation: open, item 9).
-- **Accept rule strictness** (recommendation: first token only, exact forms `луна` / `luna`, item
-  3). A stricter variant "keyword followed by punctuation or end of text" (Whisper usually writes
-  the vocative as "Луна,") can be reported by the bench but is not the default.
+- **Verifier error / timeout: fail open** (accept the wake, one WARNING per distinct reason), as
+  in item 9.
+- **Accept rule: first token only**, exact forms `луна` / `luna`, no punctuation requirement
+  (item 3). The stricter variant "keyword followed by punctuation or end of text" may appear only
+  as an extra bench column.
 
 ### Sources
 

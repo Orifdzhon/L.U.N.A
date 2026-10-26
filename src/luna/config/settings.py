@@ -295,6 +295,21 @@ class WakeWordSettings(_Section):
         return [word.strip().lower() for word in value]
 
 
+class UISettings(_Section):
+    start_minimized: bool = False  # start hidden in the tray
+    notifications: bool = True  # tray balloon notifications
+    history_lines: int = Field(default=200, ge=20, le=2000)  # lines kept in the window history
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "autostart" in data:
+            if data["autostart"] is True:
+                _log.warning('[ui] autostart is ignored, use the tray menu "Start with Windows"')
+            data = {k: v for k, v in data.items() if k != "autostart"}
+        return data
+
+
 class Settings(_Section):
     app: AppSettings = Field(default_factory=AppSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
@@ -304,8 +319,7 @@ class Settings(_Section):
     stt: STTSettings = Field(default_factory=STTSettings)
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     wakeword: WakeWordSettings = Field(default_factory=WakeWordSettings)
-    # Not validated yet: owned by a later Issue (UI); accepted and ignored.
-    ui: dict[str, Any] = Field(default_factory=dict)
+    ui: UISettings = Field(default_factory=UISettings)
 
     # env-variable name -> secret value; never serialized, never in repr().
     _api_keys: dict[str, SecretStr] = PrivateAttr(default_factory=dict)

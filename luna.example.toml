@@ -122,6 +122,9 @@ verify = "local"              # "local" | "off": second-stage check of each dete
                               # [stt.local] faster-whisper model (a bigger model = slower check)
 verify_words = ["луна", "luna"]   # the transcript must START with one of these
 
-# The section below is accepted but not validated yet; it is owned by a later Issue.
+# Desktop shell (tray + window). "Start with Windows" is toggled from the tray menu;
+# the old `autostart` key here is ignored (with a warning if it was true).
 [ui]
-autostart = false
+start_minimized = false       # start hidden in the tray
+notifications = true          # tray notifications
+history_lines = 200           # lines kept in the window history (20..2000)

@@ -82,11 +82,6 @@ def test_partial_provider_override_keeps_other_keys(tmp_path):
     assert "groq" in settings.llm.providers
 
 
-def test_unvalidated_sections_accepted(tmp_path):
-    settings = _load_text(tmp_path, "[ui]\nautostart = true\n")
-    assert settings.ui == {"autostart": True}
-
-
 def test_router_aliases_loaded(tmp_path):
     settings = _load_text(tmp_path, '[router.app_aliases]\n"блокнот" = "notepad"\n')
     assert settings.router.app_aliases == {"блокнот": "notepad"}
@@ -100,7 +95,7 @@ def test_example_config_parses_and_equals_defaults(tmp_path):
     cwd.mkdir()
     settings = load_settings(example, env={}, cwd=cwd)
     defaults = Settings()
-    for section in ("app", "llm", "search", "router", "tts", "stt", "voice", "wakeword"):
+    for section in ("app", "llm", "search", "router", "tts", "stt", "voice", "wakeword", "ui"):
         assert getattr(settings, section) == getattr(defaults, section)
 
 
@@ -116,6 +111,7 @@ def test_legacy_owner_config_still_loads(tmp_path, caplog):
     assert settings.stt == Settings().stt
     assert "deprecated [stt] keys" in caplog.text
     assert settings.wakeword == Settings().wakeword
+    assert settings.ui == Settings().ui
 
 
 # --- [tts] -------------------------------------------------------------------------------

@@ -103,11 +103,22 @@ min_speech_ms = 200           # shorter sounds are ignored (> 0)
 preroll_ms = 300              # audio kept from before speech was detected (>= 0)
 max_utterance_s = 10          # hard stop of one recording, seconds (0..60]
 
-# The sections below are accepted but not validated yet; they are owned by later Issues.
+# Wake word. Off by default: the microphone is opened only with enabled = true, --wake or /wake.
+# The old `hotkey` key here is ignored (with a warning); use [voice] hotkey.
 [wakeword]
-engine = "vosk"               # "vosk" | "onnx" | "off"
+enabled = false
+engine = "vosk"               # "vosk" | "off"
 keywords = ["луна"]
-hotkey = "ctrl+alt+space"
+threshold = 0.5               # detector confidence 0..1
+cooldown_s = 2.0              # ignore repeated triggers for this long
+model = "small-ru"
+# model_dir = 'C:\Users\you\AppData\Local\LUNA\models'   # default: same models folder as STT
+mute_while_speaking = true    # do not listen while L.U.N.A. speaks
+speaking_tail_ms = 400        # extra mute after speech ends
+command_timeout_s = 5.0       # wait for a command after the keyword
+cue = "off"                   # "off" | "beep" when the keyword is heard
+follow_up_s = 0.0             # 0 = off; seconds to keep listening after a reply (try 6)
 
+# The section below is accepted but not validated yet; it is owned by a later Issue.
 [ui]
 autostart = false

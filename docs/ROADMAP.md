@@ -201,7 +201,7 @@ Planning notes (not decisions):
   no new tools or permissions in this slice. Transcript text is not written to the latency log line.
 - The old name `docs/manual-checks.md` in earlier plans is `docs/MANUAL_CHECKS.md` in the repo.
 
-## Slice 4 — Wake word (planned, Issues #102-#116)
+## Slice 4 — Wake word (planned, Issues #102-#116, #127-#128)
 
 **Goal:** "Луна, открой YouTube" works in one breath, hands-free, on the reference machine.
 **Contents:** always-on capture, `VoskKeywordSpotter` (grammar `["луна","[unk]"]`), half-duplex gating
@@ -226,12 +226,14 @@ model, network); manual checks (#114) done by the owner.
 | #107 | Recorder hand-off: continue from wake-time audio on a shared mic stream | #102 (soft #104) | #105, #106, #112 | `recorder.py`, `capture.py`, **`tests/fakes.py`** |
 | #108 | `WakeListener`: always-on loop, VAD gate, ring buffer, cooldown, pause/resume | #104, #107, #102 | #105, #106, #109 | none |
 | #109 | Half-duplex: pause detection while TTS speaks (`Speaker` activity signal) | #102, #104 | #105, #106, #108, #110 | `speaker.py`, **`tests/fakes.py`** |
-| #110 | `VoiceFrontEnd.on_wake`: one-breath commands, optional cue | #107, #108, #102 | #105, #106, #109, #112 | `frontend.py` |
-| #111 | Wire it up: `--wake`, `/wake`, status line, degrade paths | #103, #105, #106, #108, #109, #110 | — | `input.py`, `cli.py`, `app.py`, `__main__.py` |
+| #127 | Wake verification: `WakeVerifier`, `FasterWhisperVerifier` (shared model), `FrameTap.peek`, settings (D15) | #104, #108 (needs `FasterWhisperSTT`) | #109 | `stt` local, `settings.py`, **`tests/fakes.py`** |
+| #128 | `bench_wake`: two-stage pipeline (Vosk + local verification), `--verify` | #127 | #110, #111 | `scripts/` |
+| #110 | `VoiceFrontEnd.on_wake`: one-breath commands, optional cue, verification (D15) | #107, #108, #102, #127 | #105, #106, #109, #112 | `frontend.py` |
+| #111 | Wire it up: `--wake`, `/wake`, status line, verifier warm-up, degrade paths | #103, #105, #106, #108, #109, #110, #127 | — | `input.py`, `cli.py`, `app.py`, `__main__.py` |
 | #112 | Benchmark/calibration script `bench_wake.py` | #104, #105 (soft #106) | #107-#111 | `scripts/`, `benchmarks/` |
 | #113 | Follow-up window without the wake word (optional, D9) | #110, #109 | #112, #114 | `frontend.py` |
 | #114 | Docs: wake word setup and slice-4 manual checks | #111 (soft #112, #113) | #115 | docs only |
-| #115 | Owner run: measure recall / FA per hour; architect finalizes the ADR 0004 amendment | #111, #112 | #114 | docs only |
+| #115 | Owner run: measure recall / FA per hour (`--verify off` and `local`); architect finalizes the ADR 0004 amendment | #111, #112, #128 | #114 | docs only |
 | #116 | **Conditional spike:** custom ONNX wake word vs Vosk (time-boxed 2 days) | #115 says Vosk misses the targets | #114 | `scripts/bench_wake.py`, no model committed |
 
 Suggested order:
@@ -242,7 +244,8 @@ Suggested order:
 3. Group C: `#108` (needs `#107`) in parallel with `#109`; then `#110`.
 4. `#111` (alone, owns `app.py`/`cli.py`/`__main__.py`) -> `#114` docs and `#115` owner run in parallel
    -> `#113` follow-up window if D9 is yes -> `#116` only if `#115` fails the targets.
-Shared files: `tests/fakes.py` in `#104`, `#107`, `#109` (merge in that order); `pyproject.toml` in `#105`
+Verification (D15): `#127` -> `#110` -> `#111`; `#128` after `#127` and before `#115`.
+Shared files: `tests/fakes.py` in `#104`, `#107`, `#109`, `#127` (merge in that order); `pyproject.toml` in `#105`
 only; `frontend.py` in `#110` then `#113` (sequential). Developers run one at a time per CLAUDE.md, so
 this is the safe order, not a requirement to parallelize.
 
@@ -258,7 +261,7 @@ closes the microphone in `finally`, so the always-on stream needs an ownership d
 | D9 | **Follow-up window** (D6 deferred from slice 3) | Optional Issue #113, **off by default** (`follow_up_s = 0`); when enabled use ~6 s. Decide after the first live week of wake mode. | Natural multi-turn talk vs. an open mic for room speech right after every reply (more false commands, privacy perception). Not needed for the exit criteria. |
 | D10 | **"Луна, стоп" while L.U.N.A. speaks** (Q4) | **Not in slice 4.** Half-duplex: detection is paused while speaking plus a 400 ms tail; the hotkey stops speech (barge-in, already works). | Voice barge-in needs echo cancellation or headphones; the C270 plus speakers would self-trigger on the reply. Revisit in slice 6 (AEC or headset mode). |
 | D11 | **Audio after the keyword** | Keep it: the command spoken in the same breath is part of the recording (one utterance, no second prompt); the router already strips a leading "Луна". | Slightly more complex Recorder hand-off (#107); the alternative (fresh recording after the keyword) loses the first words. |
-| D12 | **Verification stage** (STT of the 1.5 s window must start with "луна") | Do not build in slice 4; add as a follow-up only if #115 misses FA. | A cloud STT call per wake would send audio before the owner confirmed intent (privacy) and burn Groq quota; local `small` costs ~1-2 s CPU. Hotkey fallback exists. |
+| D12 | **Verification stage** (STT of the 1.5 s window must start with "луна") | **Superseded by D15 (accepted 2026-10-26):** local faster-whisper second stage, parallel with recording, fail open, first token "луна"/"luna" (#127, #110, #111, #128). Original recommendation: do not build in slice 4; add as a follow-up only if #115 misses FA. | A cloud STT call per wake would send audio before the owner confirmed intent (privacy) and burn Groq quota; local `small` costs ~1-2 s CPU. Hotkey fallback exists. |
 | D13 | **`vosk` as a core dependency** (not an extra; cf. slice 3 D5) | Core dependency in `[project] dependencies` with a win32/linux marker, imported lazily; the ~45 MB model is downloaded on first enable. | A plain `uv run` re-syncs without extras and uninstalls them (same lesson as `sounddevice`); an extra would break wake mode after any `uv run`. |
 | D14 | **Recording session** for calibration (~50 "Луна, ..." samples at 1 m/3 m, 2 h of room audio incl. TTS replies) | Yes, one evening; it is also the only way to know FA/hour. Recordings stay local and gitignored. | Takes the owner's time (mostly passive); required for #115. |
 

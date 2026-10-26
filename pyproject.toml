@@ -14,6 +14,7 @@ dependencies = [
     "miniaudio>=1.61,<2",
     "openai>=2,<3",
     "pydantic>=2.9",
+    "pyside6-essentials>=6.12,<7",
     "python-dotenv>=1.0",
     "rapidfuzz>=3.14.6",
     "sounddevice>=0.5; sys_platform == 'win32'",

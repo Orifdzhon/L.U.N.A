@@ -1,6 +1,6 @@
 # ADR 0009 — Desktop shell for the MVP (slice 5): tray, window, background process, autostart
 
-- Status: **proposed**
+- Status: **accepted** (owner, 2026-10-26; decisions D1-D9 below)
 - Date: 2026-10-26
 - Refines [ADR 0007](0007-desktop-shell.md). Replaces its autostart mechanism (HKCU `Run` →
   Startup-folder shortcut), its frameless popup (→ a plain small window) and its entry points.
@@ -16,7 +16,7 @@ L.U.N.A. an everyday background assistant. The installer/.exe and speed work are
 What exists (slices 0-4): a text-first core (`build_app` → `App` with `Orchestrator`, `EventBus`,
 `Speaker`, `VoiceInput`), the CLI REPL on the main thread, and background threads `luna-hotkey`,
 `luna-hotkey-cb`, `luna-voice`, `luna-wake`, `luna-verify`, `luna-speaker*`, `luna-req-*`
-(ARCHITECTURE §5). No asyncio. PR #134 (open) adds `VoiceInput.enable_wake(progress)` (blocking:
+(ARCHITECTURE §5). No asyncio. PR #134 (merged 2026-10-26 as 233909e) adds `VoiceInput.enable_wake(progress)` (blocking:
 first call downloads/loads models), `disable_wake()`, `wake_active`, `wake_state`,
 `wake_status_line()`, and `build_app(..., wake_progress=)`, which runs `enable_wake` synchronously.
 
@@ -158,6 +158,16 @@ Single instance:
 | D7 | Window | plain small window, close hides to tray, English labels like the CLI | frameless popup at the tray; Russian labels (i18n later) |
 | D8 | Legacy `[ui] autostart` | ignored (warning if `true`); the tray menu is the only switch | `true` creates the shortcut at start: a silent write outside the app, against "only by explicit action" |
 | D9 | Flags in the autostart command | `--tray --minimized [--config]` only; voice/listen/wake come from `luna.toml` | copy the current session flags (`--wake` etc.) into the shortcut: surprising when config changes |
+
+### Owner decisions (2026-10-26, relayed by the coordinator from the owner's chat)
+
+- **D1:** PySide6-Essentials.
+- **D3:** `luna` without flags starts the tray **and shows the window**; `--text` stays the CLI.
+- **D2, D4, D5, D6, D7, D8, D9:** accepted as recommended in the table above.
+- ADR 0009 **accepted**.
+- PR #134 (wake wiring: `--wake`, `/wake`, `enable_wake` / `disable_wake`) is merged into `main`
+  (233909e), so it no longer blocks the slice-5 Issues "ShellController" and "Tray entry point
+  and wiring".
 
 ## Consequences
 

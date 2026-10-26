@@ -21,7 +21,7 @@ added in later slices.
 | Wake word | Opt-in wake mode (slice 4): one always-on mic stream owned by `WakeListener`, energy-VAD gate, Vosk `small-ru` grammar spotter ("луна") as stage 1, local faster-whisper `base` check "starts with Луна" as stage 2 (`[wakeword] verify = "local"`), half-duplex while speaking; the hotkey keeps working | `verify = "off"`; custom ONNX model only if #115 misses the targets; Porcupine rejected | [0004](adr/0004-wake-word.md) + slice-4 amendment + amendment 2 |
 | TTS | `FallbackTTS`: Edge online neural voices (`ru-RU-SvetlanaNeural`, `en-US-JennyNeural`) → Windows SAPI (Irina / Zira) on failure; playback via `sounddevice` | `[tts] provider = "sapi"` (local only); Piper later/optional (#63) | [0005](adr/0005-text-to-speech.md) + amendments 1-2 |
 | Web search | `ddgs` metasearch + `trafilatura` extraction | self-hosted SearXNG; Tavily free key | [0006](adr/0006-web-search.md) |
-| Desktop shell | Slice 5: `PySide6-Essentials` tray + small window driven by a toolkit-free `ShellController`; `luna` / `pythonw -m luna --tray`; named-mutex single instance; Win32 `RegisterHotKey`; autostart = per-user Startup-folder shortcut (off by default) | tkinter + pystray | [0007](adr/0007-desktop-shell.md), [0009](adr/0009-desktop-shell-mvp.md) |
+| Desktop shell | Slice 5 (accepted 2026-10-26): `PySide6-Essentials` tray + small window driven by a toolkit-free `ShellController`; `luna` / `pythonw -m luna --tray`; named-mutex single instance; Win32 `RegisterHotKey`; autostart = per-user Startup-folder shortcut (off by default) | tkinter + pystray | [0007](adr/0007-desktop-shell.md), [0009](adr/0009-desktop-shell-mvp.md) |
 | Open apps/sites | `Get-StartApps` index + aliases + `rapidfuzz`; `webbrowser` for sites | `.lnk` scan | [0008](adr/0008-opening-apps-and-websites.md) |
 | Concurrency | **Threads + queues**, Qt on the main thread | asyncio (rejected, §5) | this doc |
 
@@ -1134,7 +1134,7 @@ history_lines = 200             # conversation lines kept in the window (memory 
 `autostart` is dropped (warning only if `true`); every other unknown key is an error
 (`extra="forbid"`), like the legacy keys of `[stt]` and `[wakeword]`.
 
-Command line (slice 5): `luna` with no mode flag = tray mode (owner decision D3 in ADR 0009;
+Command line (slice 5): `luna` with no mode flag = tray mode with the window shown (owner decision D3, 2026-10-26, ADR 0009;
 before slice 5 it printed the usage); `--tray` = tray mode explicitly; `--minimized` = start with
 the window hidden; `--text` = CLI (unchanged). `--voice/--no-voice`, `--listen/--no-listen`,
 `--wake/--no-wake` and `--config` work in both modes. `--text --tray` is a usage error.
@@ -1321,7 +1321,7 @@ See the decision list in each ADR. Summary:
 6. Game mode / unloading models while gaming.
 7. ~~STT provider order~~ — **decided** (owner, 2026-10-26, D1): Groq first, local CPU `base`
    fallback, no GPU STT (ADR 0003 amendment).
-8. Desktop shell (slice 5): decisions D1-D9 in [ADR 0009](adr/0009-desktop-shell-mvp.md) —
+8. ~~Desktop shell (slice 5)~~ — **decided** (owner, 2026-10-26, ADR 0009 accepted): D1-D9 in [ADR 0009](adr/0009-desktop-shell-mvp.md) —
    toolkit (PySide6-Essentials), autostart mechanism (Startup-folder shortcut), `luna` without
    flags = tray mode, single instance also for `--text`, session-only tray toggles, error-only
    notifications, plain window with English labels, legacy `[ui] autostart`, autostart flags.

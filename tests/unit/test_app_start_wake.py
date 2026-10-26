@@ -1,10 +1,11 @@
 """build_app(start_wake=False): the wake model is not enabled inside build_app."""
 
+from fakes import FakeLiveMic
 from wake_support import make, wake_threads
 
 
 def test_start_wake_false_does_not_touch_wake(tmp_path, wake_apps, fake_local):
-    app = make(tmp_path, wake_apps, wake=True, start_wake=False)
+    app = make(tmp_path, wake_apps, wake=True, start_wake=False, mic=FakeLiveMic())
     voice = app.voice_input
     assert voice.enabled  # the hotkey side is still up
     assert voice.wake_state == "OFF" and not voice.wake_active
@@ -13,5 +14,5 @@ def test_start_wake_false_does_not_touch_wake(tmp_path, wake_apps, fake_local):
 
 
 def test_start_wake_default_enables_wake(tmp_path, wake_apps, fake_local):
-    app = make(tmp_path, wake_apps, wake=True)
+    app = make(tmp_path, wake_apps, wake=True, mic=FakeLiveMic())
     assert app.voice_input.wake_active

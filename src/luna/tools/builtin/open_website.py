@@ -13,7 +13,7 @@ import tomllib
 from collections.abc import Mapping
 from importlib import resources
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, quote_plus, urlsplit
 
 from luna.core.errors import ConfigError, ToolError
 from luna.platform.base import BrowserOpener
@@ -23,6 +23,34 @@ from luna.tools.base import SafetyLevel, ToolContext, ToolResult
 NAME = "open_website"
 DEFAULT_HOME_URL = "https://www.google.com"
 MAX_TARGET_CHARS = 2048
+MAX_QUERY_CHARS = 200
+
+# Public search URLs of well-known sites, keyed by host without "www.". "{q}" is the query,
+# URL-encoded (spaces as "+"); "{qp}" is the percent-encoded form for URL paths. Anything
+# else falls back to a ``site:<host> <query>`` Google search (see ``build_search_url``).
+SEARCH_URLS: dict[str, str] = {
+    "youtube.com": "https://www.youtube.com/results?search_query={q}",
+    "google.com": "https://www.google.com/search?q={q}",
+    "ya.ru": "https://yandex.ru/search/?text={q}",
+    "yandex.ru": "https://yandex.ru/search/?text={q}",
+    "music.yandex.ru": "https://music.yandex.ru/search?text={q}",
+    "vk.com": "https://vk.com/search?c%5Bq%5D={q}&c%5Bsection%5D=auto",
+    "vkvideo.ru": "https://vkvideo.ru/search?q={q}",
+    "rutube.ru": "https://rutube.ru/search/?query={q}",
+    "open.spotify.com": "https://open.spotify.com/search/{qp}",
+    "soundcloud.com": "https://soundcloud.com/search?q={q}",
+    "github.com": "https://github.com/search?q={q}",
+    "ozon.ru": "https://www.ozon.ru/search/?text={q}",
+    "wildberries.ru": "https://www.wildberries.ru/catalog/0/search.aspx?search={q}",
+    "avito.ru": "https://www.avito.ru/all?q={q}",
+    "twitch.tv": "https://www.twitch.tv/search?term={q}",
+    "tiktok.com": "https://www.tiktok.com/search?q={q}",
+    "reddit.com": "https://www.reddit.com/search/?q={q}",
+    "stackoverflow.com": "https://stackoverflow.com/search?q={q}",
+    "habr.com": "https://habr.com/ru/search/?q={q}",
+    "wikipedia.org": "https://{lang}.wikipedia.org/w/index.php?search={q}",
+}
+_CYRILLIC_RE = re.compile(r"[Ѐ-ӿ]")
 
 # Bare names ("habr.com") are accepted only with these TLDs, so file names like calc.exe,
 # readme.txt or foo.bat never become URLs. Full http(s):// URLs are not limited by this list.
@@ -140,11 +168,35 @@ def resolve_target(target: str, aliases: Mapping[str, str]) -> str | None:
         raise _Unsafe from exc
 
 
+def build_search_url(base_url: str, query: str) -> str:
+    """Search URL on the site of ``base_url`` for ``query`` (already stripped, non-empty).
+
+    Known sites use their own search page; unknown ones a Google ``site:<host> <query>``
+    search. The result is passed through ``validate_web_url`` (``ValueError`` if unsafe).
+    """
+    full_host = urlsplit(base_url).hostname or ""
+    host = full_host.removeprefix("www.")
+    lang = "ru" if _CYRILLIC_RE.search(query) else "en"
+    if host.endswith(".wikipedia.org"):
+        sub = host.split(".")[0]
+        lang = sub if sub != "m" else lang
+        host = "wikipedia.org"
+    template = SEARCH_URLS.get(host)
+    if template is None:
+        url = SEARCH_URLS["google.com"].format(q=quote_plus(f"site:{host} {query}"))
+    else:
+        url = template.format(q=quote_plus(query), qp=quote(query, safe=""), lang=lang)
+    return validate_web_url(url)
+
+
 class OpenWebsiteTool:
     name = NAME
     description = (
         "Open a website in the default browser. target: a site name (e.g. 'youtube', 'ютуб'), "
-        "a domain (e.g. 'habr.com') or an http(s) URL. Omit target to just open the browser."
+        "a domain (e.g. 'habr.com') or an http(s) URL. Omit target to just open the browser. "
+        "To SEARCH on a site (video, music, product, article), pass the site as target and "
+        "what to find as query (e.g. target 'youtube', query 'lofi hip hop'): it opens the "
+        "site's own search results. Never ask the user to type the query manually."
     )
     parameters: dict[str, Any] = {  # noqa: RUF012
         "type": "object",
@@ -153,7 +205,12 @@ class OpenWebsiteTool:
                 "type": "string",
                 "description": "Site alias, domain or http(s) URL. Empty = open the browser.",
                 "maxLength": MAX_TARGET_CHARS,
-            }
+            },
+            "query": {
+                "type": "string",
+                "description": "What to search for on that site. Omit to just open the site.",
+                "maxLength": MAX_QUERY_CHARS,
+            },
         },
         "additionalProperties": False,
     }
@@ -179,8 +236,16 @@ class OpenWebsiteTool:
         target = args.get("target", "")
         if not isinstance(target, str):
             return self._fail("target must be a string", "invalid_target")
+        query = args.get("query", "")
+        if not isinstance(query, str):
+            return self._fail("query must be a string", "invalid_query")
+        query = " ".join(query.split())
+        if len(query) > MAX_QUERY_CHARS or any(not ch.isprintable() for ch in query):
+            return self._fail("query is too long or has control characters", "invalid_query")
         if not target.strip():
             url: str | None = self._home_url
+            if query:  # no site named: search with the default engine
+                url = SEARCH_URLS["google.com"].format(q=quote_plus(query))
         else:
             try:
                 url = resolve_target(target, self._aliases)
@@ -190,6 +255,11 @@ class OpenWebsiteTool:
                 )
             if url is None:
                 return self._fail("Unknown website", "no_match")
+        if query and target.strip():
+            try:
+                url = build_search_url(url, query)
+            except ValueError:
+                return self._fail("Refused: could not build a safe search URL", "unsafe_target")
         host = urlsplit(url).hostname or ""
         try:
             self._opener.open_url(url)
@@ -197,6 +267,10 @@ class OpenWebsiteTool:
             return self._fail("Refused: only http/https websites can be opened", "unsafe_target")
         except ToolError as exc:
             return self._fail(f"Could not open the browser: {exc}", "open_failed")
+        if query:
+            return ToolResult(
+                NAME, True, f"Opened search on {host}", {"host": host, "search": True}
+            )
         return ToolResult(NAME, True, f"Opened {host}", {"host": host})
 
     @staticmethod

@@ -30,7 +30,7 @@ All automated tests need none of these: they run without microphone, GPU, networ
 | 1 | Text core | **done** | #9-#23, #43, #48 (open follow-ups: #33, #35, #39) |
 | 2 | Voice out | **done** | #55-#62 (#63 Piper: later/optional) |
 | 3 | Voice in (push-to-talk) | **code done**, #84 and #87 open | #77-#88 |
-| 4 | Wake word | planned | — |
+| 4 | Wake word | **planned, Issues written** | #102-#116 |
 | 5 | Desktop shell | planned | — |
 | 6 | Hardening | planned | — |
 
@@ -201,14 +201,84 @@ Planning notes (not decisions):
   no new tools or permissions in this slice. Transcript text is not written to the latency log line.
 - The old name `docs/manual-checks.md` in earlier plans is `docs/MANUAL_CHECKS.md` in the repo.
 
-## Slice 4 — Wake word (planned)
+## Slice 4 — Wake word (planned, Issues #102-#116)
 
-**Goal:** "Луна, открой YouTube" works in one breath.
-**Contents:** always-on capture, `VoskKeywordSpotter`, parallel spike on a custom ONNX model
-([ADR 0004](adr/0004-wake-word.md)). Highest technical risk of the project.
-**Exit criteria:** works; false accepts/hour measured over a 2-hour session.
-**Owner decisions:** dialog flow and "Луна, стоп" (Q4); acceptable false-accept rate.
-**Issues:** to be written.
+**Goal:** "Луна, открой YouTube" works in one breath, hands-free, on the reference machine.
+**Contents:** always-on capture, `VoskKeywordSpotter` (grammar `["луна","[unk]"]`), half-duplex gating
+against TTS echo, wake turns through the existing push-to-talk pipeline, calibration benchmark, and a
+conditional spike on a custom ONNX model ([ADR 0004](adr/0004-wake-word.md)). Highest technical risk
+of the project; the hotkey stays as fallback and works at the same time.
+**Exit criteria:** with `uv run luna --text --wake`, "Луна, открой ютуб" (one breath) and "Луна" ...
+pause ... "открой ютуб" both open the site and speak the reply; a spoken reply containing "Луна" does
+not wake the assistant; `/wake off` closes the microphone and `Wake: off` is shown; a missing `vosk`
+extra, model or microphone degrades to push-to-talk with a clear message; legacy `[wakeword]` config
+loads; benchmark table (#115) shows the measured recall and false accepts/hour against ADR 0004
+(FA <= 0.5/h, recall >= 90 %) with a verdict; all automated tests pass with fakes (no microphone,
+model, network); manual checks (#114) done by the owner.
+
+| Issue | Title | Depends on | Parallel with | Shared files |
+|---|---|---|---|---|
+| #102 | Docs (architect): accept ADR 0004, record slice-4 design (shared mic, gating, follow-up) | owner answers D7-D13 | #103, #104, #105, #106, #112 (draft) | docs only |
+| #103 | Validated `[wakeword]` settings with legacy-key compatibility | — | #102, #104, #105, #106 | `settings.py`, `luna.example.toml` |
+| #104 | `WakeWordDetector` protocol, `WakeEvent`, `FakeWakeWord` | — | #102, #103, #106 | **`tests/fakes.py`** |
+| #105 | `VoskKeywordSpotter` (optional extra `wake`) | #104 | #102, #103, #106, #107 | **`pyproject.toml`/`uv.lock`** |
+| #106 | `WakeModelStore`: lazy verified download of the Vosk model | — (soft #104) | all | none |
+| #107 | Recorder hand-off: continue from wake-time audio on a shared mic stream | #102 (soft #104) | #105, #106, #112 | `recorder.py`, `capture.py`, **`tests/fakes.py`** |
+| #108 | `WakeListener`: always-on loop, VAD gate, ring buffer, cooldown, pause/resume | #104, #107, #102 | #105, #106, #109 | none |
+| #109 | Half-duplex: pause detection while TTS speaks (`Speaker` activity signal) | #102, #104 | #105, #106, #108, #110 | `speaker.py`, **`tests/fakes.py`** |
+| #110 | `VoiceFrontEnd.on_wake`: one-breath commands, optional cue | #107, #108, #102 | #105, #106, #109, #112 | `frontend.py` |
+| #111 | Wire it up: `--wake`, `/wake`, status line, degrade paths | #103, #105, #106, #108, #109, #110 | — | `input.py`, `cli.py`, `app.py`, `__main__.py` |
+| #112 | Benchmark/calibration script `bench_wake.py` | #104, #105 (soft #106) | #107-#111 | `scripts/`, `benchmarks/` |
+| #113 | Follow-up window without the wake word (optional, D9) | #110, #109 | #112, #114 | `frontend.py` |
+| #114 | Docs: wake word setup and slice-4 manual checks | #111 (soft #112, #113) | #115 | docs only |
+| #115 | Owner run: measure recall / FA per hour; architect finalizes the ADR 0004 amendment | #111, #112 | #114 | docs only |
+| #116 | **Conditional spike:** custom ONNX wake word vs Vosk (time-boxed 2 days) | #115 says Vosk misses the targets | #114 | `scripts/bench_wake.py`, no model committed |
+
+Suggested order:
+1. Group A in parallel: `#102` (architect, after owner answers), `#103`, `#104`, `#106`. Merge `#104` first
+   (it is the base package and the first `tests/fakes.py` edit).
+2. Group B after `#104`: `#105` (the only `pyproject.toml` edit), `#112`, plus `#107` once `#102` is
+   written. Merge `#107` before `#109` (both edit `tests/fakes.py`, a trivial append/merge).
+3. Group C: `#108` (needs `#107`) in parallel with `#109`; then `#110`.
+4. `#111` (alone, owns `app.py`/`cli.py`/`__main__.py`) -> `#114` docs and `#115` owner run in parallel
+   -> `#113` follow-up window if D9 is yes -> `#116` only if `#115` fails the targets.
+Shared files: `tests/fakes.py` in `#104`, `#107`, `#109` (merge in that order); `pyproject.toml` in `#105`
+only; `frontend.py` in `#110` then `#113` (sequential). Developers run one at a time per CLAUDE.md, so
+this is the safe order, not a requirement to parallelize.
+
+Hard prerequisite for `#107`, `#108`, `#109`, `#110`: the architect's `#102`. Today `Recorder.record()`
+closes the microphone in `finally`, so the always-on stream needs an ownership decision before code.
+
+### Owner decisions needed for slice 4 (needs-decision)
+
+| # | Question | Planner recommendation | Trade-offs |
+|---|---|---|---|
+| D7 | **Targets**: false accepts <= 0.5/h and recall >= 90 % (ADR 0004) | Accept as the bar for "Vosk is good enough"; if the result is FA 0.5-2/h, still ship as opt-in (`enabled=false` by default) because the hotkey stays. | "Луна" is a common noun and the owner's mic is quiet, so both numbers are unknown until #115. A stricter bar triggers the spike #116 (1-2 days + data licensing). |
+| D8 | **Confirmation cue** after the wake word | Short beep (`[wakeword] cue = "beep"`), **off by default**, turn it on during calibration. A spoken "да?" is not planned. | Without a cue the owner cannot tell a wake from a miss when not looking at the REPL (no tray until slice 5). A spoken cue costs TTS latency and is itself echo into the open mic. |
+| D9 | **Follow-up window** (D6 deferred from slice 3) | Optional Issue #113, **off by default** (`follow_up_s = 0`); when enabled use ~6 s. Decide after the first live week of wake mode. | Natural multi-turn talk vs. an open mic for room speech right after every reply (more false commands, privacy perception). Not needed for the exit criteria. |
+| D10 | **"Луна, стоп" while L.U.N.A. speaks** (Q4) | **Not in slice 4.** Half-duplex: detection is paused while speaking plus a 400 ms tail; the hotkey stops speech (barge-in, already works). | Voice barge-in needs echo cancellation or headphones; the C270 plus speakers would self-trigger on the reply. Revisit in slice 6 (AEC or headset mode). |
+| D11 | **Audio after the keyword** | Keep it: the command spoken in the same breath is part of the recording (one utterance, no second prompt); the router already strips a leading "Луна". | Slightly more complex Recorder hand-off (#107); the alternative (fresh recording after the keyword) loses the first words. |
+| D12 | **Verification stage** (STT of the 1.5 s window must start with "луна") | Do not build in slice 4; add as a follow-up only if #115 misses FA. | A cloud STT call per wake would send audio before the owner confirmed intent (privacy) and burn Groq quota; local `small` costs ~1-2 s CPU. Hotkey fallback exists. |
+| D13 | **`vosk` as optional extra `wake`** (cf. slice 3 D5) | Optional extra: `uv sync --extra wake`, imported lazily, app starts without it. | Core dependency makes `uv run` always work but ships a 2022-era native wheel to everyone; the extra means a plain `uv run` after `uv sync --extra wake` must not remove it (same lesson as `sounddevice`), documented in #114. |
+| D14 | **Recording session** for calibration (~50 "Луна, ..." samples at 1 m/3 m, 2 h of room audio incl. TTS replies) | Yes, one evening; it is also the only way to know FA/hour. Recordings stay local and gitignored. | Takes the owner's time (mostly passive); required for #115. |
+
+Planning notes (not decisions):
+- Defaults of #103 are safe-off: `enabled = false`, `engine = "vosk"`, `keywords = ["луна"]`, `cue = "off"`,
+  `follow_up_s = 0`. The legacy `hotkey` key inside `[wakeword]` is accepted and ignored with one warning
+  (the hotkey lives in `[voice]`).
+- Privacy: the microphone is open only while wake mode is on; audio is processed locally in a short
+  in-memory ring buffer; nothing is sent to STT/LLM until the keyword fired; the REPL shows `Wake: on/off`
+  and `/wake off` closes the stream at once. A second app using the microphone (calls) is a known
+  limitation to document; `/wake off` is the answer.
+- The `vosk` wheel for Windows/Python 3.13 and the CPU cost of continuous decoding (~5-10 % of one core,
+  ARCHITECTURE §11) are unverified; #105 verifies both first and stops with "needs architect" if the wheel
+  does not install (fallback: sherpa-onnx check, ADR 0004 option D).
+- Echo is solved by half-duplex gating (#109), not by AEC. The listener also clears its ring buffer on
+  resume so the tail of a reply cannot trigger.
+- The model download is pinned by URL and SHA-256 and unpacked with a zip-slip guard (#106); it happens
+  only when wake mode is enabled, never in tests.
+- The conditional spike #116 stores no model or recordings in the repo; training-data licensing needs an
+  owner decision before any model is redistributed.
 
 ## Slice 5 — Desktop shell (planned)
 

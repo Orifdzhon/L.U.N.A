@@ -61,7 +61,7 @@ class Harness:
         self.listener = WakeListener(
             self.mic,
             self.detector,
-            self.vad,
+            self._make_vad,
             conf or WakeWordSettings(cooldown_s=2.0, speaking_tail_ms=400),
             VoiceSettings(),
             self.bus,
@@ -71,6 +71,10 @@ class Harness:
             read_timeout_s=0.01,
         )
         self.fed = 0
+
+    def _make_vad(self):
+        self.vad_made = getattr(self, "vad_made", 0) + 1
+        return self.vad
 
     def _on_wake(self, trigger):
         self.triggers.append(trigger)
@@ -495,3 +499,109 @@ def test_gate_window_lifecycle():
     assert g.window_open(13) and not g.window_pending()
     g.open_window(0, 13)
     assert not g.window_open(13)
+
+
+# --- review fixes ----------------------------------------------------------------------
+
+
+def test_listener_builds_its_own_vad_once(make):
+    h = make()
+    assert h.vad_made == 1
+
+
+def test_slow_on_wake_does_not_look_like_a_dead_microphone(make):
+    def slow(h, trigger):
+        h.clock.advance(5.0)  # on_wake blocked for 5 s on the fake clock
+        return True
+
+    h = started(make(on_wake=slow, stall_s=2.0))
+    h.feed(wake_frame(0))
+    assert wait_until(lambda: len(h.triggers) == 1)
+    time.sleep(0.1)  # several idle reads happen after the callback
+    assert h.listener.state is not WakeState.FAILED
+
+
+def test_detector_reset_never_runs_under_the_listener_lock(make):
+    holder = {}
+
+    class Probe(FakeWakeWord):
+        locked_during_reset = False
+
+        def reset(self):
+            listener = holder.get("listener")
+            if listener is not None:
+                Probe.locked_during_reset |= listener._lock.locked()
+            super().reset()
+
+    h = make(detector=Probe())
+    holder["listener"] = h.listener
+    h.listener.start()
+    h.feed(wake_frame(0))
+    assert wait_until(lambda: len(h.triggers) == 1)
+    h.listener.set_hold("turn:1", True)
+    h.feed(SILENCE)
+    h.listener.set_hold("turn:1", False)
+    h.clock.advance(3)
+    h.feed(SILENCE)
+    assert wait_until(lambda: h.listener.state is WakeState.ARMED)
+    assert h.detector.reset_count >= 3
+    assert not Probe.locked_during_reset
+
+
+def test_restart_after_failure_works_end_to_end(make):
+    h = started(make())
+    h.mic.fail(AudioError("unplugged"))
+    assert wait_until(lambda: h.listener.state is WakeState.FAILED)
+    h.listener.start()
+    assert h.listener.state is WakeState.ARMED and h.mic.start_calls == 2
+    assert h.listener.position == 0
+    h.fed = 0
+    h.feed(wake_frame(0))
+    assert wait_until(lambda: len(h.triggers) == 1)
+
+
+def test_cut_before_ring_start_is_clamped(make):
+    # the detector reports a keyword end 3 s back, older than the 2 s ring
+    det = FakeWakeWord(trigger_at={9}, frame_samples=4800, end_lag_samples=45000, marker=False)
+    h = started(make(detector=det))
+    h.feed(*[speech(i) for i in range(100)])
+    assert wait_until(lambda: len(h.triggers) == 1)
+    trigger = h.triggers[0]
+    backlog = drain(trigger.source.frames)
+    # the whole 2 s ring is after the cut; the part that is not a whole frame joins the lead-in
+    assert len(trigger.source.lead_in) == 640
+    assert len(b"".join(backlog)) == 64000 - 640
+    assert all(len(f) == 960 for f in backlog)
+
+
+def test_skip_ms_rounds_up_to_whole_frames(make):
+    h = started(make())
+    h.feed(speech(0))
+    src = h.listener.open_tap(0, skip_ms=40)  # 1.33 frames -> 2 frames are dropped
+    h.feed(speech(1), speech(2), speech(3))
+    assert drain(src.frames) == [speech(3)]
+
+
+def test_refused_follow_up_keeps_the_window(make):
+    h = started(make(accept=False))
+    h.listener.open_window(30.0)
+    h.feed(*[speech(i) for i in range(8)])
+    assert wait_until(lambda: len(h.triggers) == 1)
+    assert h.triggers[0].event is None
+    h.clock.advance(3.0)  # cooldown over, window (30 s) still running
+    h.feed(SILENCE)
+    assert wait_until(lambda: h.listener.state is WakeState.ARMED)
+    h.feed(*[speech(i) for i in range(8)])
+    assert wait_until(lambda: len(h.triggers) == 2)
+
+
+def test_accepted_trigger_consumes_the_window(make):
+    h = started(make(accept=True))
+    h.listener.open_window(30.0)
+    h.feed(*[speech(i) for i in range(8)])
+    assert wait_until(lambda: len(h.triggers) == 1)
+    h.clock.advance(3.0)
+    h.feed(SILENCE)
+    assert wait_until(lambda: h.listener.state is WakeState.ARMED)
+    h.feed(*[speech(i) for i in range(8)])
+    assert len(h.triggers) == 1

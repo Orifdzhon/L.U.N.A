@@ -16,9 +16,15 @@ runs), for a tail after speech, and for ``cooldown_s`` after a detection. Return
 ``ARMED`` resets the detector and clears the ring, so audio of the assistant's own voice can
 never complete a keyword later.
 
-Locking: one lock guards the state. The detector, ``on_wake`` and bus publishing are never
-called with it held, so callbacks may call back into the listener. ``stop()`` joins the
-thread and must not be called while holding a lock that ``on_wake`` needs.
+Locking: one lock guards the state. The detector (``process`` and ``reset``), ``on_wake`` and
+bus publishing are never called with it held, so callbacks may call back into the listener and
+``set_hold`` never waits for the engine. ``stop()`` joins the thread and must not be called
+while holding a lock that ``on_wake`` needs.
+
+``on_wake`` runs on the mic thread: it must return quickly (submit the turn and return), because
+the microphone is not read meanwhile. The VAD is owned by the listener (see ``vad_factory``).
+A ``WakeStateChanged`` is published on the bus although it is not part of the ``Event`` union
+(the bus is untyped at runtime; subscribers should ignore unknown events).
 
 Privacy: audio exists only in the in-memory ring and the tap queue; nothing is stored, sent
 or logged (counters only).
@@ -148,6 +154,15 @@ class WakeGate:
         """True while speech onset may fire a follow-up trigger."""
         return self._window_until is not None and now < self._window_until
 
+    @property
+    def window_deadline(self) -> float | None:
+        return self._window_until
+
+    def restore_window(self, deadline: float | None) -> None:
+        """Give back a window consumed by a refused trigger (it keeps its original deadline)."""
+        if deadline is not None and self._window_until is None:
+            self._window_until = deadline
+
     def window_pending(self) -> bool:
         return self._window_pending_s is not None
 
@@ -166,7 +181,7 @@ class WakeListener:
         self,
         mic: MicSource,
         detector: WakeWordDetector,
-        vad: VoiceActivityDetector,
+        vad_factory: Callable[[], VoiceActivityDetector],
         conf: WakeWordSettings,
         voice: VoiceSettings,
         bus: EventBus,
@@ -178,7 +193,9 @@ class WakeListener:
     ) -> None:
         self._mic = mic
         self._detector = detector
-        self._vad = vad
+        # The VAD keeps per-stream state (noise floor, hangover) and is called on every frame by
+        # luna-wake only; the Recorder needs its own instance, hence a factory, not an instance.
+        self._vad = vad_factory()
         self._conf = conf
         self._voice = voice
         self._bus = bus
@@ -189,6 +206,8 @@ class WakeListener:
         self._det_bytes = detector.frame_samples * SAMPLE_WIDTH_BYTES
 
         self._lock = threading.Lock()
+        self._start_lock = threading.Lock()  # serialises start(); stop() never takes it
+        self._need_reset = False  # detector.reset() requested under the lock, done outside it
         self._ring = RingBuffer(RING_MS)
         self._gate = WakeGate()
         self._state = WakeState.OFF
@@ -232,6 +251,10 @@ class WakeListener:
 
     def start(self) -> None:
         """Open the microphone and start ``luna-wake``. Idempotent. Raises ``AudioError``."""
+        with self._start_lock:
+            self._start_locked()
+
+    def _start_locked(self) -> None:
         with self._lock:
             if self._closed:
                 raise AudioError("wake listener is closed")
@@ -240,6 +263,8 @@ class WakeListener:
             old = self._thread
         if old is not None and old is not threading.current_thread():
             old.join(JOIN_TIMEOUT_S)
+            if old.is_alive():  # stuck in the detector: two threads must never share it
+                raise AudioError("the previous wake listener thread is still running")
         self._mic.start()  # AudioError propagates; nothing was changed
         stop_event = threading.Event()
         with self._lock:
@@ -364,7 +389,6 @@ class WakeListener:
                     return
                 stop_event.wait(0.005)  # a source that returns at once must not spin
                 continue
-            last_frame_at = self._clock()
             try:
                 self._handle_frame(frame, stop_event)
             except _DetectorFailed as e:
@@ -374,6 +398,8 @@ class WakeListener:
                 log.exception("wake listener crashed")
                 self._fail("wake listener crashed", stop_event)
                 return
+            # after the handler: a slow on_wake must not look like a silent microphone
+            last_frame_at = self._clock()
 
     def _handle_frame(self, frame: bytes, stop_event: threading.Event) -> None:
         speech = self._vad.is_speech(frame)  # also while held: keeps the noise floor current
@@ -393,6 +419,7 @@ class WakeListener:
                 trigger = self._check_window(speech, samples, now, events)
             else:
                 self._speech_run = 0
+        self._flush_reset()
         self._publish_all(events)
         if trigger is not None:
             self._deliver(trigger)
@@ -410,12 +437,12 @@ class WakeListener:
         if self._state is WakeState.ARMED and reason is not None:
             self._state = WakeState.HELD
             self._reset_segment()
-            self._safe_detector_reset()
+            self._need_reset = True
             events.append(WakeStateChanged(WakeState.HELD, reason))
         elif self._state is WakeState.HELD and reason is None:
             self._state = WakeState.ARMED
             self._reset_segment()
-            self._safe_detector_reset()
+            self._need_reset = True
             self._ring.clear()  # the assistant's own voice must not complete a keyword later
             gate.update_window(now)
             events.append(
@@ -434,7 +461,6 @@ class WakeListener:
         if self._speech_run * 1000 < self._voice.min_speech_ms * SAMPLE_RATE:
             return None
         cut = self._position - self._speech_run  # speech onset
-        self._gate.open_window(0, now)
         self._speech_run = 0
         return self._make_trigger(cut, None, self._voice.preroll_ms, now, events)
 
@@ -503,9 +529,10 @@ class WakeListener:
             self._gate.start_cooldown(now, self._conf.cooldown_s)
             self._state = WakeState.HELD
             self._reset_segment()
-            self._safe_detector_reset()
+            self._need_reset = True
             events.append(WakeStateChanged(WakeState.HELD, "cooldown"))
             trigger = self._make_trigger(cut, event, LEAD_IN_MS, now, events)
+        self._flush_reset()
         self._publish_all(events)
         self._deliver(trigger)
 
@@ -539,12 +566,18 @@ class WakeListener:
             if self._state is WakeState.ARMED:
                 self._state = WakeState.HELD
                 self._reset_segment()
-                self._safe_detector_reset()
+                self._need_reset = True
                 events.append(WakeStateChanged(WakeState.HELD, "cooldown"))
         return WakeTrigger(LiveSource(tap, lead, self.noise_floor), event, now)
 
     def _deliver(self, trigger: WakeTrigger) -> None:
-        """Call ``on_wake`` without any lock; close the tap if the turn was refused."""
+        """Call ``on_wake`` without any lock; close the tap if the turn was refused.
+
+        The follow-up window is consumed by a trigger, but given back if the turn is refused.
+        """
+        with self._lock:
+            saved_window = self._gate.window_deadline
+            self._gate.open_window(0, self._clock())
         try:
             accepted = bool(self._on_wake(trigger))
         except Exception:
@@ -553,6 +586,7 @@ class WakeListener:
         if not accepted:
             tap = trigger.source.frames
             with self._lock:
+                self._gate.restore_window(saved_window)
                 if self._tap is tap:
                     self._tap = None
             if isinstance(tap, FrameTap):
@@ -596,6 +630,12 @@ class WakeListener:
         self._seg_samples = 0
         self._fed = 0
         self._pending.clear()
+
+    def _flush_reset(self) -> None:
+        """Run a requested ``detector.reset()`` (luna-wake thread, lock not held)."""
+        if self._need_reset:
+            self._need_reset = False
+            self._safe_detector_reset()
 
     def _safe_detector_reset(self) -> None:
         try:

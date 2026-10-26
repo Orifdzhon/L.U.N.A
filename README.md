@@ -125,6 +125,32 @@ uv run python scripts/bench_wake.py --clips D:\wake-clips --negatives D:\wake-lo
 Latency is audio time only: the event's position minus the keyword end (the manifest's
 `keyword_end_s`, else the end the engine reports); processing cost is the separate CPU column.
 
+#### Two-stage pipeline (`--verify local`)
+
+Production wake mode is two-stage (ADR 0004 amendment 2, D15): Vosk fires, then the shared local
+faster-whisper model decodes ~1.4 s around the cut and the wake counts only if the transcript
+starts with "луна" / "luna". `--verify local` measures that:
+
+```
+uv run python scripts/bench_wake.py --synth --verify local --md wake2.md   # SYNTHETIC
+uv run python scripts/bench_wake.py --clips D:\wake-clips --negatives D:\wake-long --verify local
+```
+
+- Default is `--verify off`; the output is then exactly the stage-1 report above.
+- Each stage-1 event is cut with the production `verify_window` (last 700 ms before the cut +
+  first 700 ms after; at the end of a clip the window is simply shorter) and checked by the
+  production `FasterWhisperVerifier` on the `[stt.local]` model and `[wakeword] verify_words` of
+  your config (`--config`). The model is loaded once per run (first use downloads it).
+- `--verify-top N` (default 3): only the N configurations with the best stage-1 recall are
+  verified; stage 1 runs for the whole grid first.
+- An extra "Stage 2" table follows the stage-1 table: recall and FA (count, FA/h) **after** the
+  verifier, stage-2 false rejects (count and list of clips: positives the verifier threw out),
+  stage-2 rejects on negatives, verify decode wall time p50 / p95 and CPU seconds per check, and a
+  `strict` pair of columns for the stricter rule "keyword followed by punctuation or the end of
+  the transcript" ("Луна, открой" passes, "Луна открой" does not). The D7 mark in that table
+  uses the stage-2 numbers. `--out` JSON gets a `stage2` object per verified configuration.
+- The bench runs the verifier fail-closed: a decode error counts as a reject and is reported.
+
 ## License
 
 [Apache-2.0](LICENSE)

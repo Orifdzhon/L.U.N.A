@@ -58,7 +58,8 @@ def test_text_mode_starts_repl_and_exits(isolated, monkeypatch, capsys):
     assert "LLM providers" in out
 
 
-def test_valid_config_file_applies_log_level(isolated):
+def test_valid_config_file_applies_log_level(isolated, monkeypatch):
+    monkeypatch.setattr("luna.__main__._run_tray", lambda settings, args, instance: 0)
     cfg = isolated / "ok.toml"
     cfg.write_text('[app]\nlog_level = "DEBUG"\n', encoding="utf-8")
     assert main(["--config", str(cfg)]) == 0

@@ -49,6 +49,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 VOICE_EXTRA_HINT = "run `uv sync` to install it"
+WAKE_MIC_NOTICE = (
+    "The microphone stays open while wake mode is on; nothing is stored or sent "
+    "before the wake word. /wake off closes it."
+)
 
 ACTION_LOG_NAME = "actions.jsonl"
 _CATALOG_JOIN_S = 1.0
@@ -145,7 +149,11 @@ class App:
         if voice_input is None:
             return []
         if voice_input.enabled:
-            return [voice_input.status_line() + " - /listen, /mic.", *voice_input.notes]
+            lines = [voice_input.status_line() + " - /listen, /mic, /wake.", *voice_input.notes]
+            if voice_input.wake_active:
+                lines.append(voice_input.wake_status_line())
+                lines.append(WAKE_MIC_NOTICE)
+            return lines
         if any(w.startswith("Voice input disabled") for w in self.warnings):
             return []
         return ["Listen: off (start with --listen or type /listen to talk with the hotkey)."]
@@ -331,6 +339,9 @@ def _assemble(
     stt: STTProvider | None = None,
     mic: MicSource | None = None,
     hotkey: HotkeyListener | None = None,
+    wake_store: Any | None = None,
+    spotter_factory: Callable[[Path], Any] | None = None,
+    wake_progress: Callable[[str], None] | None = None,
 ) -> App:
     """Secrets must already be registered for log redaction."""
     clock = clock or time.monotonic
@@ -424,11 +435,19 @@ def _assemble(
         stt=stt,
         mic=mic,
         hotkey=hotkey,
+        wake_store=wake_store,
+        spotter_factory=spotter_factory,
     )
-    if settings.voice.listen:
+    wake = settings.wakeword.enabled  # wake mode implies voice input
+    if settings.voice.listen or wake:
         reason = voice_input.enable()
         if reason is not None:
             warnings.append(f"Voice input disabled: {reason}. Continuing in text mode.")
+            wake = False
+    if wake:
+        reason = voice_input.enable_wake(wake_progress)
+        if reason is not None:
+            warnings.append(f"Wake word disabled: {reason}. Continuing with the hotkey.")
     for text in warnings:
         logger.warning(text)
     return App(

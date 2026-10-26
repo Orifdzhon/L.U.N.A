@@ -30,6 +30,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not use the microphone (overrides voice.listen)",
     )
+    wake = parser.add_mutually_exclusive_group()
+    wake.add_argument(
+        "--wake",
+        action="store_true",
+        help='listen for the wake word "Luna" (implies --listen; overrides wakeword.enabled)',
+    )
+    wake.add_argument(
+        "--no-wake", action="store_true", help="no wake word (overrides wakeword.enabled)"
+    )
     parser.add_argument("--config", type=Path, metavar="PATH", help="path to luna.toml")
     return parser
 
@@ -39,7 +48,7 @@ def _run_text(settings: Settings) -> int:
     from luna.ui.cli import configure_console_encoding, run_repl
 
     configure_console_encoding()
-    app = build_app(settings)
+    app = build_app(settings, wake_progress=lambda line: print(line, flush=True))
     try:
         return run_repl(app)
     finally:
@@ -62,6 +71,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings.voice.listen = True
     elif args.no_listen:
         settings.voice.listen = False
+        if not args.wake:
+            settings.wakeword.enabled = False  # no microphone at all
+    if args.wake:
+        settings.wakeword.enabled = True
+        settings.voice.listen = True
+    elif args.no_wake:
+        settings.wakeword.enabled = False
     setup_logging(settings.app.log_level, console=args.text, secrets=settings.secret_values())
     if args.text:
         return _run_text(settings)

@@ -405,3 +405,25 @@ def test_default_fetch_total_timeout_applies_after_the_first_audio(monkeypatch):
             "x", "ru"
         )
     assert time.monotonic() - started < 3
+
+
+def test_fetch_passes_int_timeouts_to_edge_tts(monkeypatch):
+    # edge-tts raises TypeError for float timeouts; our length-scaled limits are floats.
+    seen = {}
+
+    class FakeCommunicate:
+        def __init__(self, text, voice, **kw):
+            seen.update(kw)
+            if not isinstance(kw["connect_timeout"], int) or not isinstance(
+                kw["receive_timeout"], int
+            ):
+                raise TypeError("timeouts must be int")
+
+        async def stream(self):
+            yield {"type": "audio", "data": b"mp3"}
+
+    fake_module = type("FakeEdgeTTS", (), {"Communicate": FakeCommunicate})
+    monkeypatch.setitem(__import__("sys").modules, "edge_tts", fake_module)
+    assert edge._fetch_mp3("Привет.", "v", "+0%", "+0%", 5.0, 5.35) == b"mp3"
+    assert seen["connect_timeout"] == 5
+    assert seen["receive_timeout"] == 6

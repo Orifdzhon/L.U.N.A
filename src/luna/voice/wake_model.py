@@ -19,6 +19,7 @@ import time except constants.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -28,6 +29,7 @@ import tempfile
 import threading
 import time
 import zipfile
+import zlib
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
@@ -51,6 +53,18 @@ READ_TIMEOUT_S = 30.0
 DEADLINE_S = 900.0
 CHUNK_BYTES = 256 * 1024
 _TMP_PREFIX = ".wake-model-"
+STALE_TMP_AGE_S = 3600.0
+MODEL_MARKER = ("am", "final.mdl")  # a model folder without this file is treated as absent
+_RESERVED_NAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{i}" for i in range(1, 10)),
+        *(f"lpt{i}" for i in range(1, 10)),
+    }
+)
 
 ClientFactory = Callable[[], httpx.Client]
 Clock = Callable[[], float]
@@ -58,16 +72,22 @@ Clock = Callable[[], float]
 
 def _default_client() -> httpx.Client:
     # No redirects and no environment proxies: the pinned URL is expected to answer directly.
+    # (Known limit: users behind a mandatory corporate proxy cannot download the model; they
+    # can unpack the official zip into the models folder by hand.)
     return httpx.Client(
         timeout=httpx.Timeout(READ_TIMEOUT_S, connect=CONNECT_TIMEOUT_S),
         follow_redirects=False,
         trust_env=False,
-        headers={"User-Agent": "LUNA-assistant (model download)"},
+        headers={"User-Agent": "LUNA-assistant (model download)", "Accept-Encoding": "identity"},
     )
 
 
 class WakeModelStore:
-    """Finds or downloads the Vosk model under ``model_dir`` (default: shared models dir)."""
+    """Finds or downloads the Vosk model under ``model_dir`` (default: shared models dir).
+
+    ``ensure()`` blocks (up to ``deadline_s``) and must be called from a worker thread, never
+    from the asyncio loop. Environment proxies are ignored on purpose (``trust_env=False``).
+    """
 
     def __init__(
         self,
@@ -98,8 +118,10 @@ class WakeModelStore:
         return self._root / self._name
 
     def is_present(self) -> bool:
-        path = self.model_path
-        return path.is_dir() and any(path.iterdir())
+        try:
+            return self.model_path.joinpath(*MODEL_MARKER).is_file()
+        except OSError:
+            return False
 
     def ensure(self) -> Path:
         """Return the model directory, downloading and unpacking it first if needed."""
@@ -111,9 +133,23 @@ class WakeModelStore:
 
     # -- installation ------------------------------------------------------------------------
 
+    def _sweep_stale(self) -> None:
+        """Remove temp dirs left by a killed run (older than an hour; never the live ones)."""
+        cutoff = time.time() - STALE_TMP_AGE_S
+        try:
+            for entry in self._root.glob(f"{_TMP_PREFIX}*"):
+                try:
+                    if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                        shutil.rmtree(entry, ignore_errors=True)
+                except OSError:
+                    continue
+        except OSError:
+            return
+
     def _install(self) -> None:
         try:
             self._root.mkdir(parents=True, exist_ok=True)
+            self._sweep_stale()
             work = Path(tempfile.mkdtemp(prefix=_TMP_PREFIX, dir=self._root))
         except OSError as exc:
             raise ProviderUnavailable(
@@ -131,7 +167,7 @@ class WakeModelStore:
             self._download(archive)
             unpacked = work / "unpacked"
             self._extract(archive, unpacked)
-            self._publish(unpacked / self._name)
+            self._publish(unpacked / self._name, work)
         except ProviderUnavailable:
             raise
         except OSError as exc:
@@ -143,10 +179,20 @@ class WakeModelStore:
             shutil.rmtree(work, ignore_errors=True)
         log.info("wake-word model ready at %s", self.model_path)
 
-    def _publish(self, source: Path) -> None:
+    def _publish(self, source: Path, work: Path) -> None:
         target = self.model_path
+        if target.exists():
+            # Not a valid model (ensure() checked), so it is junk: an empty folder or a
+            # half-deleted model. os.replace(dir, existing dir) fails on Windows, so remove an
+            # empty one with rmdir (never a recursive delete of user data) and move any other
+            # aside into the temp dir, which is deleted afterwards.
+            try:
+                target.rmdir()
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.replace(target, work / "stale")
         try:
-            os.replace(source, target)  # atomic; target absent, or an empty dir on Windows
+            os.replace(source, target)  # atomic: same volume, target now absent
         except OSError:
             if self.is_present():  # another process won the race
                 return
@@ -170,7 +216,9 @@ class WakeModelStore:
                 declared = response.headers.get("content-length")
                 if declared and declared.isdigit() and int(declared) > self._max_download:
                     raise ProviderUnavailable("wake-word model download is larger than expected")
-                for chunk in response.iter_bytes(CHUNK_BYTES):
+                for (
+                    chunk
+                ) in response.iter_bytes():  # one item per network read: deadline stays live
                     total += len(chunk)
                     if total > self._max_download:
                         raise ProviderUnavailable(
@@ -198,8 +246,20 @@ class WakeModelStore:
         try:
             with zipfile.ZipFile(archive) as zf:
                 self._extract_members(zf, dest)
-        except zipfile.BadZipFile as exc:
-            raise ProviderUnavailable("wake-word model archive is corrupt") from exc
+        except (
+            zipfile.BadZipFile,
+            zipfile.LargeZipFile,
+            zlib.error,
+            EOFError,
+            NotImplementedError,
+            RuntimeError,
+        ) as exc:
+            raise ProviderUnavailable("wake-word model archive is corrupt or unsupported") from exc
+        except OSError as exc:
+            raise ProviderUnavailable(
+                f"could not unpack the wake-word model ({type(exc).__name__}): "
+                "check free disk space"
+            ) from exc
         if not (dest / self._name).is_dir():
             raise ProviderUnavailable(f"wake-word model archive has no {self._name!r} folder")
 
@@ -238,6 +298,9 @@ class WakeModelStore:
         if mode and stat.S_ISLNK(mode):
             raise ProviderUnavailable("wake-word model archive contains a symbolic link")
         parts = PurePosixPath(name).parts
+        for part in parts:
+            if part != part.rstrip(". ") or part.split(".")[0].lower() in _RESERVED_NAMES:
+                raise ProviderUnavailable("wake-word model archive has an unsafe path")
         if not parts or any(p in ("..", ".") for p in parts) or parts[0] != self._name:
             raise ProviderUnavailable("wake-word model archive has an unsafe path")
         return parts

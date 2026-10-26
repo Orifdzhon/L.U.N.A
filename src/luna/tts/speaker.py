@@ -14,6 +14,11 @@ running at that moment) is dropped instead of played. A small canceller thread c
 for the player; the worker starts no new utterance until the canceller is done, so a late
 ``stop()`` cannot cut the next one. Only one ``synthesize()`` runs at a time.
 
+``active`` is true from ``speak()`` (before any audio) until the queue is empty and the
+player has returned from ``play()`` (also after stop, barge-in and errors); listeners added
+with ``add_activity_listener`` see each change once, under the Speaker lock, so they must be
+trivial (lock order FrontEnd -> Speaker -> WakeListener, never reversed).
+
 The UI calls ``speak(reply)`` explicitly (ADR 0005); the Speaker does not subscribe to
 ``ReplyReady``.
 """
@@ -24,6 +29,7 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from luna.audio.base import AudioClip, AudioPlayer
@@ -101,6 +107,9 @@ class Speaker:
         self._open: str | _NotOpen | None = _NOT_OPEN  # request_id of a SPEAKING without IDLE
         self._muted = False
         self._closed = False
+        self._running = False  # the worker is inside a job (from taking it to finishing it)
+        self._active = False
+        self._listeners: list[Callable[[bool], None]] = []
         self._synth_lock = threading.Lock()  # at most one synthesize() at a time
         self._synth_threads: list[threading.Thread] = []
 
@@ -117,6 +126,26 @@ class Speaker:
     def muted(self) -> bool:
         return self._muted
 
+    @property
+    def active(self) -> bool:
+        """True while speech is queued or playing (see the module docstring)."""
+        return self._active
+
+    def add_activity_listener(self, listener: Callable[[bool], None]) -> Callable[[], None]:
+        """Call ``listener(active)`` on every change; returns an idempotent unsubscribe.
+
+        Runs under the Speaker lock: keep it trivial and never call back into the Speaker.
+        """
+        with self._cond:
+            self._listeners.append(listener)
+
+        def remove() -> None:
+            with self._cond:
+                if listener in self._listeners:
+                    self._listeners.remove(listener)
+
+        return remove
+
     def speak(self, reply: Reply, request_id: str | None = None) -> None:
         """Speak ``reply`` in the background; any current speech is stopped first."""
         with self._cond:
@@ -124,17 +153,20 @@ class Speaker:
                 return
             self._cancel()
             self._pending = _Job(self._gen, reply, request_id)
+            self._update_active()
 
     def stop(self) -> None:
         """Cut current speech and drop everything queued. Idempotent."""
         with self._cond:
             self._cancel()
+            self._update_active()
 
     def set_muted(self, muted: bool) -> None:
         with self._cond:
             self._muted = muted
             if muted:
                 self._cancel()
+                self._update_active()
 
     def close(self, timeout: float = 2.0) -> None:
         """Stop speaking, join the threads and close the player. Idempotent."""
@@ -143,6 +175,7 @@ class Speaker:
                 return
             self._closed = True
             self._cancel()
+            self._update_active()
             threads = [self._worker, self._canceller, *self._synth_threads]
         deadline = self._clock() + timeout
         me = threading.current_thread()
@@ -162,6 +195,18 @@ class Speaker:
         self._cancel_requests += 1
         self._pending = None
         self._cond.notify_all()
+
+    def _update_active(self) -> None:
+        """Publish ``active`` to the listeners if it changed (call with ``_cond`` held)."""
+        active = self._pending is not None or self._running
+        if active == self._active:
+            return
+        self._active = active
+        for listener in list(self._listeners):
+            try:
+                listener(active)
+            except Exception:
+                log.exception("speaker activity listener failed")
 
     def _cancel_loop(self) -> None:
         while True:
@@ -204,6 +249,8 @@ class Speaker:
                 if self._closed:
                     return
                 job, self._pending = self._pending, None
+                if job is not None:
+                    self._running = True  # still active: pending -> running, no change
             if job is None:
                 continue
             try:
@@ -212,6 +259,9 @@ class Speaker:
                 log.exception("unexpected speaker failure")
             finally:
                 self._finish(failed=False)
+                with self._cond:
+                    self._running = False
+                    self._update_active()
 
     def _current(self, job: _Job) -> bool:
         return self._gen == job.gen

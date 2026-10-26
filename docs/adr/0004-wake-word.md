@@ -170,22 +170,22 @@ in §4.2, threads in §5, settings in §6.
    The keyword stays in the audio on purpose: a cut inside a word is worse than a known leading
    word, which the router already strips (`_WAKE_RE`); a transcript that is only the keyword ends
    the turn silently.
-3. **Endpointing after a wake.** The `Recorder` waits up to `[wakeword] command_timeout_s` (4 s)
+3. **Endpointing after a wake.** The `Recorder` waits up to `[wakeword] command_timeout_s` (5 s)
    for the command, so "Луна" ... pause ... "открой ютуб" works; no speech -> the turn ends
    **silently** (no STT, no LLM, nothing leaves the machine). Its VAD is seeded with the
    listener's noise floor (no 240 ms warm-up that would swallow a one-breath command).
 4. **Half-duplex gate (D10).** The detector is fed only while no *hold* is active. Holds:
    `speaking` (from `Speaker.speak()` accepting a reply until playback really ended),
    `turn:<request_id>` (from the start of any voice turn until it ended, i.e. after `on_reply`
-   started speech, so the two holds overlap), then `tail_ms` (400 ms) after the last hold is
-   released (output-device buffer and room echo), plus `cooldown_ms` (1.5 s) minimum gap between
-   two wake events. On re-arm the detector is reset and the ring buffer cleared, so the end of a
+   started speech, so the two holds overlap), then `speaking_tail_ms` (400 ms) after the last hold
+   is released (output-device buffer and room echo), plus `cooldown_s` (2 s) minimum gap between
+   two wake events (`mute_while_speaking = false` drops the `speaking` hold, headset use only). On re-arm the detector is reset and the ring buffer cleared, so the end of a
    reply that contains "Луна" can never fire. The stream stays open while held. The `Speaker`
    exposes `active` + `add_activity_listener(callback)` and knows nothing about wake words (wired
    in the composition root).
 5. **Energy VAD gate before Vosk (replaces "Silero VAD gate").** The listener runs the existing
    `EnergyVAD` on every frame and feeds Vosk only inside speech segments (300 ms pre-roll from the
-   ring, segment closed after 600 ms of non-speech, forced flush + reset after 10 s of continuous
+   ring, segment closed after 600 ms of non-speech, detector `reset()` at segment end and after 10 s of continuous
    speech). *Why:* silence is most of the day and continuous Kaldi decoding is the main CPU cost;
    Silero would add an ONNX model to manage for a gate whose only job is saving CPU (precision
    comes from the grammar). Silero stays an option behind `VoiceActivityDetector`.
@@ -210,9 +210,9 @@ in §4.2, threads in §5, settings in §6.
    architect" if it does not (fallback: sherpa-onnx, option D). New transitive dependencies:
    `cffi`, `requests`, `tqdm`, `srt`, `websockets`. Model: `vosk-model-small-ru-0.22` from the
    official URL, pinned SHA-256 (computed once in #106 and committed as a constant), downloaded to
-   a temp file and unpacked with a zip-slip guard into `%LOCALAPPDATA%\LUNA\models\vosk\` on the
-   **first enable** of wake mode, never in tests or at install time; `[wakeword] model_dir` points
-   to a pre-downloaded copy for offline use.
+   a temp file and unpacked with a zip-slip guard under `%LOCALAPPDATA%\LUNA\models` (`WakeModelStore`,
+   `luna/voice/wake_model.py`) on the **first enable** of wake mode, never in tests or at install
+   time; `[wakeword] model_dir` points to a pre-downloaded copy for offline use.
 9. **Out of slice 4:** verification stage (D12), "Луна, стоп" during speech (D10), acoustic echo
    cancellation, a custom ONNX model (spike #116 only if #115 misses the targets), automatic
    microphone reconnect (a lost microphone turns wake mode `failed`; `/wake on` retries).
@@ -227,5 +227,8 @@ in §4.2, threads in §5, settings in §6.
   room speech/TV, **zero dropped frames** over the 2 h session (measured in #115).
 - Lock order (deadlock rule): `VoiceFrontEnd` lock -> `Speaker` lock -> `WakeListener` lock, never
   the reverse; the listener calls `on_wake` and publishes events without holding its lock.
-- The `WakeWordDetector` sketch changes: frames are `bytes` (PCM16, like the rest of `luna.audio`),
-  and an `end_segment()` flush is added for detectors that report only at the end of a segment.
+- The `WakeWordDetector` sketch changes (as implemented in PR #119): frames are `bytes` (PCM16,
+  like the rest of `luna.audio`); `WakeEvent(keyword, confidence, end_sample)` with
+  `end_sample: int | None` relative to the last `reset()`; when it is `None` the listener cuts at
+  "samples fed - 250 ms". There is no separate flush: the listener calls `reset()` at the end of
+  each VAD segment.

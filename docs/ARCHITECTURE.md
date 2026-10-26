@@ -61,8 +61,8 @@ added in later slices.
 | Audio | `luna.audio` | `AudioClip`, `AudioPlayer` protocol + interruptible `sounddevice` playback (slice 2); `MicSource` / `SoundDeviceMic` capture, `RingBuffer`, `EnergyVAD`, utterance `Recorder` (slice 3); `FrameSource` / `FrameTap` / `LiveSource` so a recording can continue from the wake listener's live stream (slice 4). |
 | STT | `luna.stt` | `STTProvider` protocol, `Transcript`, `STTChain` (fallback + cooldown), `GroqWhisperSTT` (default), `FasterWhisperSTT` (local CPU fallback). |
 | TTS | `luna.tts` | `TTSProvider` protocol, `EdgeTTS` (default, online neural voices), `SapiTTS` (local fallback), `FallbackTTS`, speech text preparation (`text`), `Speaker` worker (explicit `speak(reply)` from the UI; exposes `active` + activity listeners for half-duplex); `PiperTTS` later/optional. |
-| Wake word | `luna.wakeword` | `WakeWordDetector` protocol, `WakeEvent`, `VoskKeywordSpotter`, `WakeModelStore` (lazy verified model download), `WakeListener` (owns the always-on mic stream, VAD gate, holds/tail/cooldown, taps, follow-up window). `OnnxWakeWord` only after spike #116. |
-| Voice front-end | `luna.voice` | `VoiceFrontEnd`: turn state machine IDLE → LISTENING → TRANSCRIBING → HANDLING (§4.2) for hotkey, wake and follow-up turns; barge-in; latency spans. `VoiceInput`: lazy assembly (STT chain, mic, recorder, hotkey, wake listener), degraded start, `/mic` diagnostic, `/wake on` / `/wake off`. |
+| Wake word | `luna.wakeword` | `WakeWordDetector` protocol, `WakeEvent`, `VoskKeywordSpotter`, `WakeListener` (owns the always-on mic stream, VAD gate, holds/tail/cooldown, taps, follow-up window). `OnnxWakeWord` only after spike #116. |
+| Voice front-end | `luna.voice` | `VoiceFrontEnd`: turn state machine IDLE → LISTENING → TRANSCRIBING → HANDLING (§4.2) for hotkey, wake and follow-up turns; barge-in; latency spans. `WakeModelStore` (`voice/wake_model.py`: lazy verified Vosk model download). `VoiceInput`: lazy assembly (STT chain, mic, recorder, hotkey, wake listener), degraded start, `/mic` diagnostic, `/wake on` / `/wake off`. |
 | UI | `luna.ui` | `cli` (REPL, slice 1) and `qt` (tray, popup window, status indicator, slice 5). |
 | Logging | `luna.logs` | App log (rotating text) and action log (JSONL, F9). |
 
@@ -128,10 +128,10 @@ src/luna/
   wakeword/
     base.py               # WakeWordDetector, WakeEvent (#104)
     vosk_spotter.py       # VoskKeywordSpotter, lazy `import vosk` (#105)
-    models.py             # WakeModelStore: download, SHA-256, safe unzip (#106)
     listener.py           # WakeListener, WakeGate, WakeState (#108, #109)
     onnx_wakeword.py      # only if spike #116 wins
   voice/
+    wake_model.py         # WakeModelStore: download, SHA-256, safe unzip (#106, PR #118)
     frontend.py           # VoiceFrontEnd: push-to-talk state machine
     input.py              # VoiceInput: lazy assembly, degraded start, /mic levels
   ui/
@@ -310,7 +310,7 @@ class Recorder:
     def record(self, cancel: threading.Event, *,
                stop: threading.Event | None = None,
                live: LiveSource | None = None,       # slice 4
-               no_speech_s: float | None = None,     # slice 4: overrides NO_SPEECH_S (wake: 4 s)
+               no_speech_s: float | None = None,     # slice 4: overrides NO_SPEECH_S (wake: 5 s)
                ) -> Utterance: ...
     # live=None (push-to-talk, wake mode off): mic.start() ... mic.stop() in finally (unchanged).
     # live given: never touches the mic; reads live.frames; calls live.frames.close() on return
@@ -412,38 +412,42 @@ class Speaker:
 ```
 
 ```python
-# luna/wakeword/base.py (#104); new `WakeWordError(LunaError)` in luna/core/errors.py
+# luna/wakeword/base.py (#104, PR #119)
 @dataclass(frozen=True)
 class WakeEvent:
-    keyword: str              # as configured ("луна")
-    score: float              # 0..1; engine-specific (Vosk: word confidence, 1.0 if not reported)
-    end_sample: int           # samples passed to process() since the last reset(), up to the
-                              # keyword end (word timestamps; fallback: samples fed so far)
+    keyword: str                      # as configured ("луна")
+    confidence: float | None          # engine-specific 0..1, None if the engine reports none
+    end_sample: int | None            # sample index right after the keyword, counted from the
+                                      # detector's last reset() (D11); None = unknown
+    # + end_s property (end_sample / sample_rate)
 
-class WakeWordDetector(Protocol):
+class WakeWordDetector(Protocol):     # not thread-safe; owned by the luna-wake thread
     name: str
-    def process(self, frame: bytes) -> WakeEvent | None: ...   # PCM16 mono 16 kHz, any length
-    def end_segment(self) -> WakeEvent | None: ...   # speech segment ended: flush, then reset
-    def reset(self) -> None: ...                     # forget all audio; end_sample restarts at 0
+    sample_rate: int                  # 16 000
+    frame_samples: int                # preferred frame size (the listener sends 30 ms frames)
+    def process(self, frame: bytes) -> WakeEvent | None: ...   # PCM16 mono
+    def reset(self) -> None: ...      # forget all audio; end_sample counting restarts at 0
     def close(self) -> None: ...
-# Each spoken keyword is reported once (Vosk: count "луна" words in partial results and report
-# when the count grows). Called only from the luna-wake thread; not thread-safe.
+# Each spoken keyword is reported once (Vosk: count keyword words in partial results and report
+# when the count grows). At the end of a VAD speech segment the listener calls reset(); a
+# detector that only reports on final results must flush inside process() (Vosk: AcceptWaveform
+# returning True) - there is no separate flush method.
+# end_sample None → the listener uses "samples fed since reset - 250 ms" as the cut.
 
 # luna/wakeword/vosk_spotter.py (#105): `import vosk` inside __init__ (lazy, core dependency)
 class VoskKeywordSpotter:
-    def __init__(self, model_path: Path, keywords: Sequence[str], *, min_score: float,
+    def __init__(self, model_path: Path, keywords: Sequence[str], *, threshold: float,
                  sample_rate: int = 16_000) -> None: ...
     # KaldiRecognizer(model, 16000, json.dumps([*keywords, "[unk]"])), SetWords(True),
-    # SetPartialWords(True) if available (#105 verifies; else end_sample = samples fed - 250 ms).
-    # Raises WakeWordError("keyword not in model vocabulary") at construction.
+    # SetPartialWords(True) if available (#105 verifies; else end_sample=None).
+    # confidence < threshold → no event. Keyword not in the model vocabulary → error at construction.
 
-# luna/wakeword/models.py (#106)
+# luna/voice/wake_model.py (#106, PR #118)
 class WakeModelStore:
-    def __init__(self, root: Path, *, http: httpx.Client | None = None) -> None: ...
-    def path(self, name: str) -> Path | None: ...          # installed and complete, else None
-    def ensure(self, name: str, progress: Callable[[str], None] | None = None) -> Path: ...
-    # pinned URL + SHA-256 per known model name; download to a temp file, verify, unzip with a
-    # zip-slip guard into a temp dir, atomic rename; WakeWordError with a short reason on failure
+    def __init__(self, model_dir: Path | None = None) -> None: ...   # None = %LOCALAPPDATA%\LUNA\models
+    def ensure(self) -> Path: ...
+    # vosk-model-small-ru-0.22: pinned URL + SHA-256; download, verify, unzip with a zip-slip
+    # guard, atomic rename; returns the model folder; raises with a short reason on failure
 
 # luna/wakeword/listener.py (#108, gating #109, window #113)
 class WakeState(enum.Enum):
@@ -647,8 +651,8 @@ the hotkey table above stays valid in wake mode, unchanged.
 | State | Mic | Detector | Entered when | Left when |
 |---|---|---|---|---|
 | `OFF` | closed | — | default; `/wake off`; app exit | `/wake on` → `ARMED` (after model load + mic open) |
-| `ARMED` | open | fed inside VAD speech segments only | listener started; all holds released + `tail_ms` (400) elapsed; cooldown over | a hold is set, or a wake event fires |
-| `HELD` | open (frames still go to the ring buffer and to an open tap) | muted | `speaking` (Speaker active), `turn:<id>` (any voice turn), tail, cooldown (1.5 s after an event) | last hold released + tail → `ARMED`: `detector.reset()`, ring buffer cleared |
+| `ARMED` | open | fed inside VAD speech segments only | listener started; all holds released + `speaking_tail_ms` (400) elapsed; cooldown over | a hold is set, or a wake event fires |
+| `HELD` | open (frames still go to the ring buffer and to an open tap) | muted | `speaking` (Speaker active), `turn:<id>` (any voice turn), tail, cooldown (`cooldown_s`, 2 s after an event) | last hold released + tail → `ARMED`: `detector.reset()`, ring buffer cleared |
 | `FAILED` | closed | — | `AudioError` from the mic (unplugged / taken), no frames for 2 s, detector exception | `/wake on` (retry); push-to-talk still works if the mic is back |
 
 **Wake event → turn** (the turn itself is the push-to-talk pipeline: LISTENING → TRANSCRIBING → HANDLING)
@@ -656,8 +660,8 @@ the hotkey table above stays valid in wake mode, unchanged.
 ```
 luna-wake: mic.read() → position += 480 → ring (2 s) → [tap.push if a tap is open]
            ARMED: EnergyVAD(frame) → gate: segment opens on speech (detector gets 300 ms ring
-                  pre-roll first), closes after 600 ms non-speech (end_segment()), forced
-                  flush after 10 s → detector.process(frame) → WakeEvent?
+                  pre-roll first), closes after 600 ms non-speech (detector.reset()), forced
+                  reset after 10 s → detector.process(frame) → WakeEvent?
            event: cut = segment_start + event.end_sample
                   lead_in = ring[cut-1000 ms : cut]   backlog = ring[cut : now]
                   tap = FrameTap(backlog); trigger = WakeTrigger(LiveSource(tap, lead_in, vad.noise_floor), event)
@@ -666,9 +670,9 @@ luna-wake: mic.read() → position += 480 → ring (2 s) → [tap.push if a tap 
 VoiceFrontEnd.on_wake (luna-wake thread, non-blocking): IDLE only → speaker.stop(); new turn
            kind="wake"; set_hold("turn:<id>", True); start thread luna-voice
 luna-voice: [cue beep if [wakeword] cue = "beep"] → Recorder.record(cancel, stop=turn.stop,
-           live=trigger.source, no_speech_s=command_timeout_s (4 s))
+           live=trigger.source, no_speech_s=command_timeout_s (5 s))
            └─ backlog frames are VAD'ed like live audio → one-breath command already inside
-           └─ no speech within 4 s → IDLE silently (no STT, nothing leaves the machine)
+           └─ no speech within 5 s → IDLE silently (no STT, nothing leaves the machine)
            → STTChain → strip leading "Луна"/"Luna" → empty → IDLE silently
            → Orchestrator.handle(Request(..., source="voice")) → on_reply → Speaker.speak (hold "speaking")
            finally: set_hold("turn:<id>", False)  ← after speak(), so holds overlap, no gap
@@ -676,8 +680,9 @@ luna-voice: [cue beep if [wakeword] cue = "beep"] → Recorder.record(cancel, st
 
 Rules:
 - **Half-duplex (D10).** While anything is spoken, and for 400 ms after it, the detector is muted;
-  a reply containing "Луна" cannot wake L.U.N.A. Speech is interrupted with the hotkey only
-  (barge-in: `speaker.stop()`, then `open_tap(preroll_ms=0, skip_ms=tail_ms)` so the echo tail is
+  a reply containing "Луна" cannot wake L.U.N.A. (`mute_while_speaking = false` drops the
+  `speaking` hold, for headset use only; turn holds stay.) Speech is interrupted with the hotkey only
+  (barge-in: `speaker.stop()`, then `open_tap(preroll_ms=0, skip_ms=speaking_tail_ms)` so the echo tail is
   not recorded). "Луна, стоп" during speech: slice 6 (needs AEC or a headset).
 - **Typed requests** in wake mode: their spoken replies set the `speaking` hold like any reply.
 - **Hotkey in wake mode:** same toggle table; the turn records from `open_tap(voice.preroll_ms)`
@@ -688,7 +693,7 @@ Rules:
   open; it is shorter than `min_speech_ms`, so the VAD ignores its echo. Off by default.
 - **Status:** a wake turn publishes the same `StatusChanged` sequence as a hotkey turn; the
   listener publishes `WakeStateChanged` (`armed`/`held`/`off`/`failed`) for the indicator.
-  INFO line per wake turn: `wake_to_listening_ms`, `capture_ms`, `stt_ms`, `handle_ms`, score.
+  INFO line per wake turn: `wake_to_listening_ms`, `capture_ms`, `stt_ms`, `handle_ms`, confidence.
   No audio, no transcript at INFO.
 - **Privacy:** before a keyword, audio lives only in the 2 s ring buffer and the tap queue in
   memory; nothing is stored or sent. `/wake off` closes the stream at once and clears both.
@@ -818,18 +823,19 @@ volume = 100                    # 0 .. 100
 max_chars = 1500                # longest spoken reply, cut at a sentence end
 first_chunk_max_chars = 200     # short first chunk → quick first audio
 
-[wakeword]                      # slice 4 (#103), ADR 0004 slice-4 amendment
+[wakeword]                      # slice 4: WakeWordSettings (#103, PR #120)
 enabled = false                 # --wake / /wake on; the mic is never opened for wake otherwise
-engine = "vosk"                 # "vosk" | "off" (= enabled false); "onnx" only after spike #116
-keywords = ["луна"]             # lowercase words of the model vocabulary; 1-3 entries
-model = "vosk-model-small-ru-0.22"   # a name known to WakeModelStore (pinned URL + SHA-256)
-# model_dir = "D:/models/vosk"  # omitted = %LOCALAPPDATA%\LUNA\models\vosk (downloaded on first enable)
-min_score = 0.5                 # 0..1, engine-specific; calibrated in #115
+engine = "vosk"                 # "vosk" | "off" (= enabled false); "onnx" added only if spike #116 wins
+keywords = ["луна"]
+threshold = 0.5                 # detector confidence 0..1; calibrated in #115
+cooldown_s = 2.0                # minimum gap between two wake events
+model = "small-ru"              # vosk-model-small-ru-0.22 (WakeModelStore: pinned URL + SHA-256)
+# model_dir = "D:/models"       # omitted = %LOCALAPPDATA%\LUNA\models (downloaded on first enable)
+mute_while_speaking = true      # half-duplex (D10); false only for headset use
+speaking_tail_ms = 400          # detector stays muted this long after speech ends (D10)
+command_timeout_s = 5.0         # wait this long for the command after the keyword
 cue = "off"                     # "off" | "beep" (D8)
-command_timeout_s = 4.0         # wait this long for the command after the keyword
-follow_up_s = 0.0               # 0 = off (D9); ~6 when on
-tail_ms = 400                   # detector stays muted this long after speech ends (D10)
-cooldown_ms = 1500              # minimum gap between two wake events
+follow_up_s = 0.0               # 0 = off (D9); ~6 when on; max 30
 # hotkey = "..."                # LEGACY: accepted, ignored with one warning (the hotkey is [voice] hotkey)
 
 [search]
@@ -845,8 +851,7 @@ autostart = false
 `engine = "vosk"`, `keywords = ["луна"]`, `hotkey = "ctrl+alt+space"`. It must load unchanged:
 `engine` and `keywords` keep their meaning; `hotkey` is dropped with one warning (like the legacy
 `[stt]` keys); `engine = "off"` behaves as `enabled = false` (`--wake` then reports "wake word is
-off in [wakeword] engine"); `engine = "onnx"` validates but enabling it degrades with "onnx wake
-word is not available yet". Every other unknown key is still an error (`extra="forbid"`). The
+off in [wakeword] engine"). Every other unknown key is still an error (`extra="forbid"`). The
 `--wake` flag and `/wake on` override `enabled` for the session; `enabled = true` means "start in
 wake mode" and implies listening (`[voice] listen`).
 

@@ -52,6 +52,7 @@ import csv
 import json
 import logging
 import math
+import re
 import sys
 import time
 import tomllib
@@ -69,6 +70,13 @@ import bench_stt
 from luna.config.loader import load_settings
 from luna.core.errors import ConfigError
 from luna.wakeword.base import WAKE_SAMPLE_RATE, WakeWordDetector
+from luna.wakeword.verify import (
+    VERIFY_AFTER_MS,
+    VERIFY_LEAD_MS,
+    WakeVerifier,
+    keyword_first,
+    verify_window,
+)
 from luna.wakeword.vosk_spotter import DEFAULT_MIN_WORD_S
 
 SAMPLE_RATE = WAKE_SAMPLE_RATE
@@ -83,6 +91,8 @@ DEFAULT_TAIL_S = 1.5  # silence fed after each clip: Vosk reports the keyword on
 DEFAULT_MIN_NEGATIVE_HOURS = 1.0
 LONG_CHUNK_S = 10.0
 MAX_FA_LISTED = 40
+DEFAULT_VERIFY_TOP = 3
+HISTORY_S = 10  # audio kept behind the stream head so a late event can still be cut
 
 Label = Literal["positive", "negative"]
 Verdict = Literal["yes", "provisional", "no"]
@@ -300,11 +310,17 @@ def wav_duration_s(path: Path) -> float:
 # -- streaming and metrics ---------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass
 class Detection:
     at_s: float  # audio time at which the event was produced
     keyword_end_s: float | None  # end of the keyword as reported by the engine
     keyword: str = ""
+    window: bytes | None = None  # production verify_window at the cut (only with keep_windows)
+
+    @property
+    def cut_s(self) -> float:
+        """The wake cut: end of the keyword when the engine reports it, else the event time."""
+        return self.at_s if self.keyword_end_s is None else self.keyword_end_s
 
 
 class StreamRunner:
@@ -321,6 +337,7 @@ class StreamRunner:
         *,
         cooldown_s: float = DEFAULT_COOLDOWN_S,
         clock: Callable[[], float] = time.process_time,
+        keep_windows: bool = False,
     ) -> None:
         self._det = detector
         self._frame_bytes = detector.frame_samples * 2
@@ -332,6 +349,12 @@ class StreamRunner:
         self._last_accept_s: float | None = None
         self.cpu_s = 0.0
         self.detections: list[Detection] = []
+        # window capture for stage 2: a bounded buffer of recent audio plus detections that
+        # still wait for their "after the cut" audio
+        self._keep = keep_windows
+        self._buf = bytearray()
+        self._buf_origin = 0  # sample index of _buf[0]
+        self._waiting: list[Detection] = []
 
     @property
     def audio_s(self) -> float:
@@ -353,12 +376,23 @@ class StreamRunner:
             self.feed(
                 bytes(int(tail_s * SAMPLE_RATE) // self._det.frame_samples * self._frame_bytes)
             )
+        if self._keep:
+            self._settle(final=True)
 
     def _process(self, frame: bytes) -> None:
         began = self._clock()
         event = self._det.process(frame)
         self.cpu_s += self._clock() - began
         self._samples += self._det.frame_samples
+        if self._keep:
+            self._buf += frame
+        try:
+            self._handle(event)
+        finally:
+            if self._keep:
+                self._settle(final=False)
+
+    def _handle(self, event: object) -> None:
         if event is None:
             return
         at_s = self._samples / SAMPLE_RATE
@@ -369,9 +403,35 @@ class StreamRunner:
         end_s = (
             None if event.end_sample is None else (self._origin + event.end_sample) / SAMPLE_RATE
         )
-        self.detections.append(Detection(at_s, end_s, event.keyword))
+        detection = Detection(at_s, end_s, event.keyword)  # type: ignore[attr-defined]
+        self.detections.append(detection)
+        if self._keep:
+            self._waiting.append(detection)
         self._det.reset()
         self._origin = self._samples
+
+    def _settle(self, *, final: bool) -> None:
+        """Cut windows whose "after" audio has arrived (all of them at the end of the audio),
+        then drop audio nobody can still need."""
+        after = VERIFY_AFTER_MS * SAMPLE_RATE // 1000
+        lead = VERIFY_LEAD_MS * SAMPLE_RATE // 1000
+        still: list[Detection] = []
+        for det in self._waiting:
+            cut = round(det.cut_s * SAMPLE_RATE)
+            if final or self._samples >= cut + after:
+                rel = min(max(0, cut - self._buf_origin), len(self._buf) // 2) * 2
+                det.window = verify_window(bytes(self._buf[:rel]), [bytes(self._buf[rel:])])
+            else:
+                still.append(det)
+        self._waiting = still
+        # The engine reports an event up to a few seconds after the keyword ended (finals), so
+        # keep a generous history; production has the same audio in the listener's ring buffer.
+        horizon = min([round(d.cut_s * SAMPLE_RATE) for d in still] + [self._samples])
+        keep_from = min(horizon - lead, self._samples - HISTORY_S * SAMPLE_RATE)
+        drop = min(max(0, keep_from - self._buf_origin), len(self._buf) // 2)
+        if drop:
+            del self._buf[: drop * 2]
+            self._buf_origin += drop
 
 
 def percentile(values: Sequence[float], q: float) -> float | None:
@@ -396,6 +456,27 @@ class FalseAccept:
 
 
 @dataclass
+class Stage2:
+    """Metrics after the verification stage (``--verify local``) for one configuration."""
+
+    hits: int = 0  # positive clips with at least one accepted detection
+    strict_hits: int = 0  # ... accepted under "keyword followed by punctuation or end"
+    false_rejects: list[str] = field(default_factory=list)  # hit by stage 1, rejected by stage 2
+    fa_clips: int = 0  # accepted detections on negative clips
+    fa_long: int = 0
+    strict_fa: int = 0  # accepted under the strict rule (clips + long)
+    negative_rejects: int = 0  # stage-1 false accepts the verifier threw out
+    errors: int = 0  # decode errors (counted as rejects: the bench runs fail-closed)
+    checks: int = 0
+    wall_s: list[float] = field(default_factory=list)
+    cpu_s: list[float] = field(default_factory=list)
+
+    @property
+    def fa_total(self) -> int:
+        return self.fa_clips + self.fa_long
+
+
+@dataclass
 class ConfigResult:
     config: Config
     positives: int = 0
@@ -410,6 +491,10 @@ class ConfigResult:
     audio_s: float = 0.0
     cpu_s: float = 0.0
     false_accepts: list[FalseAccept] = field(default_factory=list)
+    # stage 2: windows kept for the verifier, and its outcome (None = not verified)
+    pos_windows: dict[str, list[bytes]] = field(default_factory=dict)
+    neg_windows: list[tuple[str, float, bytes, bool]] = field(default_factory=list)  # ..., long
+    stage2: Stage2 | None = None
 
     @property
     def recall(self) -> float | None:
@@ -432,6 +517,32 @@ class ConfigResult:
     def cpu_per_audio_s(self) -> float | None:
         return self.cpu_s / self.audio_s if self.audio_s > 0 else None
 
+    @property
+    def recall2(self) -> float | None:
+        s2 = self.stage2
+        return s2.hits / self.positives if s2 is not None and self.positives else None
+
+    @property
+    def fa_per_hour2(self) -> float | None:
+        s2 = self.stage2
+        hours = self.negative_hours
+        return s2.fa_total / hours if s2 is not None and hours > 0 else None
+
+    def verdict2(
+        self,
+        *,
+        min_negative_hours: float = DEFAULT_MIN_NEGATIVE_HOURS,
+        max_fa_per_hour: float = D7_MAX_FA_PER_HOUR,
+        min_recall: float = D7_MIN_RECALL,
+    ) -> Verdict:
+        """The D7 verdict on the two-stage pipeline (stage-2 recall and FA/h)."""
+        recall, fa = self.recall2, self.fa_per_hour2
+        if recall is None or fa is None or self.long_skipped:
+            return "no"
+        if recall < min_recall or fa > max_fa_per_hour:
+            return "no"
+        return "yes" if self.negative_hours >= min_negative_hours else "provisional"
+
     def verdict(
         self,
         *,
@@ -451,6 +562,10 @@ class ConfigResult:
 DetectorFactory = Callable[[Config], WakeWordDetector]
 
 
+def _windows(detections: Sequence[Detection]) -> list[bytes]:
+    return [d.window for d in detections if d.window is not None]
+
+
 def evaluate_config(
     config: Config,
     factory: DetectorFactory,
@@ -463,6 +578,7 @@ def evaluate_config(
     clock: Callable[[], float] = time.process_time,
     long_reader: Callable[[Path], Iterator[bytes]] = iter_wav_chunks,
     long_duration: Callable[[Path], float] = wav_duration_s,
+    keep_windows: bool = False,
 ) -> ConfigResult:
     """Run one configuration over the clips and (when ``run_long``) the long recordings."""
     result = ConfigResult(config)
@@ -470,7 +586,9 @@ def evaluate_config(
     try:
         for clip in clips:
             detector.reset()
-            runner = StreamRunner(detector, cooldown_s=cooldown_s, clock=clock)
+            runner = StreamRunner(
+                detector, cooldown_s=cooldown_s, clock=clock, keep_windows=keep_windows
+            )
             runner.feed(clip.pcm16)
             runner.flush(tail_s)
             result.audio_s += runner.audio_s
@@ -479,6 +597,7 @@ def evaluate_config(
                 result.positives += 1
                 if runner.detections:
                     result.hits += 1
+                    result.pos_windows[clip.id] = _windows(runner.detections)
                     latency = wake_latency_s(clip, runner.detections[0])
                     if latency is not None:
                         result.latencies_s.append(latency)
@@ -488,12 +607,19 @@ def evaluate_config(
                 result.clip_negative_s += clip.duration_s
                 result.fa_clips += len(runner.detections)
                 result.false_accepts.extend(FalseAccept(clip.id, d.at_s) for d in runner.detections)
+                result.neg_windows.extend(
+                    (clip.id, d.at_s, d.window, False)
+                    for d in runner.detections
+                    if d.window is not None
+                )
         if long_files and not long_gate(result):
             result.long_skipped = True
         elif long_files:
             for path in long_files:
                 detector.reset()
-                runner = StreamRunner(detector, cooldown_s=cooldown_s, clock=clock)
+                runner = StreamRunner(
+                    detector, cooldown_s=cooldown_s, clock=clock, keep_windows=keep_windows
+                )
                 for chunk in long_reader(path):
                     runner.feed(chunk)
                 runner.flush(tail_s)
@@ -503,6 +629,11 @@ def evaluate_config(
                 result.fa_long += len(runner.detections)
                 result.false_accepts.extend(
                     FalseAccept(path.name, d.at_s) for d in runner.detections
+                )
+                result.neg_windows.extend(
+                    (path.name, d.at_s, d.window, True)
+                    for d in runner.detections
+                    if d.window is not None
                 )
     finally:
         close = getattr(detector, "close", None)
@@ -542,6 +673,80 @@ def run_grid(
             )
         )
     return results
+
+
+# -- stage 2: verification ---------------------------------------------------------------------
+
+_LETTERS = re.compile(r"\W*[^\W\d_]+(?:-[^\W\d_]+)*(?P<rest>.*)", re.DOTALL)
+
+
+def keyword_strict(text: str, words: Sequence[str]) -> bool:
+    """Stricter rule (bench only): the production first-token match, and the keyword is then
+    followed by punctuation or the end of the text ("Луна, открой" yes, "Луна открой" no)."""
+    if not keyword_first(text, words):
+        return False
+    match = _LETTERS.match(text)
+    if match is None:
+        return False
+    rest = match.group("rest").lstrip()
+    return not rest or not (rest[0].isalnum() or rest[0] == "_")
+
+
+def select_for_verification(results: Sequence[ConfigResult], top: int) -> list[ConfigResult]:
+    """The ``top`` configurations by stage-1 recall (ties: lower FA/h, then grid order)."""
+    ordered = sorted(
+        results,
+        key=lambda r: (
+            -(r.recall if r.recall is not None else -1.0),
+            r.fa_per_hour if r.fa_per_hour is not None else math.inf,
+        ),
+    )
+    return ordered[: max(0, top)]
+
+
+def verify_result(
+    result: ConfigResult,
+    verifier: WakeVerifier,
+    words: Sequence[str],
+    *,
+    cpu_clock: Callable[[], float] = time.process_time,
+) -> Stage2:
+    """Run the verifier over the windows stage 1 produced for this configuration."""
+    s2 = Stage2()
+
+    def check(window: bytes) -> tuple[bool, bool]:
+        began = cpu_clock()
+        outcome = verifier.verify(window)
+        s2.cpu_s.append(cpu_clock() - began)
+        s2.wall_s.append(outcome.latency_s)
+        s2.checks += 1
+        if outcome.reason == "error":
+            s2.errors += 1
+            return False, False
+        return outcome.accepted, outcome.accepted and keyword_strict(outcome.text, words)
+
+    for clip_id, windows in result.pos_windows.items():
+        loose = strict = False
+        for window in windows:
+            ok, strict_ok = check(window)
+            loose, strict = loose or ok, strict or strict_ok
+            if loose and strict:
+                break
+        s2.hits += loose
+        s2.strict_hits += strict
+        if not loose:
+            s2.false_rejects.append(clip_id)
+    for _source, _at_s, window, is_long in result.neg_windows:
+        ok, strict_ok = check(window)
+        if not ok:
+            s2.negative_rejects += 1
+            continue
+        s2.strict_fa += strict_ok
+        if is_long:
+            s2.fa_long += 1
+        else:
+            s2.fa_clips += 1
+    return s2
 
 
 # -- report ------------------------------------------------------------------------------------
@@ -616,7 +821,80 @@ def markdown_report(
         ]
         lines.append("| " + " | ".join(row) + " |")
     lines.append("")
+    lines += stage2_markdown(results, min_negative_hours)
     return "\n".join(lines)
+
+
+def stage2_markdown(results: Sequence[ConfigResult], min_negative_hours: float) -> list[str]:
+    """The two-stage table; empty (output unchanged) when nothing was verified."""
+    verified = [r for r in results if r.stage2 is not None]
+    if not verified:
+        return []
+    kw = {"min_negative_hours": min_negative_hours}
+    rank = {"yes": 0, "provisional": 1, "no": 2}
+    verified.sort(
+        key=lambda r: (
+            rank[r.verdict2(**kw)],
+            -(r.recall2 if r.recall2 is not None else -1.0),
+            r.fa_per_hour2 if r.fa_per_hour2 is not None else math.inf,
+        )
+    )
+    lines = [
+        f"## Stage 2: Vosk + local verification (top {len(verified)} of {len(results)} "
+        "configs by stage-1 recall)",
+        "",
+        "Recall and FA are counted **after** the verifier. `false rej` = positive clips the "
+        "first stage caught and the verifier threw out; `neg rej` = stage-1 false accepts the "
+        "verifier removed. `strict` = the stricter rule (keyword followed by punctuation or the "
+        "end of the transcript). Decode times are wall clock; "
+        "CPU is process CPU seconds per check.",
+        "",
+        "| D7 | mode | thr | min_word_s | partials | recall1 % | recall2 % | false rej | "
+        "FA1 | FA2 clips | FA2 long | neg h | FA2/h | neg rej | wall p50 s | wall p95 s | "
+        "CPU s/check | strict recall % | strict FA |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for r in verified:
+        s2 = r.stage2
+        assert s2 is not None
+        mark = {"yes": "**yes**", "provisional": "provisional", "no": "no"}[r.verdict2(**kw)]
+        recall1 = None if r.recall is None else r.recall * 100
+        recall2 = None if r.recall2 is None else r.recall2 * 100
+        strict = s2.strict_hits / r.positives * 100 if r.positives else None
+        row = [
+            mark,
+            r.config.mode,
+            f"{r.config.threshold:g}",
+            f"{r.config.min_word_s:g}",
+            "on" if r.config.report_partials else "off",
+            _fmt(recall1, ".1f"),
+            _fmt(recall2, ".1f"),
+            f"{len(s2.false_rejects)}/{r.hits}",
+            str(r.false_accepts_total),
+            str(s2.fa_clips),
+            "skipped" if r.long_skipped else str(s2.fa_long),
+            _fmt(r.negative_hours, ".3f"),
+            _fmt(r.fa_per_hour2, ".2f"),
+            str(s2.negative_rejects),
+            _fmt(percentile(s2.wall_s, 50)),
+            _fmt(percentile(s2.wall_s, 95)),
+            _fmt(sum(s2.cpu_s) / s2.checks if s2.checks else None, ".2f"),
+            _fmt(strict, ".1f"),
+            str(s2.strict_fa),
+        ]
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+    for r in verified:
+        s2 = r.stage2
+        assert s2 is not None
+        note = f"- {r.config.label}: false rejects: " + (
+            ", ".join(s2.false_rejects) if s2.false_rejects else "none"
+        )
+        if s2.errors:
+            note += f"; {s2.errors} decode error(s) counted as rejects"
+        lines.append(note)
+    lines.append("")
+    return lines
 
 
 def json_report(
@@ -650,6 +928,25 @@ def json_report(
                 ],
             }
         )
+        if r.stage2 is not None:
+            s2 = r.stage2
+            rows[-1]["stage2"] = {
+                "hits": s2.hits,
+                "recall": r.recall2,
+                "strict_hits": s2.strict_hits,
+                "false_rejects": s2.false_rejects,
+                "fa_clips": s2.fa_clips,
+                "fa_long": s2.fa_long,
+                "fa_per_hour": r.fa_per_hour2,
+                "strict_fa": s2.strict_fa,
+                "negative_rejects": s2.negative_rejects,
+                "errors": s2.errors,
+                "checks": s2.checks,
+                "verify_wall_p50_s": percentile(s2.wall_s, 50),
+                "verify_wall_p95_s": percentile(s2.wall_s, 95),
+                "verify_cpu_s_per_check": sum(s2.cpu_s) / s2.checks if s2.checks else None,
+                "verdict": r.verdict2(min_negative_hours=min_negative_hours),
+            }
     return {
         "generated": datetime.now(UTC).isoformat(timespec="seconds"),
         "synthetic": synthetic,
@@ -815,6 +1112,19 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--model-dir", type=Path, help="folder holding the Vosk model (default: shared)"
     )
+    ver = p.add_argument_group("verification (stage 2)")
+    ver.add_argument(
+        "--verify",
+        choices=("off", "local"),
+        default="off",
+        help="local = also run the production faster-whisper verifier on every stage-1 event",
+    )
+    ver.add_argument(
+        "--verify-top",
+        type=int,
+        default=DEFAULT_VERIFY_TOP,
+        help=f"verify only the N best configs by stage-1 recall (default {DEFAULT_VERIFY_TOP})",
+    )
     out = p.add_argument_group("output")
     out.add_argument("--out", type=Path, help="write the results as JSON")
     out.add_argument("--md", type=Path, help="write the markdown table to a file")
@@ -846,7 +1156,28 @@ def _err(text: str) -> None:
     print(text, file=sys.stderr, flush=True)
 
 
-def main(argv: Sequence[str] | None = None, *, factory: DetectorFactory | None = None) -> int:
+def make_local_verifier(config_path: Path | None) -> tuple[WakeVerifier, list[str]]:
+    """Production verifier on the ``[stt.local]`` model, loaded once (fail-closed in the bench)."""
+    from luna.stt.faster_whisper import FasterWhisperSTT
+    from luna.wakeword.verify import FasterWhisperVerifier
+
+    settings = load_settings(config_path)
+    conf = settings.stt.local
+    words = list(settings.wakeword.verify_words)
+    stt = FasterWhisperSTT(
+        conf.model, conf.device, conf.compute_type, conf.beam_size, conf.model_dir
+    )
+    verifier = FasterWhisperVerifier(stt, words, fail_open=False)
+    verifier.warm_up()
+    return verifier, words
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    factory: DetectorFactory | None = None,
+    verifier: tuple[WakeVerifier, list[str]] | None = None,
+) -> int:
     args = build_parser().parse_args(argv)
     skip = [c.strip() for c in args.skip_categories.split(",") if c.strip()]
     try:
@@ -859,6 +1190,8 @@ def main(argv: Sequence[str] | None = None, *, factory: DetectorFactory | None =
             raise ConfigError("give --synth, --clips DIR or --record DIR (see --help)")
         if args.cooldown < 0 or args.tail < 0 or args.min_negative_hours < 0:
             raise ConfigError("--cooldown, --tail and --min-negative-hours must be >= 0")
+        if args.verify_top < 1:
+            raise ConfigError("--verify-top must be >= 1")
         grid = build_grid(
             [m.strip() for m in args.modes.split(",") if m.strip()],
             parse_floats(args.thresholds),
@@ -877,6 +1210,9 @@ def main(argv: Sequence[str] | None = None, *, factory: DetectorFactory | None =
         if not any(c.label == "positive" for c in clips):
             raise ConfigError("no positive clips: recall cannot be measured")
         detector_factory = factory or make_vosk_factory(args.model_dir, args.keyword)
+        stage2: tuple[WakeVerifier, list[str]] | None = None
+        if args.verify == "local":
+            stage2 = verifier or make_local_verifier(args.config)
     except (OSError, ConfigError) as exc:
         _err(f"bench_wake: {exc}")
         return 2
@@ -904,7 +1240,16 @@ def main(argv: Sequence[str] | None = None, *, factory: DetectorFactory | None =
         progress=_err,
         cooldown_s=args.cooldown,
         tail_s=args.tail,
+        keep_windows=stage2 is not None,
     )
+    if stage2 is not None:
+        stage2_verifier, words = stage2
+        try:
+            for r in select_for_verification(results, args.verify_top):
+                _err(f"verifying {r.config.label}")
+                r.stage2 = verify_result(r, stage2_verifier, words)
+        finally:
+            stage2_verifier.close()
     synthetic = bool(args.synth)
     print(
         markdown_report(
@@ -934,6 +1279,9 @@ def main(argv: Sequence[str] | None = None, *, factory: DetectorFactory | None =
             "long_hours": long_hours,
             "long_all": args.long_all,
         }
+        if stage2 is not None:
+            options["verify"] = args.verify
+            options["verify_top"] = args.verify_top
         args.out.write_text(
             json.dumps(
                 json_report(

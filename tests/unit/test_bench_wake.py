@@ -6,15 +6,18 @@ No model, no audio device, no TTS: detectors are fakes.
 import csv
 import json
 import wave
+from array import array
 from pathlib import Path
 
 import bench_stt
 import bench_wake
 import pytest
 
-from fakes import FakeWakeWord
+from fakes import FakeVerifier, FakeWakeWord
 from luna.audio.base import AudioClip
 from luna.core.errors import ConfigError
+from luna.wakeword import verify as production_verify
+from luna.wakeword.verify import VerifyResult
 
 FRAME = 480
 
@@ -503,3 +506,247 @@ def test_help_works_without_vosk(capsys):
         bench_wake.main(["--help"])
     assert exc.value.code == 0
     assert "--synth" in capsys.readouterr().out
+
+
+# -- stage 2: verification (#128) --------------------------------------------------------------
+
+KEEP = {"clock": zero_clock, "keep_windows": True}
+
+
+def ramp(seconds: float) -> bytes:
+    n = int(seconds * bench_wake.SAMPLE_RATE)
+    return array("h", (i % 30000 for i in range(n))).tobytes()
+
+
+def ramp_clip(cid="p", label="positive", seconds=3.0):
+    return bench_wake.BenchClip(cid, label, ramp(seconds))
+
+
+def accept(text="Луна"):
+    return VerifyResult(True, "keyword", text, 0.4)
+
+
+def reject(text="Лена"):
+    return VerifyResult(False, "no_keyword", text, 0.4)
+
+
+def test_bench_uses_the_production_verify_window():
+    assert bench_wake.verify_window is production_verify.verify_window
+    assert bench_wake.keyword_first is production_verify.keyword_first
+
+
+def test_window_is_cut_at_the_event_cut_like_production():
+    audio = ramp(3.0)
+    det = FakeWakeWord([49], marker=False)  # the keyword ends at frame 49: 1.5 s
+    r = bench_wake.StreamRunner(det, clock=zero_clock, keep_windows=True)
+    r.feed(audio)
+    r.flush()
+    cut = round(1.5 * bench_wake.SAMPLE_RATE) * 2
+    expected = production_verify.verify_window(audio[:cut], [audio[cut:]])
+    assert r.detections[0].window == expected
+    assert len(expected) == 44_800  # 1.4 s of PCM16
+
+
+def test_window_survives_small_chunks_and_buffer_trimming():
+    audio = ramp(30.0)
+    whole = bench_wake.StreamRunner(FakeWakeWord([300], marker=False), keep_windows=True)
+    whole.feed(audio)
+    whole.flush()
+    pieces = bench_wake.StreamRunner(FakeWakeWord([300], marker=False), keep_windows=True)
+    for i in range(0, len(audio), 1000):
+        pieces.feed(audio[i : i + 1000])
+    pieces.flush()
+    assert pieces.detections[0].window == whole.detections[0].window
+    assert len(pieces._buf) <= (10 + 1) * bench_wake.SAMPLE_RATE * 2  # bounded, not the whole 30 s
+
+
+def test_window_of_a_late_event_is_cut_at_the_keyword_end_not_at_the_event():
+    audio = ramp(5.0)
+    det = FakeWakeWord([99], marker=False, end_lag_samples=16_000)  # event 3.0 s, keyword end 2.0 s
+    r = bench_wake.StreamRunner(det, clock=zero_clock, keep_windows=True)
+    r.feed(audio)
+    r.flush()
+    assert r.detections[0].at_s == pytest.approx(3.0)
+    assert r.detections[0].keyword_end_s == pytest.approx(2.0)
+    cut = 2 * bench_wake.SAMPLE_RATE * 2
+    assert r.detections[0].window == production_verify.verify_window(audio[:cut], [audio[cut:]])
+    assert len(r.detections[0].window) == 44_800
+
+
+def test_window_at_clip_end_is_shorter_not_padded():
+    r = bench_wake.StreamRunner(FakeWakeWord([9], marker=False), keep_windows=True)
+    r.feed(ramp(0.42))  # event at 0.3 s, only 0.12 s of audio after it
+    r.flush()
+    assert len(r.detections[0].window) == (4800 + 1920) * 2
+
+
+def test_no_windows_without_keep_windows():
+    r = bench_wake.StreamRunner(FakeWakeWord([9], marker=False))
+    r.feed(ramp(1.0))
+    r.flush()
+    assert r.detections[0].window is None
+
+
+def stage1(clips, trigger=(9,), long_files=(), **kw):
+    return bench_wake.evaluate_config(
+        cfg(), lambda _c: FakeWakeWord(trigger, marker=False), clips, long_files, **KEEP, **kw
+    )
+
+
+def test_stage2_counts_recall_false_rejects_and_negative_rejects():
+    clips = [
+        ramp_clip("a"),
+        ramp_clip("b"),
+        ramp_clip("n1", "negative"),
+        ramp_clip("n2", "negative"),
+    ]
+    res = stage1(clips)
+    assert res.hits == 2 and res.false_accepts_total == 2
+    # order of verify calls: positives a, b, then negatives n1, n2
+    verifier = FakeVerifier([accept(), reject(), reject(), accept("Луна, привет")])
+    res.stage2 = bench_wake.verify_result(res, verifier, ["луна", "luna"])
+    s2 = res.stage2
+    assert s2.hits == 1 and s2.false_rejects == ["b"]
+    assert s2.negative_rejects == 1 and s2.fa_clips == 1 and s2.fa_long == 0
+    assert res.recall2 == 0.5
+    assert res.fa_per_hour2 == pytest.approx(1 / (6.0 / 3600))
+    assert s2.checks == 4 and len(verifier.calls) == 4
+    assert s2.wall_s == [0.4] * 4
+
+
+def test_stage2_long_negatives_count_as_long(tmp_path):
+    path = tmp_path / "long.wav"
+    write_wav(path, ramp(3.0))
+    res = stage1([ramp_clip("p")], long_files=[path])
+    assert res.fa_long == 1 and len(res.neg_windows) == 1
+    s2 = bench_wake.verify_result(res, FakeVerifier(accept()), ["луна"])
+    assert s2.fa_long == 1 and s2.fa_clips == 0
+    s2 = bench_wake.verify_result(res, FakeVerifier(reject()), ["луна"])
+    assert s2.fa_long == 0 and s2.negative_rejects == 1
+
+
+def test_stage2_positive_with_several_events_hits_if_any_accepted():
+    res = stage1([ramp_clip("a", seconds=4.0)], trigger=(9, 60), cooldown_s=0.0)
+    assert len(res.pos_windows["a"]) >= 2
+    s2 = bench_wake.verify_result(res, FakeVerifier([reject(), accept()]), ["луна"])
+    assert s2.hits == 1 and not s2.false_rejects
+
+
+def test_stage2_error_counts_as_reject_and_is_reported():
+    res = stage1([ramp_clip("a")])
+    s2 = bench_wake.verify_result(res, FakeVerifier(VerifyResult(False, "error")), ["луна"])
+    assert s2.errors == 1 and s2.false_rejects == ["a"]
+
+
+def test_stage2_cpu_seconds_per_check_use_the_cpu_clock():
+    res = stage1([ramp_clip("a")])
+    ticks = iter([0.0, 0.25])
+    s2 = bench_wake.verify_result(
+        res, FakeVerifier(accept()), ["луна"], cpu_clock=lambda: next(ticks)
+    )
+    assert s2.cpu_s == [0.25]
+
+
+@pytest.mark.parametrize(
+    ("text", "strict"),
+    [
+        ("Луна", True),
+        ("Луна.", True),
+        ("Луна, открой браузер", True),
+        ("Луна! Открой", True),
+        ("  луна ...", True),
+        ("Луна открой браузер", False),
+        ("Лена", False),
+        ("", False),
+        ("Луна-парк", False),
+    ],
+)
+def test_keyword_strict_rule(text, strict):
+    assert bench_wake.keyword_strict(text, ["луна", "luna"]) is strict
+
+
+def test_strict_columns_use_the_stricter_rule():
+    res = stage1([ramp_clip("a"), ramp_clip("n", "negative")])
+    s2 = bench_wake.verify_result(res, FakeVerifier(accept("Луна открой")), ["луна"])
+    assert s2.hits == 1 and s2.strict_hits == 0
+    assert s2.fa_total == 1 and s2.strict_fa == 0
+
+
+def test_select_for_verification_takes_top_n_by_stage1_recall():
+    def r(thr, hits, fa):
+        return bench_wake.ConfigResult(
+            cfg(threshold=thr), 10, hits, fa_clips=fa, clip_negative_s=3600.0
+        )
+
+    results = [r(0.1, 5, 0), r(0.2, 10, 3), r(0.3, 10, 1), r(0.4, 9, 0)]
+    top = bench_wake.select_for_verification(results, 2)
+    assert [x.config.threshold for x in top] == [0.3, 0.2]
+    assert len(bench_wake.select_for_verification(results, 99)) == 4
+
+
+def test_markdown_without_stage2_is_unchanged_and_with_stage2_adds_a_table():
+    plain = result()
+    before = bench_wake.markdown_report([plain], synthetic=False)
+    assert "Stage 2" not in before
+    plain.stage2 = bench_wake.Stage2(
+        hits=9, false_rejects=["x"], wall_s=[0.3, 0.5], cpu_s=[1.0], checks=1
+    )
+    after = bench_wake.markdown_report([plain], synthetic=False)
+    assert after.startswith(before.rstrip("\n"))
+    assert "Stage 2" in after and "false rejects: x" in after
+    data = bench_wake.json_report([plain], synthetic=False, options={})
+    assert data["results"][0]["stage2"]["false_rejects"] == ["x"]
+
+
+GRID_ARGS = ["--modes", "grammar", "--min-word", "0.3", "--partials", "on"]
+
+
+def test_main_verify_off_output_is_identical_to_default(tmp_path, capsys):
+    write_wav(tmp_path / "clips" / "positive" / "a.wav", pcm(1.0))
+    write_wav(tmp_path / "clips" / "negative" / "b.wav", pcm(1.0))
+    argv = [*("--clips", str(tmp_path / "clips")), *GRID_ARGS, *("--thresholds", "0.5")]
+
+    def fac(_c):
+        return FakeWakeWord([10], marker=False)
+
+    bench_wake.main(argv, factory=fac)
+    default = capsys.readouterr().out
+    bench_wake.main([*argv, "--verify", "off"], factory=fac)
+    assert capsys.readouterr().out == default
+    assert "Stage 2" not in default
+
+
+def test_main_verify_local_loads_the_model_once_and_limits_top(tmp_path, capsys, monkeypatch):
+    write_wav(tmp_path / "clips" / "positive" / "a.wav", ramp(2.0))
+    write_wav(tmp_path / "clips" / "negative" / "b.wav", ramp(2.0))
+    verifier = FakeVerifier(accept())
+    loads = []
+
+    def fake_loader(_config_path):
+        loads.append(1)
+        return verifier, ["луна"]
+
+    monkeypatch.setattr(bench_wake, "make_local_verifier", fake_loader)
+    argv = [
+        *("--clips", str(tmp_path / "clips")),
+        *GRID_ARGS,
+        *("--thresholds", "0.3,0.5,0.7"),
+        *("--verify", "local", "--verify-top", "2"),
+        *("--out", str(tmp_path / "r.json")),
+    ]
+    code = bench_wake.main(argv, factory=lambda _c: FakeWakeWord([10], marker=False))
+    assert code == 0 and len(loads) == 1
+    out = capsys.readouterr().out
+    assert "Stage 2" in out and "top 2 of 3" in out
+    data = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert sum("stage2" in row for row in data["results"]) == 2
+    assert len(verifier.calls) == 2 * 2  # two configs x (one positive + one negative event)
+    assert data["options"]["verify"] == "local"
+
+
+def test_verify_top_default_and_validation(tmp_path):
+    assert bench_wake.build_parser().parse_args(["--synth"]).verify_top == 3
+    assert bench_wake.build_parser().parse_args(["--synth"]).verify == "off"
+    write_wav(tmp_path / "positive" / "a.wav", pcm(1.0))
+    argv = ["--clips", str(tmp_path), "--verify", "local", "--verify-top", "0"]
+    assert bench_wake.main(argv, factory=lambda _c: FakeWakeWord()) == 2

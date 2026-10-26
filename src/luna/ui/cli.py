@@ -337,7 +337,12 @@ class Repl:
             return
         conf = self._app.settings.tts
         state = "muted" if self._app.speaker.muted else "on"
-        if conf.provider == "edge":
+        if conf.provider == "piper":
+            voices = (
+                f"piper ru={conf.piper.voice_ru}, en={conf.piper.voice_en} "
+                f"(fallback: sapi {conf.voice_ru}/{conf.voice_en})"
+            )
+        elif conf.provider == "edge":
             voices = (
                 f"edge ru={conf.edge_voice_ru}, en={conf.edge_voice_en} "
                 f"(fallback: sapi {conf.voice_ru}/{conf.voice_en})"

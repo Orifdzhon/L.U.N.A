@@ -195,9 +195,17 @@ def test_voice_commands_without_speaker(tmp_path):
     assert "Nothing is being spoken" in out
 
 
-def test_voice_command_shows_settings(voice):
+def test_voice_command_shows_piper_provider(voice):
     make, *_ = voice
     _, out = run(make(), Script("/voice", "exit"))
+    assert "piper ru=ru_RU-irina-medium, en=en_US-kristin-medium (fallback: sapi Irina/Zira)" in out
+
+
+def test_voice_command_shows_settings(voice):
+    make, *_ = voice
+    app = make()
+    app.settings.tts.provider = "edge"
+    _, out = run(app, Script("/voice", "exit"))
     assert "Irina" in out
     assert "Zira" in out
     assert "edge ru=ru-RU-SvetlanaNeural, en=en-US-JennyNeural (fallback: sapi Irina/Zira)" in out

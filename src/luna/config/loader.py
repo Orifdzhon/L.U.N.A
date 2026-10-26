@@ -52,20 +52,12 @@ def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, 
     return merged
 
 
-_PIPER_HINT = (
-    '  hint: Piper is not supported yet; use provider = "sapi" (and voice_ru = "Irina", '
-    'voice_en = "Zira") - see docs/SETUP.md#voice-text-to-speech'
-)
-
-
 def _format_validation_error(path: Path | None, exc: ValidationError) -> str:
     where = f" in {path}" if path else ""
     lines = [
         f"  {'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['msg']}"
         for err in exc.errors(include_url=False, include_input=False)
     ]
-    if any(err["loc"] == ("tts", "provider") for err in exc.errors(include_input=False)):
-        lines.append(_PIPER_HINT)
     return f"Invalid configuration{where}:\n" + "\n".join(lines)
 
 

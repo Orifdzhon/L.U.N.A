@@ -9,7 +9,15 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["clean_for_speech", "is_speakable", "prepare_speech", "split_sentences"]
+from luna.tts.normalize import normalize_for_speech
+
+__all__ = [
+    "clean_for_speech",
+    "is_speakable",
+    "normalize_for_speech",  # for local voices; lives in luna.tts.normalize
+    "prepare_speech",
+    "split_sentences",
+]
 
 # Characters the RU/EN voices (Edge and SAPI) can pronounce: digits, Latin, Cyrillic. A chunk
 # with none of them ("...", "—", Hangul, kana) yields no audio: Edge answers NoAudioReceived,

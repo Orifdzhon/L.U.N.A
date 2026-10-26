@@ -221,7 +221,7 @@ model, network); manual checks (#114) done by the owner.
 | #102 | Docs (architect): accept ADR 0004, record slice-4 design (shared mic, gating, follow-up) | owner answers D7-D13 | #103, #104, #105, #106, #112 (draft) | docs only |
 | #103 | Validated `[wakeword]` settings with legacy-key compatibility | — | #102, #104, #105, #106 | `settings.py`, `luna.example.toml` |
 | #104 | `WakeWordDetector` protocol, `WakeEvent`, `FakeWakeWord` | — | #102, #103, #106 | **`tests/fakes.py`** |
-| #105 | `VoskKeywordSpotter` (optional extra `wake`) | #104 | #102, #103, #106, #107 | **`pyproject.toml`/`uv.lock`** |
+| #105 | `VoskKeywordSpotter` (core dependency `vosk`, D13) | #104 | #102, #103, #106, #107 | **`pyproject.toml`/`uv.lock`** |
 | #106 | `WakeModelStore`: lazy verified download of the Vosk model | — (soft #104) | all | none |
 | #107 | Recorder hand-off: continue from wake-time audio on a shared mic stream | #102 (soft #104) | #105, #106, #112 | `recorder.py`, `capture.py`, **`tests/fakes.py`** |
 | #108 | `WakeListener`: always-on loop, VAD gate, ring buffer, cooldown, pause/resume | #104, #107, #102 | #105, #106, #109 | none |
@@ -259,7 +259,7 @@ closes the microphone in `finally`, so the always-on stream needs an ownership d
 | D10 | **"Луна, стоп" while L.U.N.A. speaks** (Q4) | **Not in slice 4.** Half-duplex: detection is paused while speaking plus a 400 ms tail; the hotkey stops speech (barge-in, already works). | Voice barge-in needs echo cancellation or headphones; the C270 plus speakers would self-trigger on the reply. Revisit in slice 6 (AEC or headset mode). |
 | D11 | **Audio after the keyword** | Keep it: the command spoken in the same breath is part of the recording (one utterance, no second prompt); the router already strips a leading "Луна". | Slightly more complex Recorder hand-off (#107); the alternative (fresh recording after the keyword) loses the first words. |
 | D12 | **Verification stage** (STT of the 1.5 s window must start with "луна") | Do not build in slice 4; add as a follow-up only if #115 misses FA. | A cloud STT call per wake would send audio before the owner confirmed intent (privacy) and burn Groq quota; local `small` costs ~1-2 s CPU. Hotkey fallback exists. |
-| D13 | **`vosk` as optional extra `wake`** (cf. slice 3 D5) | Optional extra: `uv sync --extra wake`, imported lazily, app starts without it. | Core dependency makes `uv run` always work but ships a 2022-era native wheel to everyone; the extra means a plain `uv run` after `uv sync --extra wake` must not remove it (same lesson as `sounddevice`), documented in #114. |
+| D13 | **`vosk` as a core dependency** (not an extra; cf. slice 3 D5) | Core dependency in `[project] dependencies` with a win32/linux marker, imported lazily; the ~45 MB model is downloaded on first enable. | A plain `uv run` re-syncs without extras and uninstalls them (same lesson as `sounddevice`); an extra would break wake mode after any `uv run`. |
 | D14 | **Recording session** for calibration (~50 "Луна, ..." samples at 1 m/3 m, 2 h of room audio incl. TTS replies) | Yes, one evening; it is also the only way to know FA/hour. Recordings stay local and gitignored. | Takes the owner's time (mostly passive); required for #115. |
 
 Planning notes (not decisions):

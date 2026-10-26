@@ -174,10 +174,13 @@ text is sent to Microsoft's online service and that the endpoint is unofficial (
    `rate` (-10..10) maps to `-50%..+50%` (5 % per step); `volume` (0..100) maps to the offset
    `volume - 100` percent (`+0%` = full volume).
 2. **Fallback: `FallbackTTS(EdgeTTS, SapiTTS)`.** `ProviderUnavailable` from Edge (network, timeout,
-   service error, undecodable audio) makes the same chunk be spoken by SAPI; for
-   `fallback_cooldown_s` (60 s) Edge is skipped, so no sentence waits for a failing call. One
-   warning per outage, an info line when Edge is back. `ProviderRequestError` is not a service
-   failure and propagates. Without SAPI (not Windows / no voices) Edge runs alone and the
+   service error, undecodable audio) makes only that chunk be spoken by SAPI (after one
+   immediate Edge retry); the next chunk tries Edge again. After two failures in a row Edge is
+   skipped for `fallback_cooldown_s` (15 s), so no sentence waits for a failing call. Each
+   failure logs a warning, an info line when Edge is back. `ProviderRequestError` is not a
+   service failure and propagates; `NothingToSpeak` (no character the voice can pronounce, e.g.
+   Hangul or "...", which Edge answers with `NoAudioReceived` and SAPI with an empty WAV) is
+   raised before any network call and the Speaker skips that chunk (amendment, #145). Without SAPI (not Windows / no voices) Edge runs alone and the
    startup shows a warning.
 3. **Audio format.** `edge-tts` always streams MP3 (24 kHz, 48 kbps, mono); the output format is
    hard-coded in the library, so a PCM/WAV format cannot be requested. Decoder options:
@@ -185,8 +188,8 @@ text is sent to Microsoft's online service and that the endpoint is unofficial (
    **chosen**; PyAV (bundles FFmpeg, ~30 MB+, heavier licensing story); ffmpeg subprocess (not
    installed, would be an external prerequisite). The clip is decoded to int16 mono at 24 kHz.
 4. **Threading.** `synthesize` runs on the Speaker's synthesis thread; it creates a short-lived
-   event loop with `asyncio.run`, bounded by `edge_timeout_s` (plus 5 s connect / 15 s read
-   timeouts in the library).
+   event loop with `asyncio.run`, bounded by a 5 s first-audio timeout and a total timeout of
+   `5 s + 0.05 s per character`, capped by `edge_timeout_s`.
 5. **Security.** Plain text only: `edge_tts.Communicate` XML-escapes the text (`&`, `<`, `>`)
    before building its SSML, so injected `<speak>`/`<voice>`/`<prosody>` tags are read aloud as
    text (covered by tests). Voice names come from config and are pattern-checked; rate and

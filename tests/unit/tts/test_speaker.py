@@ -6,7 +6,7 @@ import pytest
 from fakes import FakePlayer, FakeTTS
 from luna.audio.base import AudioClip
 from luna.config.settings import TTSSettings
-from luna.core.errors import AudioError, ProviderUnavailable
+from luna.core.errors import AudioError, NothingToSpeak, ProviderUnavailable
 from luna.core.events import CLOSED, EventBus, Status, StatusChanged
 from luna.core.models import Reply
 from luna.tts.speaker import Speaker
@@ -476,4 +476,44 @@ def test_played_clips_are_audio_clips(bus):
     sp.speak(reply("Привет."))
     ev.wait(Status.IDLE)
     assert isinstance(player.played[0], AudioClip)
+    sp.close()
+
+
+def test_unspeakable_chunk_is_skipped_and_the_rest_is_spoken(bus, caplog):
+    class SkipTTS(FakeTTS):
+        def synthesize(self, text, lang):
+            if text.startswith("Второе"):
+                raise NothingToSpeak("no character the voice can pronounce")
+            return super().synthesize(text, lang)
+
+    tts = SkipTTS()
+    sp, _, player = make(bus, tts=tts)
+    ev = Events(bus)
+    sp.speak(reply(), "r1")
+    ev.wait(Status.IDLE)
+    assert [e.status for e in ev.all()] == [Status.SPEAKING, Status.IDLE]  # no ERROR
+    assert len(player.played) == 2  # first and third
+    assert [c.text for c in tts.calls][-1].startswith("Третье")
+    sp.close()
+
+
+def test_unspeakable_first_chunk_and_all_chunks(bus):
+    class FirstSkipped(FakeTTS):
+        def synthesize(self, text, lang):
+            if text.startswith("Первое"):
+                raise NothingToSpeak("x")
+            return super().synthesize(text, lang)
+
+    sp, _, player = make(bus, tts=FirstSkipped())
+    ev = Events(bus)
+    sp.speak(reply(), "r1")
+    ev.wait(Status.IDLE)
+    assert len(player.played) == 2
+    assert Status.ERROR not in [e.status for e in ev.all()]
+    sp.close()
+
+    sp, _, player = make(bus, tts=FakeTTS(error=NothingToSpeak("x")))
+    sp.speak(reply(), "r2")
+    assert wait_for(lambda: not sp.active)
+    assert player.played == []
     sp.close()

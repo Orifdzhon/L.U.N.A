@@ -246,8 +246,10 @@ built-in SAPI voices (offline). See ADR 0005. Voice is off by default.
 **Privacy and network:** with `provider = "edge"` the text of each spoken reply is sent to
 Microsoft's Edge text-to-speech service (through the unofficial `edge-tts` library; the endpoint
 may change or break without notice). If the service is unreachable or fails, L.U.N.A. speaks the
-same text with the Windows SAPI voices instead, logs one warning, and retries the online voice
-after `fallback_cooldown_s`. Use `provider = "sapi"` to keep everything local.
+same chunk with the Windows SAPI voices instead and logs a warning. The next chunk tries the
+online voice again; after two failed chunks in a row it is skipped for `fallback_cooldown_s`.
+The first audio must arrive within 5 s, and a failed chunk is retried once immediately.
+Text with nothing a voice can pronounce (for example Korean) is skipped, the rest is spoken. Use `provider = "sapi"` to keep everything local.
 
 **Audio backend:** `sounddevice` is a normal dependency on Windows, so the `uv sync` from section 2
 installs it. (Do not rely on an optional extra: a plain `uv run` re-syncs without extras and would
@@ -274,8 +276,8 @@ Without either flag the config decides.
 | `voice_en` | `"Zira"` | same, for English replies |
 | `rate` | `0` | -10 (slow) .. 10 (fast). SAPI: its own scale. Edge: 5 % per step (`-10` = `-50%`, `+10` = `+50%`) |
 | `volume` | `100` | 0 .. 100. Edge: offset from full volume (`100` = `+0%`, `50` = `-50%`, `0` = `-100%`) |
-| `edge_timeout_s` | `15` | > 0; give up on the online voice for one chunk after this long |
-| `fallback_cooldown_s` | `60` | >= 0; after an Edge failure use SAPI for this long before trying Edge again |
+| `edge_timeout_s` | `15` | > 0; upper bound of the (length-scaled) time for one online chunk |
+| `fallback_cooldown_s` | `15` | >= 0; after 2 failed Edge chunks in a row use SAPI for this long before trying Edge again |
 | `max_chars` | `1500` | >= 1; longer replies are cut at a sentence end for speech (the text is still printed in full) |
 | `first_chunk_max_chars` | `200` | >= 1; size limit of the first spoken chunk, smaller means sound starts sooner |
 
@@ -363,8 +365,8 @@ voices) is planned as an optional provider later.
   used as a backup (not Windows, no SAPI voices, PowerShell blocked). Without the network nothing
   is spoken; text replies still work.
 - **Replies are spoken in a robotic voice.** The online voice was unreachable and SAPI took over
-  (see the one warning `edge unavailable (...)` in `luna.log`); Edge is retried after
-  `fallback_cooldown_s`. Check the network or proxy/firewall rules for Microsoft endpoints.
+  (see the warnings `edge unavailable (...)` in `luna.log`); Edge is tried again on the next
+  chunk, or after `fallback_cooldown_s` following two failures in a row. Check the network or proxy/firewall rules for Microsoft endpoints.
 - **Voice is on but there is no sound, or it plays on the wrong device.** Audio goes to the
   Windows default output device; change it in Windows Sound settings and restart L.U.N.A. Check
   that `/voice` does not say `muted` and that the volume mixer is not muting Python. Speech errors

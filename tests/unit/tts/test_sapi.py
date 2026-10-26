@@ -10,7 +10,7 @@ import pytest
 
 from fakes import FakeTTS
 from luna.audio.base import AudioClip
-from luna.core.errors import ProviderRequestError, ProviderUnavailable
+from luna.core.errors import NothingToSpeak, ProviderRequestError, ProviderUnavailable
 from luna.tts import sapi
 from luna.tts.base import TTSProvider
 from luna.tts.sapi import SapiTTS, VoiceInfo, select_voice
@@ -327,3 +327,16 @@ def test_default_runner_uses_minimal_environment(monkeypatch):
     sapi._default_runner(["x"], b"", 1.0)
     assert "GROQ_API_KEY" not in seen["env"]
     assert "PATH" not in seen["env"]
+
+
+@pytest.mark.parametrize("text", ["무엇을 도와드릴까요?", "...", "—"])
+def test_unspeakable_text_is_nothing_to_speak_and_starts_no_process(text):
+    runner = FakeRunner()
+    with pytest.raises(NothingToSpeak):
+        tts(runner).synthesize(text, "ru")
+    assert runner.calls == []  # not even the voice query
+
+
+def test_mixed_script_text_is_still_spoken():
+    runner = FakeRunner()
+    assert tts(runner).synthesize("Корейское слово: 안녕", "ru").pcm

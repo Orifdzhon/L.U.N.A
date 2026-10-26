@@ -1182,7 +1182,7 @@ wake mode" and implies listening (`[voice] listen`).
 - STT uses `STTChain` (Groq → local), which copies `LLMChain`'s cooldown rules and constants;
   extracting one shared `FallbackChain` for LLM/STT (and later search: ddgs ↔ SearXNG/Tavily)
   is a backlog item. TTS: `FallbackTTS` falls back from Edge to SAPI on `ProviderUnavailable`
-  (Edge skipped for `fallback_cooldown_s`); a failure of the last provider is logged,
+  (per chunk; Edge skipped for `fallback_cooldown_s` after two failures in a row); a failure of the last provider is logged,
   `StatusChanged(ERROR)` is emitted and the reply stays visible as text.
 - Per-stage timeouts (defaults): STT 5 s, LLM call 8 s, search 5 s, page fetch 4 s
   each, total request 20 s. On timeout the user hears a short apology instead of silence.

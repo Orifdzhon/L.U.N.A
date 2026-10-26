@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from luna.audio.base import AudioClip, AudioPlayer
 from luna.config.settings import TTSSettings
 from luna.core.clock import Clock
-from luna.core.errors import LunaError
+from luna.core.errors import LunaError, NothingToSpeak
 from luna.core.events import EventBus, Status, StatusChanged
 from luna.core.lang import SUPPORTED_LANGS, detect_lang
 from luna.core.models import Reply
@@ -387,6 +387,13 @@ class Speaker:
                     return
                 try:
                     clip = self._tts.synthesize(chunk, lang)
+                except NothingToSpeak as e:
+                    # Unspeakable chunk (e.g. Hangul): skip it, speak the rest of the reply.
+                    # The permit is handed on so the next chunk's look-ahead does not wait for
+                    # a play() that will never start.
+                    log.warning("skipping chunk %d/%d: %s", index + 1, len(chunks), e)
+                    permits.release()
+                    continue
                 except Exception as e:
                     if not stale():
                         results.put(_Failed(e))

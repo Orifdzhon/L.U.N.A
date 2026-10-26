@@ -28,7 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from luna.audio.base import SAMPLE_WIDTH_BYTES, AudioClip
-from luna.core.errors import ProviderRequestError, ProviderUnavailable
+from luna.core.errors import NothingToSpeak, ProviderRequestError, ProviderUnavailable
+from luna.tts.text import is_speakable
 
 log = logging.getLogger(__name__)
 
@@ -186,6 +187,8 @@ class SapiTTS:
         lang = lang.strip().lower()
         if lang not in self._voices_pref:
             raise ProviderRequestError(f"unsupported language: {lang!r}")
+        if not is_speakable(text):  # e.g. Hangul: Irina/Zira return an empty WAV for it
+            raise NothingToSpeak("no character the SAPI voice can pronounce")
         voice = self._choose_voice(lang)
         request = json.dumps(  # ensure_ascii: stdin is pure ASCII, no codepage issues
             {

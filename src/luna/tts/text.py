@@ -9,7 +9,18 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["clean_for_speech", "prepare_speech", "split_sentences"]
+__all__ = ["clean_for_speech", "is_speakable", "prepare_speech", "split_sentences"]
+
+# Characters the RU/EN voices (Edge and SAPI) can pronounce: digits, Latin, Cyrillic. A chunk
+# with none of them ("...", "—", Hangul, kana) yields no audio: Edge answers NoAudioReceived,
+# SAPI returns an empty WAV.
+_SPEAKABLE_RE = re.compile("[0-9A-Za-zÀ-ɏЀ-ӿ]")
+
+
+def is_speakable(text: str) -> bool:
+    """True if ``text`` has at least one letter or digit a RU/EN voice can pronounce."""
+    return _SPEAKABLE_RE.search(text) is not None
+
 
 # --- character-level clean-up -------------------------------------------------
 

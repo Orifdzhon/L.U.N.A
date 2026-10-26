@@ -118,8 +118,11 @@ class TTSSettings(_Section):
     volume: int = Field(default=100, ge=0, le=100)
     max_chars: int = Field(default=1500, ge=1)  # spoken text per reply; cut at a sentence end
     first_chunk_max_chars: int = Field(default=200, ge=1)  # size of the first spoken chunk
-    edge_timeout_s: float = Field(default=15.0, gt=0)  # whole online synthesis of one chunk
-    fallback_cooldown_s: float = Field(default=60.0, ge=0)  # skip Edge this long after a failure
+    # Upper bound for the whole online synthesis of one chunk (the real limit scales with the
+    # text length; the first audio must arrive within 5 s; one immediate retry).
+    edge_timeout_s: float = Field(default=15.0, gt=0)
+    # Skip Edge this long after 2 failed chunks in a row (one failure moves only that chunk).
+    fallback_cooldown_s: float = Field(default=15.0, ge=0)
 
 
 # Keys of the old pre-slice-3 example `[stt]` block (faster_whisper / cuda). They are ignored with

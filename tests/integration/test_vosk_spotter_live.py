@@ -94,7 +94,8 @@ def test_spoken_keyword_wakes_and_end_sample_is_inside_the_audio(model_path, tmp
 
 @pytest.mark.xfail(
     reason="known risk (ADR 0004): the restricted grammar false-accepts on some speech with "
-    "confidence 1.0; the real rate is measured by #115",
+    "confidence 1.0; min_word_s=0.30 removed the one synthetic case seen (0.24 s word), but the "
+    "real rate and the 'free' mode are benchmarked in #112 / #115",
     strict=False,
 )
 def test_other_speech_does_not_wake(model_path, tmp_path):

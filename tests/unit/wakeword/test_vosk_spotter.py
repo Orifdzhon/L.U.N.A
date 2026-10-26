@@ -14,10 +14,14 @@ FRAME = b"\x00\x00" * 480  # 30 ms
 SILENCE = [(False, "{}")] * 15  # 450 ms of nothing recognized
 
 
-def partial(*words):
-    """Partial result with word timings: words are (word, end_seconds) pairs."""
-    items = [{"word": w, "start": max(0.0, e - 0.4), "end": e} for w, e in words]
+def partial(*words, conf=0.9, duration=0.4):
+    """Partial result with timings and confidence: words are (word, end_seconds) pairs."""
+    items = [{"word": w, "start": e - duration, "end": e, "conf": conf} for w, e in words]
     return json.dumps({"partial": " ".join(w for w, _ in words), "partial_result": items})
+
+
+def final_words(*items):
+    return json.dumps({"text": "x", "result": list(items)})
 
 
 def final(*words):
@@ -88,7 +92,7 @@ def test_partial_keyword_is_reported_once_with_end_sample():
     script = [*SILENCE, (False, partial(("луна", 0.45))), (False, partial(("луна", 0.45)))]
     events = feed(make(script)[0], 20)
     assert events[:15] == [None] * 15
-    assert events[15] == WakeEvent("луна", None, round(0.45 * 16_000))
+    assert events[15] == WakeEvent("луна", 0.9, round(0.45 * 16_000))
     assert events[16:] == [None] * 4
 
 
@@ -134,16 +138,95 @@ def test_unknown_and_other_words_are_ignored():
     assert feed(make(script)[0], 2) == [None, None]
 
 
+def timeless(**extra):
+    return json.dumps({"partial_result": [{"word": "луна", "conf": 0.9, **extra}]})
+
+
 def test_no_word_timings_falls_back_to_fed_minus_250ms():
-    script = [(False, "{}"), (False, "{}"), (False, json.dumps({"partial": "луна"}))]
+    script = [(False, "{}"), (False, "{}"), (False, timeless())]
     event = feed(make(script)[0], 3)[2]
-    assert event == WakeEvent("луна", None, 0)  # 3 frames = 1440 samples < 250 ms: clamped to 0
+    assert event == WakeEvent("луна", 0.9, 0)  # 3 frames = 1440 samples < 250 ms: clamped to 0
 
 
 def test_no_word_timings_fallback_on_longer_stream():
-    script = [(False, "{}")] * 19 + [(False, json.dumps({"partial": "луна"}))]
+    script = [(False, "{}")] * 19 + [(False, timeless())]
     event = feed(make(script)[0], 20)[19]
     assert event.end_sample == 20 * 480 - 4_000
+
+
+def test_partial_word_without_confidence_does_not_fire_but_the_final_does():
+    no_conf = json.dumps({"partial_result": [{"word": "луна", "start": 0.0, "end": 0.4}]})
+    script = [*SILENCE, (False, no_conf), (True, final(("луна", 0.4, 0.9)))]
+    events = feed(make(script)[0], 17)
+    assert events[:16] == [None] * 16
+    assert events[16] == WakeEvent("луна", 0.9, 6_400)
+
+
+def test_partial_below_threshold_is_rejected_and_reconsidered_when_confidence_rises():
+    script = [
+        *SILENCE,
+        (False, partial(("луна", 0.4), conf=0.3)),
+        (False, partial(("луна", 0.4), conf=0.8)),
+    ]
+    events = feed(make(script, threshold=0.5)[0], 17)
+    assert events[15] is None
+    assert events[16] == WakeEvent("луна", 0.8, 6_400)
+
+
+def test_report_partials_off_waits_for_the_final_result():
+    script = [*SILENCE, (False, partial(("луна", 0.4))), (True, final(("луна", 0.4, 0.9)))]
+    spotter = VoskKeywordSpotter(
+        "m",
+        ["луна"],
+        threshold=0.5,
+        report_partials=False,
+        engine_factory=lambda _p: FakeEngine(script),
+    )
+    events = feed(spotter, 17)
+    assert events[:16] == [None] * 16 and events[16] is not None
+
+
+def test_short_word_is_rejected_by_default_and_min_word_s_zero_disables_it():
+    script = [*SILENCE, (False, partial(("луна", 0.4), duration=0.24))]
+    assert feed(make(script)[0], 16)[15] is None  # 0.24 s < default 0.30 s
+    spotter = VoskKeywordSpotter(
+        "m",
+        ["луна"],
+        threshold=0.5,
+        min_word_s=0,
+        engine_factory=lambda _p: FakeEngine(script),
+    )
+    assert feed(spotter, 16)[15] is not None
+
+
+def test_word_exactly_min_word_s_long_is_accepted():
+    script = [*SILENCE, (False, partial(("луна", 0.5), duration=0.5))]
+    spotter = VoskKeywordSpotter(
+        "m", ["луна"], threshold=0.5, min_word_s=0.5, engine_factory=lambda _p: FakeEngine(script)
+    )
+    assert feed(spotter, 16)[15] is not None
+
+
+def test_free_mode_builds_a_recognizer_without_grammar_and_filters_whole_words():
+    engine = FakeEngine(
+        [
+            *SILENCE,
+            (
+                True,
+                final_words(
+                    {"word": "лунный", "start": 0.0, "end": 0.5, "conf": 1.0},
+                    {"word": "луна", "start": 0.6, "end": 1.0, "conf": 1.0},
+                ),
+            ),
+        ],
+        vocabulary=("луна",),
+    )
+    spotter = VoskKeywordSpotter(
+        "m", ["луна"], threshold=0.5, mode="free", engine_factory=lambda _p: engine
+    )
+    assert engine.created == [(None, 16_000)]
+    event = feed(spotter, 16)[15]
+    assert event == WakeEvent("луна", 1.0, 7_680)  # clamped to the 16 frames fed
 
 
 def test_end_sample_is_clamped_to_samples_fed():
@@ -199,6 +282,9 @@ def test_keyword_missing_from_vocabulary_fails_at_construction():
         {"keywords": [" "]},
         {"threshold": 1.5},
         {"sample_rate": 8_000},
+        {"frame_samples": 320},
+        {"mode": "fuzzy"},
+        {"min_word_s": -0.1},
     ],
 )
 def test_invalid_arguments(kwargs):
@@ -269,3 +355,20 @@ def test_real_engine_wiring_with_stubbed_vosk(monkeypatch):
     spotter.close()
     with pytest.raises(ConfigError, match="vocabulary"):
         VoskKeywordSpotter("some/dir", ["марс"], threshold=0.5)
+
+
+def test_real_engine_without_vocabulary_check_fails_loudly(monkeypatch):
+    class NoFind:
+        def __init__(self, model_path):
+            pass
+
+    class Vosk:
+        Model = NoFind
+
+        @staticmethod
+        def SetLogLevel(level):
+            pass
+
+    monkeypatch.setitem(sys.modules, "vosk", Vosk)
+    with pytest.raises(ConfigError, match="upgrade vosk"):
+        VoskKeywordSpotter("m", ["луна"], threshold=0.5)

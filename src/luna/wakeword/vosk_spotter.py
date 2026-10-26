@@ -1,18 +1,30 @@
 """Vosk keyword spotter (ADR 0004, ARCHITECTURE section 3).
 
-A ``KaldiRecognizer`` with a grammar restricted to the keywords plus ``[unk]`` (every sound is
-forced to "keyword" or "unknown"), fed 30 ms PCM16 frames. Keywords are reported from *partial*
-results for low latency (a keyword is reported once, when the number of keyword words in the
-utterance grows); a final result (``AcceptWaveform`` returned true) is a flush: it reports a
-keyword the partials missed and starts a new utterance. Measured with vosk 0.3.45 and
+A ``KaldiRecognizer`` fed 30 ms PCM16 frames (exactly ``frame_samples`` = 480 samples; the caller,
+#108, must re-chunk the mic stream to that size). Modes:
+
+- ``"grammar"`` (default): grammar restricted to the keywords plus ``[unk]`` (every sound is
+  forced to "keyword" or "unknown").
+- ``"free"``: no grammar (the full small-ru language model); a keyword counts when it appears as a
+  whole recognized word.
+
+A keyword is reported once, when the number of accepted keyword words in the utterance grows.
+Every path applies the same filters: word ``conf`` >= ``threshold`` (a word without ``conf`` never
+fires) and word duration >= ``min_word_s`` (0 disables; measured: a false "луна" lasted 0.24 s,
+real ones 0.36-0.47 s). Partial results are used when ``report_partials`` is true (low latency,
+needed for one-breath commands); with it off, only final results (``AcceptWaveform`` returned
+true) report. A final result is also a flush: it reports a keyword the partials missed and starts
+a new utterance. Measured with vosk 0.3.45 and
 small-ru-0.22: the keyword shows up in the *final* result (about 0.6 s after the word ends),
 final results carry ``conf``, and word times are cumulative from the recognizer's start.
 
 ``import vosk`` happens lazily in the constructor (``vosk`` is a core dependency but a native
 library; a broken install must degrade wake mode, not the whole app). Vosk logging is silenced.
 
-Not thread-safe (see ``luna.wakeword.base``). The model is loaded once; ``reset()`` builds a fresh
-recognizer from it, so word timings (and thus ``end_sample``) restart at zero.
+The constructor loads the model synchronously (about a second, 45 MB): construct it off the
+asyncio loop. Not thread-safe (see ``luna.wakeword.base``). The model is loaded once;
+``reset()`` builds a fresh recognizer from it, so word timings (and thus ``end_sample``) restart
+at zero.
 """
 
 from __future__ import annotations
@@ -21,7 +33,7 @@ import json
 import logging
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from luna.core.errors import ConfigError, ProviderUnavailable
 from luna.wakeword.base import WAKE_SAMPLE_RATE, WAKE_SAMPLE_WIDTH_BYTES, WakeEvent
@@ -29,6 +41,8 @@ from luna.wakeword.base import WAKE_SAMPLE_RATE, WAKE_SAMPLE_WIDTH_BYTES, WakeEv
 log = logging.getLogger(__name__)
 
 FRAME_MS = 30
+FRAME_SAMPLES = WAKE_SAMPLE_RATE * FRAME_MS // 1000  # 480
+DEFAULT_MIN_WORD_S = 0.30
 UNKNOWN_TOKEN = "[unk]"
 FALLBACK_LAG_MS = 250  # cut used when the engine reports no word timings (ARCHITECTURE section 3)
 
@@ -45,7 +59,7 @@ class Engine(Protocol):
     """Loaded model + recognizer factory (the real one wraps ``vosk``; tests inject a fake)."""
 
     def has_word(self, word: str) -> bool: ...
-    def create(self, grammar: str, sample_rate: int) -> Recognizer: ...
+    def create(self, grammar: str | None, sample_rate: int) -> Recognizer: ...
     def close(self) -> None: ...
 
 
@@ -70,10 +84,18 @@ class _VoskEngine:
 
     def has_word(self, word: str) -> bool:
         find = getattr(self._model, "vosk_model_find_word", None)
-        return True if find is None else find(word) >= 0
+        if find is None:
+            raise ConfigError(
+                "this vosk build cannot check the model vocabulary (vosk_model_find_word is "
+                "missing); upgrade vosk"
+            )
+        return bool(find(word) >= 0)
 
-    def create(self, grammar: str, sample_rate: int) -> Recognizer:
-        rec = self._vosk.KaldiRecognizer(self._model, sample_rate, grammar)
+    def create(self, grammar: str | None, sample_rate: int) -> Recognizer:
+        args = (
+            (self._model, sample_rate) if grammar is None else (self._model, sample_rate, grammar)
+        )
+        rec = self._vosk.KaldiRecognizer(*args)
         rec.SetWords(True)
         set_partial = getattr(rec, "SetPartialWords", None)
         if set_partial is not None:
@@ -97,6 +119,10 @@ class VoskKeywordSpotter:
         *,
         threshold: float,
         sample_rate: int = WAKE_SAMPLE_RATE,
+        frame_samples: int = FRAME_SAMPLES,
+        mode: Literal["grammar", "free"] = "grammar",
+        min_word_s: float = DEFAULT_MIN_WORD_S,
+        report_partials: bool = True,
         engine_factory: EngineFactory = _VoskEngine,
     ) -> None:
         words = [w.strip().lower() for w in keywords if w.strip()]
@@ -106,11 +132,23 @@ class VoskKeywordSpotter:
             raise ConfigError("wake-word threshold must be within 0..1")
         if sample_rate != WAKE_SAMPLE_RATE:
             raise ConfigError(f"wake word needs {WAKE_SAMPLE_RATE} Hz audio, got {sample_rate}")
+        if frame_samples != FRAME_SAMPLES:
+            raise ConfigError(f"frame_samples must be {FRAME_SAMPLES}, got {frame_samples}")
+        if mode not in ("grammar", "free"):
+            raise ConfigError(f"mode must be 'grammar' or 'free', got {mode!r}")
+        if min_word_s < 0:
+            raise ConfigError("min_word_s must be >= 0")
+        self._min_word_s = min_word_s
+        self._report_partials = report_partials
         self.sample_rate = sample_rate
-        self.frame_samples = sample_rate * FRAME_MS // 1000
+        self.frame_samples = frame_samples
         self._keywords = frozenset(words)
         self._threshold = threshold
-        self._grammar = json.dumps([*dict.fromkeys(words), UNKNOWN_TOKEN], ensure_ascii=False)
+        self._grammar: str | None = (
+            json.dumps([*dict.fromkeys(words), UNKNOWN_TOKEN], ensure_ascii=False)
+            if mode == "grammar"
+            else None
+        )
         self._engine: Engine | None = engine_factory(Path(model_path))
         try:
             missing = [w for w in dict.fromkeys(words) if not self._engine.has_word(w)]
@@ -141,6 +179,8 @@ class VoskKeywordSpotter:
             event = self._scan(self._payload(self._rec.Result()), "result")
             self._seen = 0  # the utterance ended: the next one starts counting from zero
             return event
+        if not self._report_partials:
+            return None
         return self._scan(self._payload(self._rec.PartialResult()), "partial_result")
 
     def reset(self) -> None:
@@ -168,19 +208,22 @@ class VoskKeywordSpotter:
 
     def _scan(self, data: dict[str, Any], words_key: str) -> WakeEvent | None:
         words = data.get(words_key)
-        if not isinstance(words, list) or not words:
-            # No word timings from the engine: fall back to the plain text, no confidence.
-            text = data.get("text" if words_key == "result" else "partial")
-            words = [{"word": w} for w in text.split()] if isinstance(text, str) else []
+        if not isinstance(words, list):
+            return None
         hits = [w for w in words if isinstance(w, dict) and self._is_keyword(w)]
-        # Report at most one keyword per call; the next call reports the next one.
-        while self._seen < len(hits):
-            word = hits[self._seen]
-            self._seen += 1
+        # Report at most one keyword per call; a rejected word is looked at again next time
+        # (a partial's confidence and timing can still change), so only accepted ones advance.
+        for index in range(self._seen, len(hits)):
+            word = hits[index]
             confidence = self._confidence(word)
-            if confidence is not None and confidence < self._threshold:
-                log.debug("wake: %r rejected (confidence %.2f)", word.get("word"), confidence)
+            if confidence is None or confidence < self._threshold:
+                log.debug("wake: %r rejected (confidence %s)", word.get("word"), confidence)
                 continue
+            duration = self._duration(word)
+            if duration is not None and duration < self._min_word_s:
+                log.debug("wake: %r rejected (%.2f s)", word.get("word"), duration)
+                continue
+            self._seen = index + 1
             return WakeEvent(str(word["word"]).lower(), confidence, self._end_sample(word))
         return None
 
@@ -189,15 +232,21 @@ class VoskKeywordSpotter:
         return isinstance(text, str) and text.lower() in self._keywords
 
     @staticmethod
-    def _confidence(word: dict[str, Any]) -> float | None:
-        # Partial results carry no confidence: such an event cannot be gated by the threshold.
-        value = word.get("conf")
+    def _number(value: Any) -> float | None:
         if isinstance(value, bool) or not isinstance(value, int | float):
             return None
-        return min(1.0, max(0.0, float(value)))
+        return float(value)
+
+    def _confidence(self, word: dict[str, Any]) -> float | None:
+        value = self._number(word.get("conf"))
+        return None if value is None else min(1.0, max(0.0, value))
+
+    def _duration(self, word: dict[str, Any]) -> float | None:
+        start, end = self._number(word.get("start")), self._number(word.get("end"))
+        return None if start is None or end is None else end - start
 
     def _end_sample(self, word: dict[str, Any]) -> int:
-        end = word.get("end")
-        if isinstance(end, int | float) and not isinstance(end, bool) and end >= 0:
+        end = self._number(word.get("end"))
+        if end is not None and end >= 0:
             return min(self._fed, round(end * self.sample_rate))
         return max(0, self._fed - self.sample_rate * FALLBACK_LAG_MS // 1000)

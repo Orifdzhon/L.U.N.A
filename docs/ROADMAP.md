@@ -31,7 +31,7 @@ All automated tests need none of these: they run without microphone, GPU, networ
 | 2 | Voice out | **done** | #55-#62 (#63 Piper: later/optional) |
 | 3 | Voice in (push-to-talk) | **code done**, #84 and #87 open | #77-#88 |
 | 4 | Wake word | **planned, Issues written** | #102-#116 |
-| 5 | Desktop shell | planned | — |
+| 5 | Desktop shell | **planned, Issues written** | #136-#143 |
 | 6 | Hardening | planned | — |
 
 ## Slice 0 — Skeleton (done)
@@ -283,14 +283,60 @@ Planning notes (not decisions):
 - The conditional spike #116 stores no model or recordings in the repo; training-data licensing needs an
   owner decision before any model is redistributed.
 
-## Slice 5 — Desktop shell (planned)
+## Slice 5 — Desktop shell (planned, Issues #136-#143)
 
-**Goal:** the MVP definition of done (PRODUCT_SPEC §6).
-**Contents:** PySide6 tray, popup reply window with text input, status indicator, autostart toggle
-([ADR 0007](adr/0007-desktop-shell.md)).
-**Exit criteria:** spec §6 satisfied on the reference machine; CI green.
-**Owner decisions:** UI scope (indicator, history, text input - spec open question 2).
-**Issues:** to be written.
+**Goal:** the MVP definition of done (PRODUCT_SPEC §6): L.U.N.A. lives in the tray, shows replies in a
+small window, runs without a console and can start with Windows.
+**Design:** [ADR 0009](adr/0009-desktop-shell-mvp.md) (accepted by the owner 2026-10-26; refines
+[ADR 0007](adr/0007-desktop-shell.md)). PySide6-Essentials, single process with Qt on the main
+thread, toolkit-free `ShellController` tested with fakes.
+**Exit criteria:** `uv run luna` shows the tray icon and window; typed and voice turns show their
+replies in the window; the tray menu toggles wake listening and voice replies; a second launch
+(tray or `--text`) exits with code 3 and "already running"; `pythonw -m luna --tray --minimized`
+runs without a console; "Start with Windows" creates/removes the Startup-folder shortcut and the
+app starts after sign-in; quit exits within seconds; `ruff` and `pytest` green in CI.
+
+| # | Issue | Area | Depends on |
+|---|---|---|---|
+| #136 | `[ui]` settings: `UISettings`, legacy `autostart` ignored | config, ui | - |
+| #137 | Platform: `SingleInstance` (named mutex) + Startup-folder `Autostart` | platform | - |
+| #138 | Windowless logging (devnull stdio, excepthooks, `crash.log`) | logs | - |
+| #139 | Shell types: view protocols, `IconState`, `Conversation` (no Qt) | ui | - |
+| #140 | `ShellController` + `own_launch_command` + shared `is_silent` | ui | #136, #137, #139 |
+| #141 | Qt views (tray, window) + `PySide6-Essentials` dependency | ui, build | #139 |
+| #142 | Tray entry point and wiring (`--tray`, `--minimized`, default = tray, single instance, `build_app(start_wake=...)`, `run_tray`) | ui, core | #136-#141 |
+| #143 | Docs: SETUP + MANUAL_CHECKS for slice 5 | docs | #142 |
+
+**Order / waves** (each PR leaves `main` working):
+1. Wave 1, parallel (disjoint files): #136, #137, #138, #139.
+2. Wave 2, parallel: #140 (after #136, #137, #139) and #141 (after #139).
+3. Wave 3, sequential: #142, then #143.
+
+Given the owner's Claude Pro limits, run these one at a time unless clearly small; wave 1 is the
+natural place to batch.
+
+### Owner decisions for slice 5 (decided 2026-10-26)
+
+- Toolkit: `PySide6-Essentials` (core dependency, not an extra).
+- `luna` without flags starts tray + window; `--text` stays the CLI; `--tray` and `--minimized` added.
+- Autostart: per-user Startup-folder shortcut `L.U.N.A.lnk` (no registry), off by default, toggled only
+  from the tray menu; command is `pythonw -m luna --tray --minimized [--config]` only.
+- Single instance (named mutex) for both tray and `--text`; a second launch exits with code 3.
+- Tray toggles (wake, voice replies) are per session; persistent defaults stay in `luna.toml`.
+- Notifications: errors only (`[ui] notifications = true`), never with reply text.
+- Window: small plain window, close hides to the tray, English labels.
+- Legacy `[ui] autostart` is accepted and ignored (one warning when `true`).
+- ADR 0009 accepted.
+
+### Notes
+
+- Hardware/desktop behaviour (real tray, notifications, Startup folder, sign-out/in) is verified only
+  by the owner via the manual steps in #142 and #143; agents and tests never touch the real Startup
+  folder or the registry.
+- Fallback if PySide6 fails to install or start on the reference PC: tkinter + pystray (ADR 0009,
+  needs an owner decision).
+- Post-MVP (not planned here): popup anchored at the tray, "show existing window" from a second
+  launch, settings dialog / persisted toggles, installer and speed work.
 
 ## Slice 6 — Hardening (planned)
 

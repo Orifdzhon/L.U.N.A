@@ -342,6 +342,7 @@ def _assemble(
     wake_store: Any | None = None,
     spotter_factory: Callable[[Path], Any] | None = None,
     wake_progress: Callable[[str], None] | None = None,
+    start_wake: bool = True,
 ) -> App:
     """Secrets must already be registered for log redaction."""
     clock = clock or time.monotonic
@@ -444,7 +445,7 @@ def _assemble(
         if reason is not None:
             warnings.append(f"Voice input disabled: {reason}. Continuing in text mode.")
             wake = False
-    if wake:
+    if wake and start_wake:  # tray mode: the shell enables wake on its worker thread
         reason = voice_input.enable_wake(wake_progress)
         if reason is not None:
             warnings.append(f"Wake word disabled: {reason}. Continuing with the hotkey.")

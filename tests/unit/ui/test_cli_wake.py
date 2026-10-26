@@ -1,13 +1,12 @@
 """REPL: /wake on|off|status, usage, the failure line. Fakes only (see test_app_wake)."""
 
 import io
-import time
 
 import pytest
 
 from fakes import FakeLiveMic
 from luna.core.errors import AudioError, ProviderUnavailable
-from luna.core.events import ProviderSwitched
+from luna.core.events import Status, StatusChanged
 from luna.ui.cli import HELP_TEXT, Repl
 from luna.wakeword.listener import WakeState, WakeStateChanged
 from wake_support import FakeStore, make, wait_for
@@ -48,7 +47,7 @@ def test_wake_on_then_status_then_off(tmp_path, wake_apps, fake_local):
     assert "Wake: ARMED, keyword «луна», verify: local" in text
     assert "microphone stays open" in text
     assert "Wake word off: the microphone is closed" in text
-    assert text.rstrip().splitlines()[-1].startswith("Wake: OFF") or "Wake: OFF" in text
+    assert text.rstrip().splitlines()[-1].startswith("Wake: OFF")
     assert not mic.started and not app.voice_input.wake_active
 
 
@@ -87,26 +86,31 @@ def test_mic_failure_prints_one_wake_failed_line(tmp_path, wake_apps, fake_local
     mic = FakeLiveMic()
     app = make(tmp_path, wake_apps, mic=mic)
     assert app.voice_input.enable_wake() is None
+    out = io.StringIO()
 
     def fail_mic():
         mic.fail(AudioError("microphone unplugged"))
-        assert wait_for(lambda: app.voice_input.wake_state == "FAILED")
-        time.sleep(0.4)  # the status thread polls every 100 ms
+        assert wait_for(lambda: "wake failed" in out.getvalue())  # the status thread printed it
         return "exit"
 
-    text = run(app, fail_mic)
+    assert Repl(app, Script(fail_mic), out).run() == 0
+    text = out.getvalue()
     assert text.count("wake failed: microphone error: microphone unplugged") == 1
     assert "Hotkey works" in text
 
 
 def test_ordinary_wake_state_changes_are_not_printed(tmp_path, wake_apps):
     app = make(tmp_path, wake_apps, mic=FakeLiveMic())
+    out = io.StringIO()
 
     def publish():
         for state in (WakeState.ARMED, WakeState.HELD, WakeState.OFF):
             app.bus.publish(WakeStateChanged(state, "speaking"))
-        app.bus.publish(ProviderSwitched("a", "b", "x"))
-        time.sleep(0.3)
+        # events are handled in order: once this marker is printed the wake events were seen
+        app.bus.publish(StatusChanged(Status.LISTENING, None, None))
+        assert wait_for(lambda: "(listening...)" in out.getvalue())
         return "exit"
 
-    assert "wake" not in run(app, publish).lower().replace("l.u.n.a. text mode", "")
+    assert Repl(app, Script(publish), out).run() == 0
+    assert "wake failed" not in out.getvalue()
+    assert "paused" not in out.getvalue()

@@ -3,7 +3,6 @@
 Fakes only: no vosk, no faster_whisper, no audio device, no network (see wake_support.py).
 """
 
-import sys
 import threading
 import time
 from pathlib import Path
@@ -19,7 +18,7 @@ def test_wake_off_by_default_opens_nothing(tmp_path, wake_apps):
     app = make(tmp_path, wake_apps, mic=mic)
     assert not app.voice_input.enabled and not app.voice_input.wake_active
     assert app.voice_input.wake_state == "OFF"
-    assert "vosk" not in sys.modules and "faster_whisper" not in sys.modules
+    assert voice_wake_unbuilt(app)
     assert wake_threads() == [] and mic.start_calls == 0
 
 
@@ -255,3 +254,130 @@ def test_build_app_wake_without_voice_input_reports_only_the_voice_problem(tmp_p
     assert [w for w in app.warnings if w.startswith("Voice input disabled")]
     assert not [w for w in app.warnings if w.startswith("Wake word disabled")]
     assert not app.voice_input.wake_active
+
+
+def voice_wake_unbuilt(app):
+    voice = app.voice_input
+    return voice._wake is None and voice._wake_local is None and voice._parts is None
+
+
+class BlockingStore(FakeStore):
+    """``ensure()`` waits until the test releases it (a slow download)."""
+
+    def __init__(self):
+        super().__init__(present=False)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def ensure(self):
+        self.entered.set()
+        assert self.release.wait(5.0)
+        return super().ensure()
+
+
+def test_slow_download_does_not_block_close_and_result_is_discarded(
+    tmp_path, wake_apps, fake_local
+):
+    store = BlockingStore()
+    spotters = SpotterFactory()
+    mic = FakeLiveMic()
+    app = make(tmp_path, wake_apps, mic=mic, wake_store=store, spotter_factory=spotters)
+    voice = app.voice_input
+    result = []
+    worker = threading.Thread(target=lambda: result.append(voice.enable_wake()), daemon=True)
+    worker.start()
+    assert store.entered.wait(3.0)
+
+    started = time.monotonic()
+    app.close()  # must not wait for the download
+    assert time.monotonic() - started < 2.0
+
+    store.release.set()
+    worker.join(3.0)
+    assert result == ["the application is shutting down"]
+    assert voice._wake is None and wake_threads() == []
+    assert not mic.started
+    # the spotter, if it was built before the check, is closed again
+    assert all(spotter.closed for _, spotter in spotters.made)
+
+
+def test_second_enable_wake_while_building_is_refused(tmp_path, wake_apps, fake_local):
+    store = BlockingStore()
+    app = make(tmp_path, wake_apps, mic=FakeLiveMic(), wake_store=store)
+    voice = app.voice_input
+    worker = threading.Thread(target=voice.enable_wake, daemon=True)
+    worker.start()
+    assert store.entered.wait(3.0)
+    assert voice.enable_wake() == "wake mode is already starting"
+    store.release.set()
+    worker.join(5.0)
+    assert voice.wake_active
+
+
+def test_pass_through_fallback_is_visible_in_the_status_line(
+    tmp_path, wake_apps, fake_local, monkeypatch
+):
+    def broken(self):
+        raise ProviderUnavailable("no model")
+
+    monkeypatch.setattr(fake_local, "warm_up", broken)
+    app = make(tmp_path, wake_apps, mic=FakeLiveMic())
+    assert app.voice_input.enable_wake() is None
+    assert "verification off — false wakes may be sent to cloud STT" in (
+        app.voice_input.wake_status_line()
+    )
+
+
+def test_late_failure_report_of_a_restarted_listener_is_ignored(tmp_path, wake_apps, fake_local):
+    app = make(tmp_path, wake_apps, mic=FakeLiveMic())
+    voice = app.voice_input
+    assert voice.enable_wake() is None
+    voice._on_wake_failed("stale report")  # the listener is ARMED again
+    assert voice._parts.frontend._live is voice._wake.listener
+    assert voice._wake_failure is None
+
+
+def test_measure_holds_the_listener_and_releases_it(tmp_path, wake_apps, fake_local):
+    mic = FakeLiveMic()
+    app = make(tmp_path, wake_apps, mic=mic)
+    voice = app.voice_input
+    assert voice.enable_wake() is None
+    listener = voice._wake.listener
+    calls = []
+    original = listener.set_hold
+    listener.set_hold = lambda reason, active: (
+        calls.append((reason, active)),
+        original(reason, active),
+    )
+    stop = threading.Event()
+
+    def feed():
+        while not stop.is_set():
+            mic.feed(bytes([0x00, 0x20]) * 480)
+            stop.wait(0.005)
+
+    feeder = threading.Thread(target=feed, daemon=True)
+    feeder.start()
+    try:
+        voice.measure(0.09)
+    finally:
+        stop.set()
+        feeder.join(1.0)
+    assert calls == [("diag", True), ("diag", False)]
+    assert "diag" not in listener._gate.holds
+
+
+def test_listener_close_error_does_not_break_close(tmp_path, wake_apps, fake_local):
+    app = make(tmp_path, wake_apps, mic=FakeLiveMic())
+    voice = app.voice_input
+    assert voice.enable_wake() is None
+    listener = voice._wake.listener
+    real_close = listener.close
+
+    def boom():
+        real_close()
+        raise RuntimeError("boom")
+
+    listener.close = boom
+    app.close()  # no exception
+    assert voice._wake is None

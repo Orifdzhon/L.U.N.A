@@ -44,6 +44,7 @@ _CLOSE_TIMEOUT_S = 2.0
 _WARMUP_JOIN_S = 0.2
 BEEP_HZ = 880
 BEEP_MS = 80
+DIAG_HOLD = "diag"  # wake listener hold while /mic measures
 
 ReplySink = Callable[[Reply], None]
 ProgressSink = Callable[[str], None]
@@ -166,6 +167,7 @@ class VoiceInput:
         self._wake: _Wake | None = None
         self._wake_local: FasterWhisperSTT | None = None  # built for the verifier when needed
         self._wake_failure: str | None = None
+        self._wake_building = False
         self.notes: list[str] = []  # non-fatal facts, e.g. "groq skipped (no key)"
 
     # ---- state -----------------------------------------------------------------------
@@ -214,6 +216,8 @@ class VoiceInput:
             f"Wake: {state}, keyword {keyword}, verify: {wake.verifier.name}, "
             f"model: {wake.model_path}"
         )
+        if wake.verifier.name == "off":
+            line += " - verification off — false wakes may be sent to cloud STT"
         if state == "FAILED" and self._wake_failure:
             line += f" ({self._wake_failure}; /wake on retries)"
         return line
@@ -263,6 +267,13 @@ class VoiceInput:
             self._enabled = False
             self._teardown()
             warmup = self._warmup
+            local, self._wake_local = self._wake_local, None
+        closer = getattr(local, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                logger.debug("verifier STT close failed", exc_info=True)
         if warmup is not None and warmup.is_alive():
             warmup.join(_WARMUP_JOIN_S)  # a model load cannot be interrupted; it is a daemon
 
@@ -281,37 +292,60 @@ class VoiceInput:
             wake = self._wake
             if wake is not None and wake.active and wake.listener.state.name != "FAILED":
                 return None
-            conf = self._settings.wakeword
-            if conf.engine == "off":
+            if self._settings.wakeword.engine == "off":
                 return "[wakeword] engine is off"
             reason = self.enable()
             if reason is not None:
                 return reason
             parts = self._parts
             assert parts is not None
-            try:
-                if wake is None:
-                    wake = self._build_wake(parts, say)
-                self._wake = wake
-                return self._start_wake(wake, parts)
-            except _Degraded as exc:
-                return str(exc)
-            except Exception as exc:  # a wake bug must not crash the app
-                logger.warning("wake mode failed to start", exc_info=True)
-                self.disable_wake()
-                return f"unexpected error ({type(exc).__name__})"
+            if wake is not None:  # models are already built: just start again
+                return self._start_wake_safely(wake, parts)
+            if self._wake_building:
+                return "wake mode is already starting"
+            self._wake_building = True
+        # The download and the model loads run WITHOUT the lock, so close() stays prompt.
+        try:
+            built = self._build_wake(parts, say)
+        except _Degraded as exc:
+            return str(exc)
+        except Exception as exc:  # a wake bug must not crash the app
+            logger.warning("wake mode failed to build", exc_info=True)
+            return f"unexpected error ({type(exc).__name__})"
+        finally:
+            with self._lock:
+                self._wake_building = False
+        with self._lock:
+            if self._closed or self._parts is not parts:
+                built.spotter.close()  # the app shut down meanwhile: discard what was built
+                return "the application is shutting down"
+            self._wake = built
+            return self._start_wake_safely(built, parts)
+
+    def _start_wake_safely(self, wake: _Wake, parts: _Parts) -> str | None:
+        try:
+            return self._start_wake(wake, parts)
+        except Exception as exc:
+            logger.warning("wake mode failed to start", exc_info=True)
+            self.disable_wake()
+            return f"unexpected error ({type(exc).__name__})"
 
     def disable_wake(self) -> None:
-        """Back to push-to-talk: the listener stops (microphone released), the models stay."""
-        wake, parts = self._wake, self._parts
-        if wake is None or not wake.active:
-            return
-        wake.active = False
-        if parts is not None:
-            parts.frontend.set_live(None)  # cancels a turn on a tap before the tap is closed
-        wake.unbind()
-        wake.unbind = _noop
-        wake.listener.stop()  # joins luna-wake; never called under the front end lock
+        """Back to push-to-talk: the listener stops (microphone released), the models stay.
+
+        Takes the VoiceInput lock; ``listener.stop()`` joins ``luna-wake``, whose callbacks
+        (``on_wake``, the FAILED handler) never take that lock, so there is no deadlock.
+        """
+        with self._lock:
+            wake, parts = self._wake, self._parts
+            if wake is None or not wake.active:
+                return
+            wake.active = False
+            if parts is not None:
+                parts.frontend.set_live(None)  # cancels a turn on a tap before the tap closes
+            wake.unbind()
+            wake.unbind = _noop
+            wake.listener.stop()  # joins luna-wake; never called under the front end lock
 
     def _start_wake(self, wake: _Wake, parts: _Parts) -> str | None:
         conf = self._settings.wakeword
@@ -415,10 +449,13 @@ class VoiceInput:
     def _on_wake_failed(self, reason: str) -> None:
         """Listener failed (luna-wake thread): hotkey turns go back to the microphone itself.
 
-        Takes no VoiceInput lock: ``disable_wake`` holds it while joining this thread.
+        Takes no VoiceInput lock: ``disable_wake`` holds it while joining this thread. A late
+        report from a listener that is no longer FAILED (a quick retry) is ignored.
         """
+        wake, parts = self._wake, self._parts
+        if wake is None or not wake.active or wake.listener.state.name != "FAILED":
+            return
         self._wake_failure = reason
-        parts = self._parts
         if parts is not None:
             parts.frontend.set_live(None)
 
@@ -429,7 +466,10 @@ class VoiceInput:
             wake.unbind()
             if self._parts is not None:
                 self._parts.frontend.set_live(None)
-            wake.listener.close()  # joins luna-wake, closes the microphone and the detector
+            try:
+                wake.listener.close()  # joins luna-wake, closes the microphone and the detector
+            except Exception:
+                logger.warning("closing the wake listener failed", exc_info=True)
         parts, self._parts = self._parts, None
         self._enabled = False
         closers: list[Any] = []
@@ -563,10 +603,14 @@ class VoiceInput:
                 raise AudioError("a voice request is running; try again in a moment")
             wake = self._wake
             tap = None
+            held = None
             if wake is not None and wake.active:
                 try:
+                    wake.listener.set_hold(DIAG_HOLD, True)  # no wake turn steals the tap
+                    held = wake.listener
                     tap = wake.listener.open_tap(0).frames  # no second stream on the microphone
                 except AudioError:
+                    wake.listener.set_hold(DIAG_HOLD, False)
                     raise AudioError("wake mode has no microphone stream; try /wake on") from None
                 mic: Any = tap
             else:
@@ -589,6 +633,8 @@ class VoiceInput:
                 mic.stop()
             else:
                 tap.close()
+            if held is not None:
+                held.set_hold(DIAG_HOLD, False)
         if not levels:
             raise AudioError("the microphone delivered no audio")
         ordered = sorted(levels)

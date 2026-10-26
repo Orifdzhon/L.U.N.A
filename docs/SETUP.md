@@ -1,8 +1,10 @@
-# L.U.N.A. setup guide (slices 1-3: text mode, spoken replies, push-to-talk voice input)
+# L.U.N.A. setup guide (text mode, voice, wake word, tray)
 
-L.U.N.A. runs as a text REPL: you type requests, it opens apps and sites, searches the web and
-answers, optionally out loud (see [Voice](#voice-text-to-speech)) and, with a hotkey, by voice (see
-[Voice input](#voice-input-push-to-talk)). The wake word comes in a later slice. For the checks after setup see [MANUAL_CHECKS.md](MANUAL_CHECKS.md).
+L.U.N.A. lives in the system tray with a small window (see [Tray mode](#tray-mode-and-autostart)),
+or runs as a text REPL (`--text`). You type or say requests ("Луна, ..."), it opens apps and sites,
+searches the web and answers, optionally out loud (see [Voice](#voice-text-to-speech)) and by
+voice via the hotkey or the wake word (see [Voice input](#voice-input-push-to-talk) and
+[Wake word](#wake-word)). For the checks after setup see [MANUAL_CHECKS.md](MANUAL_CHECKS.md).
 
 ## 1. Prerequisites
 
@@ -110,6 +112,7 @@ same sections (see `luna.example.toml`).
 | What | Location |
 |---|---|
 | App log (rotating, 2 MB x 5) | `%LOCALAPPDATA%\LUNA\logs\luna.log` |
+| Native crash dump (only for a start without a console, e.g. `pythonw`; usually empty) | `%LOCALAPPDATA%\LUNA\logs\crash.log` |
 | Action log (one JSON line per tool call, monthly files) | `%LOCALAPPDATA%\LUNA\logs\actions-YYYY-MM.jsonl` |
 | Start Menu app cache | `%LOCALAPPDATA%\LUNA\apps.json` (delete it to force a rescan) |
 | Config | `%APPDATA%\LUNA\luna.toml` (see section 5) |
@@ -119,11 +122,19 @@ shows up in the console).
 
 ## 7. Run
 
-```powershell
-uv run luna --text
-```
+| Command | What it does |
+|---|---|
+| `uv run luna` | tray icon + window (same as `--tray`) |
+| `uv run luna --tray --minimized` | tray mode with the window hidden (also `[ui] start_minimized = true`) |
+| `uv run luna --text` | console REPL (below) |
+| `<venv>\Scripts\pythonw.exe -m luna --tray --minimized` | windowless: no console at all (what autostart runs) |
 
-On start it prints the active providers and any skipped ones. REPL commands:
+Only one instance runs at a time (tray and `--text` share the microphone and the hotkey). A
+second launch exits with code 3 and the message `L.U.N.A. is already running (see the tray
+icon)`; in tray mode it is shown in a message box. It does not raise the existing window; use the
+tray icon.
+
+The rest of this section describes the console REPL (`uv run luna --text`). On start it prints the active providers and any skipped ones. REPL commands:
 
 | Input | Effect |
 |---|---|
@@ -136,6 +147,107 @@ On start it prints the active providers and any skipped ones. REPL commands:
 
 Example requests: `открой ютуб`, `open telegram`, `какой курс доллара?`, `что такое черная дыра?`.
 
+## Wake word
+
+Say "Луна, <request>" instead of pressing the hotkey. Off by default: the microphone is opened
+only with `--wake`, `[wakeword] enabled = true`, the `/wake` command (text mode) or the tray
+toggle "Listen for «Луна»". `--wake` implies `--listen`; `--no-wake` overrides the config.
+
+```powershell
+uv run luna --text --voice --wake
+```
+
+Type `/wake` to see the state, `/wake on` / `/wake off` to switch it. In tray mode use the
+checkable tray item "Listen for «Луна»" (it reads "Starting wake word..." while models load).
+Tray toggles last for the session; defaults live in `luna.toml`.
+
+**First run downloads models.** Enabling the wake word downloads the Vosk model `small-ru`
+(pinned by URL and SHA-256) and, for the second-stage check (`verify = "local"`), the
+faster-whisper model of `[stt.local]` (`base`, ~150 MB) into `%LOCALAPPDATA%\LUNA\models`. In
+tray mode this happens in the background after the icon appears; progress goes to `luna.log` and
+the window status line. If C: is short on space, move the models:
+
+```toml
+[wakeword]
+model_dir = "D:/LUNA/models"
+
+[stt.local]
+model_dir = "D:/LUNA/models"
+```
+
+`[wakeword] model_dir` defaults to the same folder as `[stt.local] model_dir`. Other keys
+(`threshold`, `cooldown_s`, `cue`, `follow_up_s`, `verify`, ...) are annotated in
+`luna.example.toml`. `[stt] language` (default `"ru"`) applies to wake commands too. Spoken
+replies fall back from Edge to SAPI when the network fails (see [Voice](#voice-text-to-speech)).
+
+### Wake-word calibration (#115)
+
+To tune `threshold` and friends for your voice and room, record your own clips and run the
+two-stage benchmark (stage 1: Vosk; stage 2: the production faster-whisper verifier). Recordings
+stay outside the repository and are never committed:
+
+```powershell
+uv run python scripts/bench_wake.py --record D:\luna-clips --tag 1m
+uv run python scripts/bench_wake.py --clips D:\luna-clips --verify local --md wake.md
+```
+
+`--record DIR` asks you to say the phrases (`--tag` is a file-name suffix such as `1m` or `3m`
+for the distance to the microphone; `--record-seconds` sets the length). `--negatives` takes a
+long WAV of ordinary speech or TV to count false accepts per hour; `--verify local` adds the
+second stage; `--md` / `--out` save the table / JSON. All options:
+`uv run python scripts/bench_wake.py --help`. Put the best `threshold` into `[wakeword]` and
+restart.
+
+## Tray mode and autostart
+
+`uv run luna` shows a tray icon and a small window (conversation, a text box, a status line).
+Closing the window hides it to the tray; **Quit** is only in the tray menu. Typed requests behave
+like the console REPL (Enter sends, Esc cancels a running request); history is kept in memory
+only (`[ui] history_lines`, 20..2000, default 200).
+
+Tray icon colours: grey idle, blue listening for «Луна», red recording, amber thinking, green
+speaking, red "!" error. The tooltip says the same in words.
+
+Tray menu (left click opens the window):
+
+| Item | Effect |
+|---|---|
+| Listen for «Луна» | wake word on/off (needs a microphone; see [Wake word](#wake-word)) |
+| Voice replies | unmute/mute spoken replies; disabled when `[tts] enabled = false` |
+| Open window | show the window |
+| Start with Windows | create/remove the autostart shortcut |
+| Quit | exit (a watchdog forces the exit after 10 s) |
+
+`[ui]` settings: `start_minimized` (default `false`), `notifications` (default `true`: tray
+notifications for errors only, such as a lost microphone; never any reply text), `history_lines`.
+The old `[ui] autostart` key is ignored (a warning is logged if it is `true`); the tray menu is
+the only switch.
+
+### Start with Windows
+
+Off by default. Tick "Start with Windows" in the tray menu: L.U.N.A. writes the shortcut
+`L.U.N.A.lnk` into your per-user Startup folder (no registry, no admin). It runs
+`<venv>\Scripts\pythonw.exe -m luna --tray --minimized` (plus `--config <path>` if you started
+with `--config`) in the folder you started from, so `./luna.toml` and `./.env` are found. Voice,
+listen and wake settings come from `luna.toml`, not from the flags of the session that created it.
+
+- **Enable it from your main checkout**, never from a throwaway worktree: the shortcut points at
+  the venv it was created from.
+- **Moved or re-cloned the repo?** Untick and tick the item again to rewrite the shortcut.
+- **Turn it off:** untick the same menu item (deletes the shortcut), or delete the file by hand:
+  press Win+R, run `shell:startup`, and delete `L.U.N.A.lnk`. Or in PowerShell:
+  `Remove-Item "$([Environment]::GetFolderPath('Startup'))\L.U.N.A.lnk"`.
+
+### Known limits (tray)
+
+- Disabling the entry in Task Manager -> Startup apps is not reflected in the menu: the file still
+  exists, so the item stays ticked while Windows skips it.
+- No popup anchored at the tray icon; a plain window. A second launch does not raise the window.
+- Tray toggles apply to the current session only; edit `luna.toml` for permanent defaults.
+- Errors are shown as tray notifications at most once per reason per 5 minutes.
+- PySide6-Essentials adds ~82 MB to the install and some RAM in tray mode (`--text` is unaffected).
+- Logs: `luna.log` (section 6); `crash.log` collects native crashes of a windowless start.
+
 ## Voice input (push-to-talk)
 
 ```powershell
@@ -144,7 +256,7 @@ uv run luna --text --voice --listen
 
 `--listen` / `--no-listen` override `[voice] listen` (default `false`: the microphone is never
 opened unless you enable it). At start you should see `Listen: on (Ctrl+Alt+Space)`. `/listen
-[on|off]` switches it while running. There is no wake word yet; the hotkey is the only trigger.
+[on|off]` switches it while running. The hotkey works with or without the wake word (see [Wake word](#wake-word)).
 
 ### How it works
 

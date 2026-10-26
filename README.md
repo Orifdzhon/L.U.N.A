@@ -2,7 +2,7 @@
 
 Open-source voice assistant for Windows. Call it by voice ("Луна") to open apps and websites, answer questions and search the web.
 
-**Status:** early development. Slices 1 (text mode: `uv run luna --text`), 2 (voice replies: `--voice`) and 3 (push-to-talk voice input: `--listen`) are done; the wake word and the tray UI come in later slices (see the [roadmap](docs/ROADMAP.md)).
+**Status:** early development. Slices 1 (text mode: `uv run luna --text`), 2 (voice replies: `--voice`) and 3 (push-to-talk voice input: `--listen`) are done; the wake word (`--wake`) and the tray UI (`uv run luna`) are implemented and being verified by hand (see the [roadmap](docs/ROADMAP.md)).
 
 - Product requirements: [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md)
 - Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), decisions in [docs/adr/](docs/adr/)
@@ -25,7 +25,7 @@ uv run luna --text
 Without keys the router still opens apps and sites; answers need an LLM provider (cloud keys or
 a local LM Studio model). Add `--voice` (`uv run luna --text --voice`) to hear replies in Irina/Zira
 voices (`/mute`, `/stop`, Ctrl+C silences them), and `--listen` to talk by hotkey (Ctrl+Alt+Space; `/listen`, `/mic`):
-`uv run luna --text --voice --listen`. Details, config files, troubleshooting: [docs/SETUP.md](docs/SETUP.md).
+`uv run luna --text --voice --listen`. Plain `uv run luna` starts the tray icon with a small window (`--minimized` hides it; "Start with Windows" is in the tray menu). Details, config files, troubleshooting: [docs/SETUP.md](docs/SETUP.md).
 
 ## Development
 

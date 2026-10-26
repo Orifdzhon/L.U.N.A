@@ -1,4 +1,4 @@
-# Manual checks (slices 1-3: text mode, voice replies, voice input)
+# Manual checks (slices 1-5: text mode, voice, wake word, tray)
 
 These checks need a real Windows desktop, a browser and network access, so CI cannot run them.
 Set up first: [SETUP.md](SETUP.md). Start the REPL with `uv run luna --text`.
@@ -151,7 +151,7 @@ at most 2 s from the end of your speech to the action for simple commands; note 
 | K18 | Press the hotkey and speak 20 times in a row (short phrases such as "open notepad") | Every turn works; no growing delay, no extra console noise; the Python process does not keep growing in Task Manager | |
 | K19 | `exit` while idle and while listening | Quits cleanly, exit code 0, no hanging process | |
 
-Known limitations: there is no wake word yet (hotkey only); the speaker is silenced before
+Known limitations: the speaker is silenced before
 recording, so echo into the microphone is not handled any other way (use headphones if you want to
 test barge-in at high volume); mixed Russian/English accuracy is whatever Whisper delivers (see the
 STT benchmark, #87).
@@ -166,3 +166,62 @@ uv run pytest -m live tests/integration          # Groq / local STT and LLM prov
 ```
 
 A test that finds no device or no key is skipped, not failed.
+
+## L. Wake word (slice 4, remaining checks)
+
+Needs a microphone and speakers; setup: [SETUP.md](SETUP.md#wake-word). Start with
+`uv run luna --text --voice --wake` (the first run downloads the models). Tick Pass or Fail.
+
+| # | Do | Expected | Pass / Fail |
+|---|---|---|---|
+| L1 | Say "Луна, который час?" | The time is answered aloud and printed | [ ] / [ ] |
+| L2 | Say "Луна, открой ютуб" | YouTube opens, a short confirmation is spoken | [ ] / [ ] |
+| L3 | Say "лунный свет" in normal speech | No wake, nothing happens | [ ] / [ ] |
+| L4 | Say "Лена, привет" | No wake, nothing happens | [ ] / [ ] |
+| L5 | `/wake off`, say "Луна, который час?"; then `/wake on` | Off: no reaction; on: wake works again | [ ] / [ ] |
+| L6 | Say "Луна, кто тебя создал?" (or type it) | Honest identity answer: an open-source (Apache-2.0) assistant created by Orif with AI coding agents, plus the name of the LLM that answers; not "OpenAI/Google" | [ ] / [ ] |
+
+## M. Desktop shell (slice 5)
+
+Setup: [SETUP.md](SETUP.md#tray-mode-and-autostart). Run from the main checkout, never from an
+agent worktree. Do not leave autostart enabled by accident: M17-M18 turn it off again.
+
+| # | Do | Expected | Pass / Fail |
+|---|---|---|---|
+| M1 | `uv run luna` | A tray icon (grey) and the window appear; the tooltip names the state | [ ] / [ ] |
+| M2 | Type `открой ютуб` in the window, Enter | Your line, the reply and an action line appear; YouTube opens | [ ] / [ ] |
+| M3 | Type a long question and press Esc while it works | The request is cancelled, the window stays usable | [ ] / [ ] |
+| M4 | Close the window with X | It hides to the tray (one notification per session says so); the process keeps running | [ ] / [ ] |
+| M5 | Left-click the tray icon; also tray menu "Open window" | The window is shown again | [ ] / [ ] |
+| M6 | Tick "Listen for «Луна»" | Label "Starting wake word..." while models load (first run: download), then the icon turns blue | [ ] / [ ] |
+| M7 | Say "Луна, какой курс доллара?" | Icon: red while recording, amber thinking, green speaking; the transcript and reply appear in the window; a spoken answer based on a fresh search | [ ] / [ ] |
+| M8 | Say "Луна, открой Telegram" | The installed app launches (spec §6) | [ ] / [ ] |
+| M9 | Say "Луна, что такое черная дыра?" | A spoken and written general answer (spec §6) | [ ] / [ ] |
+| M10 | Untick "Listen for «Луна»" | Icon returns to grey; saying "Луна" does nothing; the microphone indicator is off | [ ] / [ ] |
+| M11 | Untick "Voice replies", ask anything; tick it again | Muted: reply only in the window; unmuted: spoken again. With `[tts] enabled = false` the item is disabled | [ ] / [ ] |
+| M12 | Start a second `uv run luna` while the first runs | A message box "L.U.N.A. is already running (see the tray icon)"; exit code 3; the first keeps working | [ ] / [ ] |
+| M13 | While tray mode runs, start `uv run luna --text` | Prints the same message and exits with code 3 | [ ] / [ ] |
+| M14 | Quit the tray, start `uv run luna --text`, then start `uv run luna` | The tray launch shows the "already running" box (both modes share one instance) | [ ] / [ ] |
+| M15 | From a terminal: `<venv>\Scripts\pythonw.exe -m luna --tray --minimized` | No console window; the tray icon appears, the window stays hidden; `luna.log` has entries; `crash.log` is empty | [ ] / [ ] |
+| M16 | Disconnect or disable the microphone with wake on | A tray notification about the wake listener (no reply text in it); the icon shows the error | [ ] / [ ] |
+| M17 | Tick "Start with Windows" (main checkout), then `shell:startup` in Win+R | `L.U.N.A.lnk` is there; its target is the venv's `pythonw.exe`, arguments `-m luna --tray --minimized` | [ ] / [ ] |
+| M18 | Sign out and in (or reboot) | L.U.N.A. starts by itself in the tray, window hidden (spec §6: starts with Windows, lives in the tray) | [ ] / [ ] |
+| M19 | Untick "Start with Windows" | `L.U.N.A.lnk` disappears from `shell:startup`; the next sign-in does not start L.U.N.A. | [ ] / [ ] |
+| M20 | Tick it, then delete the file by hand in `shell:startup`, restart L.U.N.A. | The menu item is unticked (state = file exists) | [ ] / [ ] |
+| M21 | Tray menu -> Quit | The icon disappears and the process exits within a few seconds (check Task Manager) | [ ] / [ ] |
+| M22 | Press Ctrl+C in a console-started `uv run luna` | Quits the same way as the menu | [ ] / [ ] |
+
+Known limits to expect (not failures): disabling the entry in Task Manager -> Startup apps is not
+reflected in the menu; a second launch does not raise the existing window; tray toggles are not
+saved between runs.
+
+### Spec section 6 summary
+
+| Criterion (PRODUCT_SPEC section 6) | Checks | Pass / Fail |
+|---|---|---|
+| "Луна, открой YouTube" opens YouTube | L2, M2 | [ ] / [ ] |
+| "Луна, открой Telegram" launches the app | M8 | [ ] / [ ] |
+| "Луна, какой курс доллара?" gives a spoken answer from a fresh search | M7 | [ ] / [ ] |
+| A general question gets a spoken and written answer | M9 | [ ] / [ ] |
+| Starts with Windows (when enabled) and lives in the tray | M17-M19 | [ ] / [ ] |
+| Automated tests and lint pass in CI | the PR's CI run | [ ] / [ ] |

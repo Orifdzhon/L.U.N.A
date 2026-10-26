@@ -76,6 +76,25 @@ DEFAULT_CLOSE_TIMEOUT_S = 2.0
 FIRST_AUDIO_WAIT_S = 10.0  # how long the turn log waits for the first spoken sound
 _FIRST_AUDIO_POLL_S = 0.02
 TURN_HOLD_PREFIX = "turn:"
+_WORD = re.compile(r"[^\W_]+(?:'[^\W_]+)?")
+# Conversation mode (#113): phrases that close the follow-up window without a reply or an LLM
+# call (the whole transcript, optionally with the address word around it; yo folds to ye).
+END_PHRASES = frozenset(
+    {
+        "спасибо",
+        "большое спасибо",
+        "стоп",
+        "хватит",
+        "все",
+        "отбой",
+        "stop",
+        "thanks",
+        "thank you",
+        "that's all",
+        "that is all",
+    }
+)
+_FILLERS = frozenset({"угу", "ага", "м", "мм", "ммм", "э", "эм", "хм", "ну", "uh", "um", "hm"})  # noqa: RUF001
 _KEYWORD_TOKEN = re.compile(r"^[\W_]*([^\W\d_]+)")
 _KEYWORD_SEPARATORS = " \t\r\n,.:;!?-\u2013\u2014\u2026"
 
@@ -246,6 +265,7 @@ class VoiceFrontEnd:
         self._rec_lock = threading.Lock()  # live mode: one recording at a time
         self._warned: set[str] = set()
         self._wake_stats = {"detections": 0, "accepted": 0, "rejected": 0}  # this session
+        self._conv_until: float | None = None  # conversation window deadline (injected clock)
 
     @property
     def state(self) -> VoiceState:
@@ -403,6 +423,8 @@ class VoiceFrontEnd:
         now = self._clock()
         turn = _Turn(new_id(), trigger.detected_at if trigger is not None else now, kind=kind)
         turn.live = live
+        if kind == "hotkey":
+            self._close_window()  # the press takes over; a new window opens after its reply
         if live is not None:
             turn.hold = TURN_HOLD_PREFIX + turn.request_id
             live.set_hold(turn.hold, True)
@@ -444,6 +466,64 @@ class VoiceFrontEnd:
                 self._state = VoiceState.IDLE
             self._release_hold(turn)
             raise
+
+    # ---- conversation mode (#113) ----------------------------------------------------
+
+    def _open_window(self, seconds: float | None = None) -> None:
+        """Ask the listener for a follow-up window (rolling: full length unless ``seconds``).
+
+        The listener starts the clock only once nothing holds the detector, i.e. after the
+        reply was spoken plus ``speaking_tail_ms``. No-op with ``follow_up_s = 0`` / no mic.
+        """
+        live = self._live
+        full = self._wake.follow_up_s
+        if live is None or full <= 0 or self._closed:
+            return
+        if seconds is None:
+            seconds = full
+            self._conv_until = self._clock() + full
+        try:
+            live.open_window(seconds)
+        except Exception:
+            logger.warning("opening the follow-up window failed", exc_info=True)
+
+    def _reopen_window(self) -> None:
+        """A follow-up turn was ignored: give the window back with the time it still has."""
+        until = self._conv_until
+        if until is None:
+            return
+        left = until - self._clock()
+        if left > 0:
+            self._open_window(left)
+        else:
+            self._conv_until = None
+
+    def _close_window(self) -> None:
+        self._conv_until = None
+        live = self._live
+        if live is None or self._wake.follow_up_s <= 0:
+            return
+        try:
+            live.open_window(0)
+        except Exception:
+            logger.warning("closing the follow-up window failed", exc_info=True)
+
+    def _is_end_phrase(self, text: str) -> bool:
+        words = [_fold(w) for w in _WORD.findall(text.replace("\u2019", "'"))]
+        names = {_fold(w) for w in (*self._wake.keywords, *self._wake.verify_words)}
+        while words and words[0] in names:
+            words.pop(0)
+        while words and words[-1] in names:
+            words.pop()
+        return " ".join(words) in END_PHRASES
+
+    @staticmethod
+    def _is_noise(text: str) -> bool:
+        """Empty, one character or only filler sounds: not a command (follow-up turns)."""
+        words = [_fold(w) for w in _WORD.findall(text)]
+        if sum(len(w) for w in words) < 2:
+            return True
+        return all(w in _FILLERS for w in words)
 
     def _stop_speech(self) -> None:
         if self._speaker is None:
@@ -665,6 +745,8 @@ class VoiceFrontEnd:
             quiet = turn.kind != "hotkey"  # wake / follow-up: end without a message
             if utt.reason == "no_speech" or not utt.pcm16:
                 self._end(turn, Status.IDLE, None if quiet else DETAIL_NO_SPEECH)
+                if turn.kind == "follow_up":
+                    self._reopen_window()
                 return
             if not self._advance(turn, VoiceState.TRANSCRIBING):
                 return
@@ -675,10 +757,23 @@ class VoiceFrontEnd:
             provider = transcript.provider
             if turn.cancel.is_set():
                 return
-            if turn.kind == "wake":
+            if turn.kind in ("wake", "follow_up"):
                 transcript = self._strip_keyword(transcript)
+            if turn.kind == "follow_up" and self._is_noise(transcript.text):
+                self._end(turn, Status.IDLE)  # room noise: no reply, the window goes on
+                self._reopen_window()
+                return
             if transcript.is_empty:
                 self._end(turn, Status.IDLE, None if quiet else DETAIL_NOT_CAUGHT)
+                return
+            if (
+                turn.kind != "hotkey"
+                and self._wake.follow_up_s > 0
+                and self._is_end_phrase(transcript.text)
+            ):
+                logger.debug("End phrase: conversation closed")
+                self._conv_until = None
+                self._end(turn, Status.IDLE)  # silent: no LLM call, no new window
                 return
             logger.debug("Transcript: %r", transcript.text)
             self._handle(turn, transcript, spans)
@@ -831,11 +926,14 @@ class VoiceFrontEnd:
         except Exception:
             logger.warning("on_reply failed", exc_info=True)
         # A press may have landed while on_reply was starting the speech: cut it again.
-        if self._superseded(turn) and self._speaker is not None:
-            try:
-                self._speaker.stop()
-            except Exception:
-                logger.warning("stopping speech failed", exc_info=True)
+        if self._superseded(turn):
+            if self._speaker is not None:
+                try:
+                    self._speaker.stop()
+                except Exception:
+                    logger.warning("stopping speech failed", exc_info=True)
+            return
+        self._open_window()  # rolling conversation window; starts after speech end + tail
 
     def _first_audio_spans(self, turn: _Turn) -> dict[str, float]:
         """``tts_first_audio_ms`` (reply ready -> first sound) and ``total_ms`` (end of speech

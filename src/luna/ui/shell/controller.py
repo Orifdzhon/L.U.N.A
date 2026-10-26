@@ -123,6 +123,7 @@ class ShellController:
         self._status: Status | None = None
         self._status_detail: str | None = None
         self._wake_state = "OFF"
+        self._conversation_open = False  # the follow-up window is open (WakeStateChanged detail)
         self._provider: str | None = None
         self._error_token = 0
         self._error_timer: Cancellable | None = None
@@ -238,6 +239,7 @@ class ShellController:
 
     def _on_wake_state(self, event: WakeStateChanged) -> None:
         self._wake_state = event.state.name
+        self._conversation_open = event.state is WakeState.ARMED and event.detail == "follow-up"
         if event.state is WakeState.FAILED:
             reason = event.detail or "unknown error"
             self._notify("wake-failed", f"Wake word stopped: {reason}")
@@ -404,6 +406,7 @@ class ShellController:
             return
         voice = self._app.voice_input
         self._wake_state = voice.wake_state if voice is not None else "OFF"
+        self._conversation_open = False
         self._refresh_icon()
         self._refresh_status()
         self._refresh_menu()
@@ -509,7 +512,12 @@ class ShellController:
             self._window.append(line)
 
     def _refresh_icon(self) -> None:
-        state = derive_icon_state(self._status, self._wake_state, self._error_timer is not None)
+        state = derive_icon_state(
+            self._status,
+            self._wake_state,
+            self._error_timer is not None,
+            self._conversation_open,
+        )
         self._icon = state
         self._tray.set_state(state, tooltip_for(state))
 
@@ -519,6 +527,8 @@ class ShellController:
             parts[0] = f"error: {self._status_detail}"
         if self._wake_state != "OFF":
             parts.append(f"Wake: {self._wake_state}")
+            if self._conversation_open:
+                parts.append("conversation")
         speaker = self._app.speaker
         if speaker is not None and speaker.muted:
             parts.append("Voice: muted")

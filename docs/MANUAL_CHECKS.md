@@ -181,6 +181,19 @@ Needs a microphone and speakers; setup: [SETUP.md](SETUP.md#wake-word). Start wi
 | L5 | `/wake off`, say "Луна, который час?"; then `/wake on` | Off: no reaction; on: wake works again | [ ] / [ ] |
 | L6 | Say "Луна, кто тебя создал?" (or type it) | Honest identity answer: an open-source (Apache-2.0) assistant created by Orif with AI coding agents, plus the name of the LLM that answers; not "OpenAI/Google" | [ ] / [ ] |
 
+### L7-L12. Conversation mode (#113)
+
+Set `follow_up_s = 90` under `[wakeword]` in your `luna.toml`, run `uv run luna --text --voice --wake`.
+
+| # | Do | Expected | Pass / Fail |
+|---|---|---|---|
+| L7 | Say "Луна, который час?", wait for the answer, then say "а какая сегодня дата?" without «Луна» | Answered; `/wake` right after shows `conversation: N s left` | [ ] / [ ] |
+| L8 | Keep asking follow-ups for more than 90 s in total, each within 90 s of the previous one | The window never closes while you keep talking (it restarts after every reply) | [ ] / [ ] |
+| L9 | After an answer say «спасибо» (also try «Луна, отбой») | No reply, no sound; `/wake` shows no countdown; a follow-up without «Луна» is not heard | [ ] / [ ] |
+| L10 | After an answer stay silent for 90 s | The window closes quietly (no message, no sound) | [ ] / [ ] |
+| L11 | After an answer cough or say "угу" | Nothing is answered, no "didn't catch that" | [ ] / [ ] |
+| L12 | In tray mode: watch the icon after an answer | It shows "listening" while the window is open and returns to the wake colour when it closes | [ ] / [ ] |
+
 ## M. Desktop shell (slice 5)
 
 Setup: [SETUP.md](SETUP.md#tray-mode-and-autostart). Run from the main checkout, never from an

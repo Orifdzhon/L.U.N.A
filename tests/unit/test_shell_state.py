@@ -40,6 +40,13 @@ def test_derive_icon_state_table(status, wake, err):
     assert derive_icon_state(status, wake, err) is _expected(status, wake.upper(), err)
 
 
+def test_open_conversation_window_shows_listening_when_idle():
+    assert derive_icon_state(None, "ARMED", False, True) is IconState.RECORDING
+    assert derive_icon_state(Status.THINKING, "ARMED", False, True) is IconState.THINKING
+    assert derive_icon_state(None, "HELD", False, True) is IconState.WAKE
+    assert derive_icon_state(None, "ARMED", False, False) is IconState.WAKE
+
+
 def test_every_state_has_tooltip():
     assert all(tooltip_for(s) for s in IconState)
 

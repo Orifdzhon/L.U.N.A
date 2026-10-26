@@ -261,7 +261,7 @@ class WakeWordSettings(_Section):
     speaking_tail_ms: int = Field(default=400, ge=0, le=5000)  # extra mute after speech ends
     command_timeout_s: float = Field(default=5.0, gt=0, le=60)  # wait for a command after the word
     cue: Literal["off", "beep"] = "off"  # sound played when the keyword is heard
-    follow_up_s: float = Field(default=0.0, ge=0, le=30)  # 0 = off; keep listening after a reply
+    follow_up_s: float = Field(default=0.0, ge=0, le=300)  # 0 = off; conversation window
     # Second stage (ADR 0004 amendment 2): local faster-whisper checks each detection.
     verify: Literal["local", "off"] = "local"
     # Inflected forms Whisper often writes for the address word ("лунный", "лена" stay rejected).

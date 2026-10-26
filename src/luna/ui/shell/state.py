@@ -37,7 +37,9 @@ def tooltip_for(state: IconState) -> str:
     return _TOOLTIPS[state]
 
 
-def derive_icon_state(status: Status | None, wake_state: str, error_active: bool) -> IconState:
+def derive_icon_state(
+    status: Status | None, wake_state: str, error_active: bool, conversation: bool = False
+) -> IconState:
     """Pick the tray icon. ``error_active`` covers the transient post-ERROR window and FAILED."""
     wake = wake_state.upper()
     if error_active or wake == "FAILED" or status is Status.ERROR:
@@ -48,6 +50,8 @@ def derive_icon_state(status: Status | None, wake_state: str, error_active: bool
         return IconState.SPEAKING
     if status is Status.THINKING:
         return IconState.THINKING
+    if conversation and wake == "ARMED":
+        return IconState.RECORDING  # the follow-up window is open: listening without the keyword
     if wake in ("ARMED", "HELD"):
         return IconState.WAKE
     return IconState.IDLE

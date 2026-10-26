@@ -180,6 +180,23 @@ model_dir = "D:/LUNA/models"
 `luna.example.toml`. `[stt] language` (default `"ru"`) applies to wake commands too. Spoken
 replies fall back from Edge to SAPI when the network fails (see [Voice](#voice-text-to-speech)).
 
+### Conversation mode (`follow_up_s`)
+
+With `follow_up_s = 90` under `[wakeword]` (default `0` = off, maximum `300`) L.U.N.A. keeps
+listening after she answered a wake or hotkey turn: you can give the next command **without
+saying «Луна»**. Every new command restarts the window; after `follow_up_s` seconds without
+speech it closes quietly and only the wake word works again. The window opens when the reply has
+been spoken (plus `speaking_tail_ms`), so she never hears herself. The tray icon shows "listening"
+while it is open and `/wake` prints `conversation: 63 s left`.
+
+- End it at once by saying «спасибо», «стоп», «хватит», «всё» or «отбой» (also «Луна, отбой»;
+  English: "stop", "thanks", "that's all"). Nothing is answered and nothing is sent to the LLM.
+- Empty, one-letter and filler transcripts («угу», «ага», «м-м») are ignored without a reply.
+- Pressing the hotkey or saying «Луна» during the window works as usual.
+- **Privacy:** while the window is open, any speech in the room (including a TV) is recorded and
+  sent to the configured speech recognition (Groq by default), exactly like a hotkey turn. Use a
+  short window, or `0`, if that matters.
+
 ### Wake-word calibration (#115)
 
 To tune `threshold` and friends for your voice and room, record your own clips and run the

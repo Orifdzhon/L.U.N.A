@@ -58,6 +58,17 @@ def test_status_line_shows_state_keyword_verify_and_model(tmp_path, wake_apps, f
     assert "vosk-fake" in line
 
 
+def test_status_line_shows_the_conversation_countdown(tmp_path, wake_apps, fake_local):
+    settings = Settings().with_api_keys({})
+    settings.wakeword.follow_up_s = 90.0
+    app = make(tmp_path, wake_apps, settings=settings, mic=FakeLiveMic())
+    voice = app.voice_input
+    assert voice.enable_wake() is None
+    assert "conversation: on (90 s after a reply)" in voice.wake_status_line()
+    voice._wake.listener.open_window(63.0)
+    assert "conversation: 63 s left" in voice.wake_status_line()
+
+
 def test_model_store_failure_degrades_to_hotkey(tmp_path, wake_apps):
     mic = FakeLiveMic()
     store = FakeStore(ProviderUnavailable("no network"), present=False)

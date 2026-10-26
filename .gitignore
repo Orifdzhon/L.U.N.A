@@ -38,4 +38,5 @@ Thumbs.db
 
 # STT benchmark audio (recordings and synthesized clips; never committed)
 /benchmarks/stt_audio/
+/benchmarks/wake_audio/
 /benchmarks/*.json

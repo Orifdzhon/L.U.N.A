@@ -305,6 +305,7 @@ def _build_speaker(
         warnings.append(f"Voice disabled: {reason}. Continuing in text mode.")
 
     conf = settings.tts
+    built_tts = tts is None  # only a provider built here is warmed (never an injected fake)
     if tts is None:
         tts = _build_tts(conf, platform, warnings, disabled)
         if tts is None:
@@ -319,7 +320,10 @@ def _build_speaker(
         player = SoundDevicePlayer()
     from luna.tts.speaker import Speaker
 
-    return Speaker(tts, player, bus, conf)
+    speaker = Speaker(tts, player, bus, conf)
+    if built_tts:
+        speaker.start_warmup()  # background thread; never blocks startup
+    return speaker
 
 
 def _assemble(

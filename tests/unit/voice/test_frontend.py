@@ -561,9 +561,11 @@ def test_latency_line_has_spans_and_no_transcript(make, caplog):
     h.hotkey.press()
     wait_for(lambda: bool(h.replies))
     h.idle()
+    wait_for(lambda: any(r.levelno == logging.INFO for r in caplog.records))
     info = [r for r in caplog.records if r.levelno == logging.INFO]
     assert len(info) == 1
     line = info[0].getMessage()
+    assert "tts_first_audio_ms" not in line  # the fake speaker never plays
     for key in ("hotkey_to_listening_ms=", "capture_ms=", "stt_ms=", "handle_ms=", "provider=fake"):
         assert key in line
     assert SECRET not in line
@@ -577,3 +579,42 @@ def test_no_latency_line_when_nothing_was_recognised(make, caplog):
     h.hotkey.press()
     h.idle()
     assert not [r for r in caplog.records if r.levelno == logging.INFO]
+
+
+class TimedSpeaker(FakeSpeaker):
+    """Reports a first sound ``delay`` seconds (fake clock) after the reply was handed over."""
+
+    def __init__(self, log, clock, delay) -> None:
+        super().__init__(log)
+        self.clock, self.delay = clock, delay
+        self.active = False
+        self.first_audio_at = None
+
+    def start(self) -> None:  # called by the test's on_reply
+        self.active = True
+        self.first_audio_at = self.clock() + self.delay
+
+
+def test_latency_line_has_first_audio_and_total(make, caplog):
+    clock = FakeClock()
+    caplog.set_level(logging.INFO, logger="luna.voice.frontend")
+    h = make([SPOKEN], clock=clock)
+    speaker = TimedSpeaker(h.log, clock, 1.5)
+    h.fe._speaker = speaker
+    h.fe._on_reply = lambda _reply: speaker.start()
+    h.hotkey.press()
+    wait_for(lambda: any(r.levelno == logging.INFO for r in caplog.records))
+    line = next(r for r in caplog.records if r.levelno == logging.INFO).getMessage()
+    fields = dict(p.split("=") for p in line.split() if "=" in p)
+    assert fields["tts_first_audio_ms"] == "1500"
+    assert float(fields["total_ms"]) >= 1500  # end of speech -> first sound includes it
+
+
+def test_latency_line_does_not_wait_when_nothing_is_spoken(make, caplog):
+    caplog.set_level(logging.INFO, logger="luna.voice.frontend")
+    h = make([SPOKEN])
+    h.fe._speaker = TimedSpeaker(h.log, FakeClock(), 0)  # inactive: on_reply never starts it
+    h.hotkey.press()
+    wait_for(lambda: any(r.levelno == logging.INFO for r in caplog.records), timeout=2)
+    line = next(r for r in caplog.records if r.levelno == logging.INFO).getMessage()
+    assert "tts_first_audio_ms" not in line

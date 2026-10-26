@@ -427,3 +427,28 @@ def test_fetch_passes_int_timeouts_to_edge_tts(monkeypatch):
     assert edge._fetch_mp3("Привет.", "v", "+0%", "+0%", 5.0, 5.35) == b"mp3"
     assert seen["connect_timeout"] == 5
     assert seen["receive_timeout"] == 6
+
+
+def test_warm_up_sends_one_tiny_request_and_discards_it():
+    fetch = Fetch()
+    decoded = []
+    tts = make(fetch, decoder=lambda b: decoded.append(b) or CLIP)
+    tts.warm_up()
+    assert len(fetch.calls) == 1
+    assert len(fetch.calls[0][0]) <= 5
+    assert decoded == []
+
+
+@pytest.mark.parametrize("error", [ProviderUnavailable("down"), TimeoutError(), OSError("x")])
+def test_warm_up_swallows_errors(error):
+    make(Fetch(error=error)).warm_up()  # must not raise
+
+
+def test_fallback_warm_up_warms_only_the_primary():
+    fetch = Fetch()
+    FallbackTTS(make(fetch), FakeTTS()).warm_up()
+    assert len(fetch.calls) == 1
+
+
+def test_fallback_warm_up_without_primary_support_is_a_noop():
+    FallbackTTS(FakeTTS(), FakeTTS()).warm_up()

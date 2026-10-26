@@ -73,6 +73,8 @@ DETAIL_NOT_CAUGHT = "didn't catch that"
 DETAIL_STT_FAILED = "speech recognition failed"
 DETAIL_AUDIO_FAILED = "microphone error"
 DEFAULT_CLOSE_TIMEOUT_S = 2.0
+FIRST_AUDIO_WAIT_S = 10.0  # how long the turn log waits for the first spoken sound
+_FIRST_AUDIO_POLL_S = 0.02
 TURN_HOLD_PREFIX = "turn:"
 _KEYWORD_TOKEN = re.compile(r"^[\W_]*([^\W\d_]+)")
 _KEYWORD_SEPARATORS = " \t\r\n,.:;!?-\u2013\u2014\u2026"
@@ -91,6 +93,8 @@ class _Orchestrator(Protocol):
 
 class _Speaker(Protocol):
     def stop(self) -> None: ...
+
+    # Optional (looked up with getattr): ``active`` and ``first_audio_at`` (see Speaker).
 
 
 class LiveAudio(Protocol):
@@ -132,6 +136,8 @@ class _Turn:
     verify: _Verify | None = None
     announced: bool = False  # LISTENING was published
     listening_at: float | None = None
+    speech_end_at: float | None = None  # recording finished (end of the user's speech)
+    reply_at: float | None = None  # reply handed to on_reply (speech starts from here)
 
 
 class _TeeTap(FrameTap):
@@ -651,13 +657,14 @@ class VoiceFrontEnd:
             try:
                 with self._lock:
                     self._drop_verify(turn)
-                self._log_spans(turn, spans, provider, reason)
                 handled = "handle_ms" in spans
                 self._end_if_current(turn, handled=handled)
                 if turn.cancel.is_set() and handled:
                     self._republish_current()
             finally:
                 self._release_hold(turn)  # after on_reply: holds overlap with "speaking"
+                # Last: it may wait (daemon turn thread) for the first spoken sound.
+                self._log_spans(turn, spans, provider, reason)
 
     def _strip_keyword(self, transcript: Transcript) -> Transcript:
         """Drop a leading address word ("Луна, ..."); the rest is the command."""
@@ -709,7 +716,8 @@ class VoiceFrontEnd:
             logger.warning("Recording failed: %s", exc)
             self._end(turn, Status.ERROR, DETAIL_AUDIO_FAILED)
             return None
-        spans["capture_ms"] = (self._clock() - started) * 1000
+        turn.speech_end_at = self._clock()
+        spans["capture_ms"] = (turn.speech_end_at - started) * 1000
         return utt
 
     def _record_live(self, turn: _Turn) -> Utterance:
@@ -785,6 +793,7 @@ class VoiceFrontEnd:
         if self._superseded(turn):
             self._deliver_stale(reply)  # the user moved on: never speak it
             return
+        turn.reply_at = self._clock()
         try:
             self._on_reply(reply)
         except Exception:
@@ -795,6 +804,34 @@ class VoiceFrontEnd:
                 self._speaker.stop()
             except Exception:
                 logger.warning("stopping speech failed", exc_info=True)
+
+    def _first_audio_spans(self, turn: _Turn) -> dict[str, float]:
+        """``tts_first_audio_ms`` (reply ready -> first sound) and ``total_ms`` (end of speech
+        -> first sound), once the speaker started playing this turn's reply.
+
+        Waits (bounded) while the speaker is still preparing the reply; gives up when the turn
+        is cancelled, the front end closes or the speaker went idle without a sound.
+        """
+        speaker = self._speaker
+        reply_at = turn.reply_at
+        if speaker is None or reply_at is None:
+            return {}
+        deadline = time.monotonic() + FIRST_AUDIO_WAIT_S
+        while True:
+            at = getattr(speaker, "first_audio_at", None)
+            if isinstance(at, float) and at >= reply_at:
+                out = {"tts_first_audio_ms": (at - reply_at) * 1000}
+                if turn.speech_end_at is not None:
+                    out["total_ms"] = (at - turn.speech_end_at) * 1000
+                return out
+            if (
+                self._closed
+                or turn.cancel.is_set()
+                or getattr(speaker, "active", False) is not True
+                or time.monotonic() >= deadline
+            ):
+                return {}
+            time.sleep(_FIRST_AUDIO_POLL_S)
 
     def _superseded(self, turn: _Turn) -> bool:
         with self._lock:
@@ -820,6 +857,7 @@ class VoiceFrontEnd:
         v = turn.verify
         if v is not None and v.ms is not None:
             spans["verify_ms"] = v.ms
+        spans.update(self._first_audio_spans(turn))
         if turn.kind != "hotkey" and turn.listening_at is not None:
             spans["wake_to_listening_ms"] = (turn.listening_at - turn.pressed_at) * 1000
         parts = " ".join(f"{k}={val:.0f}" for k, val in spans.items())

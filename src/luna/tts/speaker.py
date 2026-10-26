@@ -50,6 +50,8 @@ ERROR_DETAIL = "tts_failed"
 _POLL_S = 0.05  # how often waiting threads re-check for cancellation
 _STOP_RETRY_S = 0.01
 _STOP_WAIT_S = 0.5
+WARM_IDLE_S = 240.0  # re-warm the TTS service after this long without a synthesis
+_WARM_CHECK_S = 30.0
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,7 @@ class _Job:
     gen: int
     reply: Reply
     request_id: str | None
+    at: float = 0.0  # clock() when speak() was called (the reply was ready)
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,9 @@ class Speaker:
         self._listeners: list[Callable[[bool], None]] = []
         self._synth_lock = threading.Lock()  # at most one synthesize() at a time
         self._synth_threads: list[threading.Thread] = []
+        self._first_audio_at: float | None = None  # clock() of the latest utterance's first audio
+        self._last_synth_at = clock()
+        self._warm_thread: threading.Thread | None = None
 
         self._worker = threading.Thread(target=self._run, name="luna-speaker", daemon=True)
         self._canceller = threading.Thread(
@@ -130,6 +136,52 @@ class Speaker:
     def active(self) -> bool:
         """True while speech is queued or playing (see the module docstring)."""
         return self._active
+
+    @property
+    def first_audio_at(self) -> float | None:
+        """``clock()`` when the latest ``speak()`` started playing; None until it did."""
+        return self._first_audio_at
+
+    def start_warmup(self) -> None:
+        """Warm the TTS service in the background now and again after long idle periods.
+
+        Does nothing (no thread) when the provider has no ``warm_up()`` (SAPI), when called
+        twice, or after ``close()``. Never blocks the caller; failures are the provider's to
+        swallow. Skipped while muted.
+        """
+        warm = getattr(self._tts, "warm_up", None)
+        if warm is None:
+            return
+        with self._cond:
+            if self._warm_thread is not None or self._closed:
+                return
+            self._warm_thread = threading.Thread(
+                target=self._warm_loop, args=(warm,), name="luna-speaker-warm", daemon=True
+            )
+            self._warm_thread.start()
+
+    def _warm_loop(self, warm: Callable[[], None]) -> None:
+        due = True  # warm at startup
+        while True:
+            if due:
+                with self._cond:
+                    if self._closed:
+                        return
+                    skip = self._muted
+                if not skip:
+                    try:
+                        warm()
+                    except Exception:
+                        log.debug("TTS warm-up failed", exc_info=True)
+                    with self._cond:
+                        self._last_synth_at = self._clock()
+            with self._cond:
+                if self._closed:
+                    return
+                self._cond.wait(_WARM_CHECK_S)
+                if self._closed:
+                    return
+                due = self._clock() - self._last_synth_at >= WARM_IDLE_S and not self._active
 
     def add_activity_listener(self, listener: Callable[[bool], None]) -> Callable[[], None]:
         """Call ``listener(active)`` on every change; returns an idempotent unsubscribe.
@@ -152,7 +204,8 @@ class Speaker:
             if self._muted or self._closed:
                 return
             self._cancel()
-            self._pending = _Job(self._gen, reply, request_id)
+            self._first_audio_at = None
+            self._pending = _Job(self._gen, reply, request_id, self._clock())
             self._update_active()
 
     def stop(self) -> None:
@@ -177,6 +230,8 @@ class Speaker:
             self._cancel()
             self._update_active()
             threads = [self._worker, self._canceller, *self._synth_threads]
+            if self._warm_thread is not None:
+                threads.append(self._warm_thread)
         deadline = self._clock() + timeout
         me = threading.current_thread()
         for t in threads:
@@ -302,7 +357,7 @@ class Speaker:
             self._synth_threads.append(helper)
         helper.start()
 
-        started = self._clock()
+        first = True
         try:
             while True:
                 item = self._next_result(job, results)
@@ -315,10 +370,16 @@ class Speaker:
                     if not self._current(job):
                         break
                     self._playing = True
+                    if first:
+                        first = False
+                        now = self._clock()
+                        self._first_audio_at = now
+                        log.info(
+                            "speech: first audio %.0f ms after the reply", (now - job.at) * 1000
+                        )
                     if isinstance(self._open, _NotOpen) or self._open != job.request_id:
                         self._open = job.request_id
                         self._bus.publish(StatusChanged(Status.SPEAKING, job.request_id))
-                        log.debug("first audio after %.2fs", self._clock() - started)
                 permits.release()
                 try:
                     self._player.play(item.clip)
@@ -387,6 +448,7 @@ class Speaker:
                     return
                 try:
                     clip = self._tts.synthesize(chunk, lang)
+                    self._last_synth_at = self._clock()
                 except NothingToSpeak as e:
                     # Unspeakable chunk (e.g. Hangul): skip it, speak the rest of the reply.
                     # The permit is handed on so the next chunk's look-ahead does not wait for

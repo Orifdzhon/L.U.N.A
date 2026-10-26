@@ -112,3 +112,18 @@ def test_korean_is_skipped_not_failed():
 
     with pytest.raises(NothingToSpeak):
         FallbackTTS(EdgeTTS(), SapiTTS()).synthesize("무엇을 도와드릴까요?", "ru")
+
+
+@pytest.mark.live
+def test_first_synthesis_after_warm_up_is_fast():
+    """Issue #158: after warm_up() the first real reply must reach first audio in < 2 s."""
+    tts = EdgeTTS()
+    started = time.monotonic()
+    tts.warm_up()
+    warm = time.monotonic() - started
+    started = time.monotonic()
+    clip = tts.synthesize("Привет, я Луна.", "ru")
+    first = time.monotonic() - started
+    print(f"warm-up {warm:.2f}s, first synthesis after it {first:.2f}s")
+    assert clip.duration_s > 0.3
+    assert first < 2.0

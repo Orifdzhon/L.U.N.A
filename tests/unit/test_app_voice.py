@@ -36,6 +36,12 @@ def build(tmp_path, enabled=True, provider="edge", **kw):
     )
 
 
+@pytest.fixture(autouse=True)
+def no_piper_download(monkeypatch):
+    """A real PiperTTS built here must never start its (downloading) warm-up."""
+    monkeypatch.setattr("luna.tts.piper.PiperTTS.warm_up", lambda self: None)
+
+
 @pytest.fixture
 def made(tmp_path):
     apps = []
@@ -101,6 +107,40 @@ def test_edge_voice_on_windows_wraps_edge_with_sapi_fallback(made, monkeypatch):
     app = made(platform="win32", player=FakePlayer())
     assert app.speaker is not None
     assert app.speaker._tts.name == "edge+sapi"
+
+
+def test_piper_voice_on_windows_wraps_piper_with_sapi_fallback(made, monkeypatch):
+    monkeypatch.setattr("luna.tts.sapi.SapiTTS", _FakeSapi)
+    app = made(platform="win32", player=FakePlayer(), provider="piper")
+    assert app.speaker is not None
+    assert app.speaker._tts.name == "piper+sapi"
+
+
+def test_piper_voice_without_sapi_has_no_fallback_but_no_network_warning(made):
+    app = made(platform="linux", player=FakePlayer(), provider="piper")
+    assert app.speaker is not None
+    assert app.speaker._tts.name == "piper"
+    assert not any("needs the network" in w for w in app.warnings)
+
+
+def test_piper_settings_reach_the_provider(made, monkeypatch, tmp_path):
+    seen = {}
+
+    class Spy:
+        name = "piper"
+
+        def __init__(self, voice_ru, voice_en, rate, volume, *, model_dir, num_threads):
+            seen.update(ru=voice_ru, en=voice_en, model_dir=model_dir, threads=num_threads)
+
+    monkeypatch.setattr("luna.tts.piper.PiperTTS", Spy)
+    app = made(platform="linux", player=FakePlayer(), provider="piper")
+    assert app.speaker is not None
+    assert seen == {
+        "ru": "ru_RU-irina-medium",
+        "en": "en_US-kristin-medium",
+        "model_dir": None,
+        "threads": 2,
+    }
 
 
 def test_edge_voice_without_sapi_still_works_with_a_warning(made, monkeypatch):

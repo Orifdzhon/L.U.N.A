@@ -256,7 +256,7 @@ def _build_tts(
     warnings: list[str],
     disabled: Callable[[str], None],
 ) -> TTSProvider | None:
-    """The configured TTS provider (Edge with a SAPI fallback, or SAPI alone), or None."""
+    """The configured TTS provider (Piper or Edge with a SAPI fallback, or SAPI alone), or None."""
     sapi = None
     if platform == "win32":
         from luna.tts.sapi import SapiTTS
@@ -278,17 +278,32 @@ def _build_tts(
         return sapi
     from luna.tts.edge import EdgeTTS, FallbackTTS
 
-    edge = EdgeTTS(
-        conf.edge_voice_ru,
-        conf.edge_voice_en,
-        conf.rate,
-        conf.volume,
-        timeout_s=conf.edge_timeout_s,
-    )
-    if sapi is None:
-        warnings.append(f"No offline fallback voice: {problem}. Speech needs the network.")
-        return edge
-    return FallbackTTS(edge, sapi, cooldown_s=conf.fallback_cooldown_s)
+    primary: TTSProvider
+    if conf.provider == "piper":
+        from luna.tts.piper import PiperTTS
+
+        primary = PiperTTS(
+            conf.piper.voice_ru,
+            conf.piper.voice_en,
+            conf.rate,
+            conf.volume,
+            model_dir=conf.piper.model_dir,
+            num_threads=conf.piper.num_threads,
+        )
+        if sapi is None:
+            return primary  # local voice: nothing needs the network, a missing fallback is minor
+    else:
+        primary = EdgeTTS(
+            conf.edge_voice_ru,
+            conf.edge_voice_en,
+            conf.rate,
+            conf.volume,
+            timeout_s=conf.edge_timeout_s,
+        )
+        if sapi is None:
+            warnings.append(f"No offline fallback voice: {problem}. Speech needs the network.")
+            return primary
+    return FallbackTTS(primary, sapi, cooldown_s=conf.fallback_cooldown_s)
 
 
 def _build_speaker(

@@ -120,7 +120,7 @@ def test_legacy_owner_config_still_loads(tmp_path, caplog):
 def test_tts_defaults():
     tts = Settings().tts
     assert tts.enabled is False
-    assert tts.provider == "edge"
+    assert tts.provider == "piper"
     assert (tts.edge_voice_ru, tts.edge_voice_en) == (
         "ru-RU-SvetlanaNeural",
         "en-US-JennyNeural",
@@ -144,7 +144,7 @@ def test_tts_values_loaded(tmp_path):
         ("volume = -1", r"tts\.volume"),
         ("max_chars = 0", r"tts\.max_chars"),
         ("first_chunk_max_chars = 0", r"tts\.first_chunk_max_chars"),
-        ('provider = "piper"', r"tts\.provider"),
+        ('provider = "festival"', r"tts\.provider"),
         ('voice_ru = ""', r"tts\.voice_ru"),
         ("bogus = 1", "bogus"),
     ],
@@ -154,19 +154,27 @@ def test_tts_invalid_values_rejected(tmp_path, body, key):
         _load_text(tmp_path, f"[tts]\n{body}\n")
 
 
-def test_old_piper_provider_error_has_hint(tmp_path):
-    with pytest.raises(ConfigError) as info:
-        _load_text(tmp_path, '[tts]\nprovider = "piper"\nvoice_ru = "ru_RU-dmitri-medium"\n')
-    message = str(info.value)
-    assert "tts.provider" in message
-    assert 'Piper is not supported yet; use provider = "sapi"' in message
-    assert "docs/SETUP.md#voice-text-to-speech" in message
+def test_legacy_owner_tts_block_loads_and_selects_piper(tmp_path):
+    # The owner's old config: provider "piper" with SAPI voice names left over.
+    text = '[tts]\nprovider = "piper"\nvoice_ru = "Irina"\nvoice_en = "Zira"\n'
+    settings = _load_text(tmp_path, text)
+    assert settings.tts.provider == "piper"
+    assert (settings.tts.voice_ru, settings.tts.voice_en) == ("Irina", "Zira")
+    assert settings.tts.piper.voice_ru == "ru_RU-irina-medium"
+    assert settings.tts.piper.voice_en == "en_US-kristin-medium"
+    assert _load_text(tmp_path, '[tts]\nprovider = "edge"\n').tts.provider == "edge"
 
 
-def test_other_tts_errors_have_no_piper_hint(tmp_path):
-    with pytest.raises(ConfigError) as info:
-        _load_text(tmp_path, "[tts]\nrate = 11\n")
-    assert "Piper" not in str(info.value)
+def test_piper_section_values(tmp_path):
+    settings = _load_text(tmp_path, '[tts.piper]\nnum_threads = 4\nmodel_dir = "D:/models"\n')
+    assert settings.tts.piper.num_threads == 4
+    assert str(settings.tts.piper.model_dir).replace("\\", "/") == "D:/models"
+
+
+@pytest.mark.parametrize("body", ['voice_ru = "ru_RU-dmitri-medium"', "num_threads = 0"])
+def test_piper_section_invalid_values_rejected(tmp_path, body):
+    with pytest.raises(ConfigError, match=r"tts\.piper"):
+        _load_text(tmp_path, f"[tts.piper]\n{body}\n")
 
 
 # --- secrets -----------------------------------------------------------------------------

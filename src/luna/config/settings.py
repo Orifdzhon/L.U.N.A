@@ -106,10 +106,22 @@ class RouterSettings(_Section):
 EDGE_VOICE_PATTERN = r"^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z0-9]+Neural$"
 
 
+class PiperSettings(_Section):
+    """Local neural voices (provider "piper"); separate from the SAPI ``voice_*`` names."""
+
+    voice_ru: Literal["ru_RU-irina-medium"] = "ru_RU-irina-medium"
+    voice_en: Literal["en_US-kristin-medium"] = "en_US-kristin-medium"
+    # None = %LOCALAPPDATA%\LUNA\models (shared with the speech and wake-word models).
+    model_dir: Path | None = None
+    num_threads: int = Field(default=2, ge=1, le=16)
+
+
 class TTSSettings(_Section):
     enabled: bool = False
-    # "edge": Microsoft neural voices online, falling back to SAPI; "sapi": local only.
-    provider: Literal["edge", "sapi"] = "edge"
+    # "piper": local neural voice, falling back to SAPI; "edge": Microsoft neural voices online,
+    # falling back to SAPI; "sapi": Windows voices only.
+    provider: Literal["piper", "edge", "sapi"] = "piper"
+    piper: PiperSettings = Field(default_factory=PiperSettings)
     edge_voice_ru: str = Field(default="ru-RU-SvetlanaNeural", pattern=EDGE_VOICE_PATTERN)
     edge_voice_en: str = Field(default="en-US-JennyNeural", pattern=EDGE_VOICE_PATTERN)
     # Case-insensitive substrings matched against installed SAPI voice names (also the fallback).

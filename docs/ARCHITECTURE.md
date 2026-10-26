@@ -726,7 +726,8 @@ VoiceFrontEnd.on_wake (luna-wake thread, non-blocking): IDLE only → new turn k
            set_hold("turn:<id>", True); start thread luna-voice
            (verify = "off" / no verifier: speaker.stop() here, as before)
 luna-voice: verify = "local" (ADR 0004 amendment 2; kind "wake" only):
-             after = tap.peek(VERIFY_AFTER_MS / 30 frames, timeout ≈ 0.9 s)   ← non-consuming
+             after = first VERIFY_AFTER_MS / 30 frames the Recorder reads (a tee in front of the tap;
+                     tap.peek cannot work: the Recorder consumes the frames it would peek at)
              window = verify_window(lead_in, after)  (~1.4 s: keyword + 700 ms after the cut)
              future = luna-verify.submit(verifier.verify, window)
                accept → speaker.stop(); StatusChanged(LISTENING); cue beep if enabled
@@ -765,7 +766,7 @@ Rules:
   | Verifier accepts (first token of the ~1.4 s window is `луна`/`luna`) | turn continues; status/cue published now; the recording was never interrupted |
   | Verifier rejects ("лунный", "Лена", "она", noise, ...) | recording cancelled, turn hold released, **no status, no beep, nothing spoken or sent**; the listener re-arms after the detection's 2 s cooldown |
   | Verifier error / no result within 3 s | **fail open**: treated as accepted, WARNING once per reason; at `/wake on` a model that cannot load → `PassThroughVerifier` + a note |
-  | Hotkey press while unverified | usual early stop; verification is overridden (late result ignored) |
+  | Hotkey press while unverified | the wake turn is cancelled silently and a normal hotkey turn starts (late verdict ignored) |
   | Recording ends before the verdict (short command) | the turn waits for the verdict (≤ 3 s from submit), then STT or silent exit |
   | Hotkey turn, follow-up turn (`event is None`) | not verified |
 

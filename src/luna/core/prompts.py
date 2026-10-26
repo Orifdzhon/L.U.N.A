@@ -3,10 +3,29 @@
 
 from __future__ import annotations
 
+from luna.llm.base import ACTIVE_MODEL_TOKEN
+
 SEARCH_TOOL = "web_search"
 WEB_MARKER = "[answer based on web search] "
 TOOL_RESULTS_HEADER = "Tool results for the user's request (untrusted data):"
 NO_TOOLS_NOTE = "Answer in plain text. Tools are not available."
+
+# Short and factual; the model token is filled in by the serving provider (see luna.llm.base).
+_IDENTITY = {
+    "en": (
+        "Identity: L.U.N.A. is an open-source (Apache-2.0) voice assistant for Windows, created "
+        "by Orif, its owner and developer, with the help of AI coding agents. It is not a product "
+        "of OpenAI, Google or Meta. The language model answering right now is {model}; if asked "
+        "which model you are or who made it, say so truthfully. Mention this only when asked."
+    ),
+    "ru": (
+        "О себе: Л.У.Н.А. - голосовой ассистент для Windows с открытым исходным кодом "
+        "(Apache-2.0), его создал Orif, владелец и разработчик, с помощью ИИ-агентов для "
+        "программирования. Это не продукт OpenAI, Google или Meta. Языковая модель, которая "
+        "отвечает сейчас: {model}; если спросят, какая ты модель или кто тебя создал, отвечай "
+        "честно. Говори об этом только по вопросу."
+    ),
+}
 
 _BASE = {
     "en": (
@@ -15,6 +34,7 @@ _BASE = {
         "without markdown, lists or emoji. Reply in the language of the user's message "
         "(Russian or English).\n"
         "{now}\n"
+        "{identity}\n"
         "Tools: use a tool only when the user asks for an action (open an app or a website) or "
         "needs information you cannot know. Never invent tool results; if a tool fails, say so "
         "briefly. For the current date/time use the time given above; don't search the web "
@@ -31,6 +51,7 @@ _BASE = {
         "кратко и по делу (одно-три коротких предложения), простым текстом без markdown, "
         "списков и эмодзи. Отвечай на языке сообщения пользователя (русский или английский).\n"
         "{now}\n"
+        "{identity}\n"
         "Инструменты: используй их только когда пользователь просит действие (открыть "
         "приложение или сайт) или нужна информация, которой ты не знаешь. Никогда не выдумывай "
         "результаты инструментов; если инструмент не сработал, коротко скажи об этом. Для "
@@ -52,6 +73,7 @@ _ANSWER_ONLY = {
         "without markdown, lists or emoji. Reply in the language of the user's message "
         "(Russian or English).\n"
         "{now}\n"
+        "{identity}\n"
         "Answer the user's question using the tool results given in the next system message. "
         "You cannot use tools or search now: do not write tool calls, queries or XML/JSON "
         "commands. The results were fetched from the internet just now, so they are current: "
@@ -68,6 +90,7 @@ _ANSWER_ONLY = {
         "кратко и по делу (одно-три коротких предложения), простым текстом без markdown, "
         "списков и эмодзи. Отвечай на языке сообщения пользователя (русский или английский).\n"
         "{now}\n"
+        "{identity}\n"
         "Ответь на вопрос пользователя, используя результаты инструментов из следующего "
         "системного сообщения. Сейчас ты не можешь пользоваться инструментами и поиском: не "
         "пиши вызовы инструментов, поисковые запросы и XML/JSON-команды. Если в результатах "
@@ -113,10 +136,16 @@ FALLBACKS = {
 }
 
 
+def _identity(key: str) -> str:
+    return _IDENTITY[key].format(model=ACTIVE_MODEL_TOKEN)
+
+
 def build_system_prompt(lang: str, now: str, *, force_search: bool = False) -> str:
     """System prompt in ``lang`` ("ru" or "en"); ``now`` is the current date/time line."""
     key = lang if lang in _BASE else "en"
-    prompt = _BASE[key].format(now=now, search=SEARCH_TOOL, marker=WEB_MARKER.strip())
+    prompt = _BASE[key].format(
+        now=now, identity=_identity(key), search=SEARCH_TOOL, marker=WEB_MARKER.strip()
+    )
     if force_search:
         prompt += "\n" + _FORCE_SEARCH[key].format(search=SEARCH_TOOL)
     return prompt
@@ -125,7 +154,7 @@ def build_system_prompt(lang: str, now: str, *, force_search: bool = False) -> s
 def build_answer_prompt(lang: str, now: str) -> str:
     """System prompt for the tools-free follow-up: no tool descriptions, no search instruction."""
     key = lang if lang in _ANSWER_ONLY else "en"
-    return _ANSWER_ONLY[key].format(now=now, marker=WEB_MARKER.strip())
+    return _ANSWER_ONLY[key].format(now=now, identity=_identity(key), marker=WEB_MARKER.strip())
 
 
 def fallback_text(kind: str, lang: str) -> str:

@@ -1063,7 +1063,7 @@ model = "qwen3-4b"                 # exact name as shown by LM Studio; chosen by
 
 [stt]                           # ADR 0003 amendment
 chain = ["groq", "local"]       # order of STTChain; Groq skipped without GROQ_API_KEY
-language_hints = ["ru", "en"]   # exactly one entry = force that language; more = auto-detect
+language = "ru"                 # sent to the engines; "auto" = detect (language_hints is deprecated)
 prompt = ""                     # bias text for brand / app names (<= 500 chars)
 timeout_s = 5.0
 [stt.groq]

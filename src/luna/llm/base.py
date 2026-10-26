@@ -7,6 +7,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
+# Prompts carry this token where the answering model belongs; the provider that actually serves
+# the request replaces it with ``<name>/<model>`` (a fallback stays truthful).
+ACTIVE_MODEL_TOKEN = "@@ACTIVE_MODEL@@"
+
+
+def fill_active_model(content: str | None, label: str) -> str | None:
+    """Replace ``ACTIVE_MODEL_TOKEN`` in ``content`` with ``label`` (no-op without the token)."""
+    if content is None or ACTIVE_MODEL_TOKEN not in content:
+        return content
+    return content.replace(ACTIVE_MODEL_TOKEN, label)
+
 
 @dataclass(frozen=True)
 class ToolSchema:

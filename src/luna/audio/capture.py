@@ -113,6 +113,18 @@ class FrameTap:
                 raise error
             return None
 
+    def peek(self, n_frames: int, timeout_s: float) -> list[bytes]:
+        """Up to ``n_frames`` queued frames, oldest first, without consuming them.
+
+        Waits until ``n_frames`` are queued, the tap is closed, or ``timeout_s`` passes, then
+        returns whatever is queued (at most ``n_frames``; empty after ``close()``).
+        """
+        with self._cond:
+            self._cond.wait_for(
+                lambda: len(self._frames) >= n_frames or self._closed, max(0.0, timeout_s)
+            )
+            return list(self._frames)[: max(0, n_frames)]
+
     def close(self, error: AudioError | None = None) -> None:
         with self._cond:
             if not self._closed:

@@ -315,3 +315,30 @@ def test_working_cuda_is_used():
     stt, factory = make(device="auto", cuda_probe=lambda: 1)
     run(stt)
     assert stt.resolved_device == "cuda" and len(factory.calls) == 1
+
+
+def test_transcribe_short_uses_light_decode_params_and_shared_model():
+    model = FakeModel([seg(" Луна, открой")])
+    loads = []
+
+    def factory(*a, **k):
+        loads.append(1)
+        return model
+
+    stt = FasterWhisperSTT(model_dir=MODEL_DIR, model_factory=factory)
+    result = stt.transcribe_short(PCM)
+    stt.transcribe(PCM, timeout_s=5)
+    assert result.text == "Луна, открой"
+    assert len(loads) == 1
+    _, kwargs = model.calls[0]
+    assert kwargs["language"] == "ru" and kwargs["max_new_tokens"] == 12
+    assert kwargs["beam_size"] == 1 and kwargs["without_timestamps"] is True
+    assert "initial_prompt" not in kwargs and "hotwords" not in kwargs
+
+
+def test_transcribe_short_edge_cases():
+    stt = FasterWhisperSTT(model_dir=MODEL_DIR, model_factory=lambda *a, **k: FakeModel([]))
+    assert stt.transcribe_short(b"").text == ""
+    assert stt.transcribe_short(PCM).text == ""
+    with pytest.raises(ProviderRequestError):
+        stt.transcribe_short(b"\x00")

@@ -576,3 +576,54 @@ class FakeVAD:
 
     def reset(self, noise_floor: float | None = None) -> None:
         self.resets.append(noise_floor)
+
+
+# --- wake verification (#127) ----------------------------------------------------------------
+
+
+class FakeVerifier:
+    """``WakeVerifier``: scripted result, optional delay, optional exception.
+
+    ``result`` is a ``VerifyResult`` or a list of them (consumed in order, the last one repeats).
+    ``calls`` records every ``pcm16`` passed to ``verify()``.
+    """
+
+    name = "fake"
+
+    def __init__(
+        self,
+        result: Any = None,
+        *,
+        delay: float = 0.0,
+        error: BaseException | None = None,
+        warm_up_error: BaseException | None = None,
+    ) -> None:
+        from luna.wakeword.verify import VerifyResult
+
+        if result is None:
+            result = VerifyResult(True, "keyword", "луна")
+        self._results = list(result) if isinstance(result, (list, tuple)) else [result]
+        self.delay = delay
+        self.error = error
+        self.warm_up_error = warm_up_error
+        self.calls: list[bytes] = []
+        self.warm_ups = 0
+        self.closed = False
+
+    def warm_up(self) -> None:
+        self.warm_ups += 1
+        if self.warm_up_error is not None:
+            raise self.warm_up_error
+
+    def verify(self, pcm16: bytes) -> Any:
+        self.calls.append(pcm16)
+        if self.delay:
+            time.sleep(self.delay)
+        if self.error is not None:
+            raise self.error
+        if len(self._results) > 1:
+            return self._results.pop(0)
+        return self._results[0]
+
+    def close(self) -> None:
+        self.closed = True

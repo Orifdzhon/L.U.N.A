@@ -315,6 +315,47 @@ class FasterWhisperSTT:
             confidence=_confidence(kept, getattr(info, "language_probability", None)),
         )
 
+    def transcribe_short(
+        self, pcm16: bytes, *, language: str = "ru", max_new_tokens: int = 12
+    ) -> Transcript:
+        """Decode a short clip (wake verification): same model and decode lock, beam 1.
+
+        No ``initial_prompt`` and no ``hotwords`` (biasing would defeat the check), no language
+        detection pass, no timestamps, at most ``max_new_tokens`` output tokens.
+        """
+        if len(pcm16) % 2:
+            raise ProviderRequestError("pcm16 must hold whole int16 samples (even byte length)")
+        if not pcm16:
+            return Transcript("")
+
+        import numpy as np
+
+        audio = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
+        model = self._ensure_model()
+        try:
+            with self._decode_lock:
+                segments, info = model.transcribe(
+                    audio,
+                    language=language,
+                    beam_size=1,
+                    without_timestamps=True,
+                    max_new_tokens=max_new_tokens,
+                    condition_on_previous_text=False,
+                    vad_filter=False,
+                )
+                kept = [s for s in segments if not _is_silence(s)]
+        except Exception as exc:
+            raise ProviderUnavailable(f"local STT decoding failed ({type(exc).__name__})") from exc
+
+        text = " ".join(s.text.strip() for s in kept if s.text.strip()).strip()
+        if not text:
+            return Transcript("")
+        return Transcript(
+            text=text,
+            lang=normalize_lang(getattr(info, "language", None)),
+            confidence=_confidence(kept, getattr(info, "language_probability", None)),
+        )
+
 
 def _is_silence(segment: Any) -> bool:
     """Whisper's own rule for hallucinated text over silence."""

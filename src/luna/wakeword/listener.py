@@ -163,6 +163,10 @@ class WakeGate:
         if deadline is not None and self._window_until is None:
             self._window_until = deadline
 
+    @property
+    def pending_seconds(self) -> float | None:
+        return self._window_pending_s
+
     def window_pending(self) -> bool:
         return self._window_pending_s is not None
 
@@ -369,6 +373,15 @@ class WakeListener:
             if seconds > 0 and self._state is WakeState.ARMED:
                 events.append(WakeStateChanged(WakeState.ARMED, "follow-up"))
         self._publish_all(events)
+
+    def window_remaining_s(self) -> float | None:
+        """Seconds left of the follow-up window (a pending one counts in full), None if closed."""
+        with self._lock:
+            now = self._clock()
+            deadline = self._gate.window_deadline
+            if deadline is not None:
+                return deadline - now if now < deadline else None
+            return self._gate.pending_seconds
 
     # ------------------------------------------------------------------ the luna-wake thread
 

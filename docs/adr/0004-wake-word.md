@@ -195,8 +195,10 @@ in §4.2, threads in §5, settings in §6.
 6. **Follow-up window (D9, #113, off by default).** After a turn delivered a reply, the frontend
    asks the listener for a window of `follow_up_s`; the window starts only when the listener
    re-arms (speech finished + tail), so the reply cannot open a turn. Speech onset inside the window
-   starts a turn without the keyword; silence closes it quietly. At most 3 chained follow-ups, then
-   the keyword is required again (a TV in the room cannot loop forever). Wake mode only: with wake
+   starts a turn without the keyword; silence closes it quietly. *Amended 2026-10-26 (owner,
+   conversation mode):* the window rolls (every reply restarts a full `follow_up_s`, up to 300 s;
+   the "max 3 chained follow-ups" cap is dropped), end phrases and noise/filler transcripts are
+   handled silently, and the open window is visible (tray icon, `/wake`). Wake mode only: with wake
    off the microphone stays closed after a reply (slice-3 privacy model).
 7. **Privacy.** Before a keyword, audio exists only in memory (2 s ring buffer, tap queue) and is
    never written to disk or sent anywhere; the app has no debug-recording option (calibration

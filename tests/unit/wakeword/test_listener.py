@@ -442,6 +442,21 @@ def test_follow_up_window_fires_on_speech_onset(make):
     assert trigger.source.lead_in == b""
 
 
+def test_window_remaining_reports_the_rolling_countdown(make):
+    h = started(make())
+    assert h.listener.window_remaining_s() is None
+    h.listener.open_window(90.0)
+    h.clock.advance(27)
+    assert h.listener.window_remaining_s() == pytest.approx(63.0)
+    h.clock.advance(70)
+    assert h.listener.window_remaining_s() is None
+    h.listener.set_hold("turn:1", True)
+    h.listener.open_window(90.0)
+    assert h.listener.window_remaining_s() == 90.0  # pending behind the hold
+    h.listener.open_window(0)
+    assert h.listener.window_remaining_s() is None
+
+
 def test_follow_up_window_expires(make):
     h = started(make())
     h.listener.open_window(6.0)

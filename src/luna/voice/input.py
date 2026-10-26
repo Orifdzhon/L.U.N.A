@@ -225,6 +225,13 @@ class VoiceInput:
             line += " - verification off — false wakes may be sent to cloud STT"
         if state == "FAILED" and self._wake_failure:
             line += f" ({self._wake_failure}; /wake on retries)"
+        if conf.follow_up_s > 0 and state != "FAILED":
+            left = getattr(wake.listener, "window_remaining_s", lambda: None)()
+            line += (
+                f" | conversation: {left:.0f} s left"
+                if left is not None
+                else f" | conversation: on ({conf.follow_up_s:.0f} s after a reply)"
+            )
         parts = self._parts
         if parts is not None and (stats := parts.frontend.wake_stats)["detections"]:
             line += (

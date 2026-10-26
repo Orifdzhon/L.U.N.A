@@ -47,7 +47,7 @@ def test_keywords_are_normalised():
         ("engine", "porcupine"),
         ("engine", "onnx"),
         ("cooldown_s", -1),
-        ("follow_up_s", 31),
+        ("follow_up_s", 301),
         ("speaking_tail_ms", -1),
         ("cue", "loud"),
         ("bogus", 1),

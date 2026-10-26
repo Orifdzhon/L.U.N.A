@@ -897,7 +897,7 @@ Rules:
   closes the stream at once and clears both.
   The REPL shows `Wake: on|paused|off|failed` and warns on `/wake on` that the mic stays open.
 
-**Follow-up window** (D9, #113; `[wakeword] follow_up_s = 0` = off, ~6 when on; wake mode only)
+**Follow-up window = conversation mode** (D9, #113; `[wakeword] follow_up_s = 0` = off, owner uses 90, max 300; wake mode only; owner decision 2026-10-26 overrides the old "6 s, max 3 in a row")
 
 | Step | What happens |
 |---|---|
@@ -905,8 +905,13 @@ Rules:
 | Speech + tail still running | window is pending; the detector stays muted (half-duplex wins) |
 | Listener re-arms | window starts now: VAD speech onset (≥ `min_speech_ms`) fires `on_wake(WakeTrigger(event=None))` with lead_in = 300 ms pre-roll; the keyword detector also runs |
 | Window expires without speech | closes silently; `WakeStateChanged(armed)` |
-| Follow-up turn | kind `"follow_up"`, `no_speech_s = follow_up_s`; empty transcript → IDLE silently; after its reply a new window opens, **max 3 in a row**, then the keyword is required |
-| Hotkey press, `/wake off`, a wake event | window closed (`open_window(0)`) |
+| Follow-up turn | kind `"follow_up"`, `no_speech_s = command_timeout_s` (onset is already confirmed); a leading «Луна» is stripped; after its reply the window **rolls**: a new full `follow_up_s`, no cap |
+| Ignored follow-up (empty, < 2 characters, only fillers «угу», «ага», «м-м»; or no speech) | IDLE silently, no "didn't catch that"; the window is given back with the time it still had (`_conv_until`) |
+| End phrase («спасибо», «стоп», «хватит», «всё», «отбой», also with «Луна»; "stop", "thanks", "that's all") as the whole transcript, `follow_up_s > 0` | IDLE silently, no LLM call, no new window |
+| Error, cancel, superseded turn | no window |
+| Hotkey press, `/wake off` | window closed (`open_window(0)`); after the hotkey turn's reply a new one opens. A wake event consumes the window; its reply opens a new one |
+| Visible state | listener publishes `WakeStateChanged(ARMED, "follow-up")` while open; the tray icon shows "listening"; `/wake` shows `conversation: N s left` |
+| Privacy | while the window is open, any speech is recorded (VAD onset ≥ `min_speech_ms`) and sent to the configured STT (Groq) like a hotkey turn |
 
 ### 4.3 Status events
 
@@ -1109,7 +1114,7 @@ mute_while_speaking = true      # half-duplex (D10); false only for headset use
 speaking_tail_ms = 400          # detector stays muted this long after speech ends (D10)
 command_timeout_s = 5.0         # wait this long for the command after the keyword
 cue = "off"                     # "off" | "beep" (D8)
-follow_up_s = 0.0               # 0 = off (D9); ~6 when on; max 30
+follow_up_s = 0.0               # 0 = off (D9); conversation mode when > 0 (try 90); max 300
 verify = "local"                # "local" | "off": 2nd stage, faster-whisper [stt.local] model checks
                                 # that the utterance starts with the address (ADR 0004 amendment 2);
                                 # [stt.local] model = "small" makes it ~2x slower

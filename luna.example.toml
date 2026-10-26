@@ -118,7 +118,10 @@ mute_while_speaking = true    # do not listen while L.U.N.A. speaks
 speaking_tail_ms = 400        # extra mute after speech ends
 command_timeout_s = 5.0       # wait for a command after the keyword
 cue = "off"                   # "off" | "beep" when the keyword is heard
-follow_up_s = 0.0             # 0 = off; seconds to keep listening after a reply (try 6)
+follow_up_s = 0.0             # 0 = off. Conversation mode: after a reply keep listening for the next
+                              # command without "Луна" for this many seconds; every command restarts
+                              # the window (try 90, max 300). Say "спасибо" / "стоп" / "отбой" to end it.
+                              # While it is open any speech goes to the STT provider (Groq) like a hotkey turn.
 verify = "local"              # "local" | "off": second-stage check of each detection with the
                               # [stt.local] faster-whisper model (a bigger model = slower check)
 verify_words = ["луна", "луну", "луне", "луны", "luna"]   # the transcript must START with one

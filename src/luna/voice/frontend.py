@@ -26,26 +26,45 @@ in flight. Early stop uses a per-turn event passed to `Recorder.record(stop=...)
 
 Privacy: the INFO latency line has durations and the provider name only. The transcript is
 logged at DEBUG.
+
+Wake mode (slice 4, ``set_live``): with a live source every turn (hotkey, wake, follow-up)
+records from a tap of the ``WakeListener`` and holds ``turn:<id>`` on it for the whole turn
+(released after ``on_reply``, so it overlaps the ``speaking`` hold). ``on_wake`` is called on the
+listener thread, never blocks and accepts only from IDLE. A wake turn is verified locally in
+parallel with its recording (ADR 0004 amendment 2): the recording reads through a tee that copies
+the first frames after the cut for the verifier, because the Recorder consumes the tap
+(``FrameTap.peek`` cannot see frames the Recorder has already read). The status, the cue and
+``speaker.stop()`` wait for the verdict; a rejected wake is cancelled without a status, a beep
+or any STT call; an error or a timeout fails open. Lock order: front end -> Speaker -> listener.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import enum
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
+from luna.audio.capture import SAMPLE_RATE, FrameTap, LiveSource
 from luna.audio.recorder import Recorder, Utterance
-from luna.config.settings import STTSettings, VoiceSettings
+from luna.config.settings import STTSettings, VoiceSettings, WakeWordSettings
 from luna.core.clock import Clock
 from luna.core.errors import AudioError, ProviderError
 from luna.core.events import EventBus, Status, StatusChanged, TranscriptReady
 from luna.core.models import Reply, Request, new_id
 from luna.platform.base import HotkeyListener
 from luna.stt.base import UNKNOWN_LANG, STTProvider, Transcript
+from luna.wakeword.verify import VERIFY_AFTER_MS, VERIFY_TIMEOUT_S, VerifyResult, verify_window
+
+if TYPE_CHECKING:
+    from luna.wakeword.listener import WakeTrigger
+    from luna.wakeword.verify import WakeVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +73,9 @@ DETAIL_NOT_CAUGHT = "didn't catch that"
 DETAIL_STT_FAILED = "speech recognition failed"
 DETAIL_AUDIO_FAILED = "microphone error"
 DEFAULT_CLOSE_TIMEOUT_S = 2.0
+TURN_HOLD_PREFIX = "turn:"
+_KEYWORD_TOKEN = re.compile(r"^[\W_]*([^\W\d_]+)")
+_KEYWORD_SEPARATORS = " \t\r\n,.:;!?-\u2013\u2014\u2026"
 
 
 class VoiceState(enum.Enum):
@@ -71,13 +93,104 @@ class _Speaker(Protocol):
     def stop(self) -> None: ...
 
 
+class LiveAudio(Protocol):
+    """What the front end needs from ``WakeListener`` (ARCHITECTURE section 3)."""
+
+    def open_tap(self, preroll_ms: int, *, skip_ms: int = 0) -> LiveSource: ...
+
+    def set_hold(self, reason: str, active: bool) -> None: ...
+
+    def open_window(self, seconds: float) -> None: ...
+
+
+@dataclass
+class _Verify:
+    """Second-stage state of one wake turn (guarded by the front end lock)."""
+
+    pending: bool = True
+    outcome: str = "pending"  # accepted | rejected | error | timeout | overridden
+    accepted: bool = False
+    submitted_at: float | None = None
+    ms: float | None = None
+    timer: threading.Timer | None = None
+    future: Future[VerifyResult] | None = None
+    done: threading.Event = field(default_factory=threading.Event)
+
+
 @dataclass
 class _Turn:
     request_id: str
     pressed_at: float
+    kind: str = "hotkey"  # hotkey | wake | follow_up
     cancel: threading.Event = field(default_factory=threading.Event)
     stop: threading.Event = field(default_factory=threading.Event)  # early stop (keep audio)
     thread: threading.Thread | None = None
+    live: LiveAudio | None = None  # the listener this turn records from (None = microphone)
+    source: LiveSource | None = None
+    open_error: AudioError | None = None
+    hold: str | None = None  # turn hold name while held
+    verify: _Verify | None = None
+    announced: bool = False  # LISTENING was published
+    listening_at: float | None = None
+
+
+class _TeeTap(FrameTap):
+    """The turn's tap as the Recorder sees it; copies the first frames it reads for the verifier.
+
+    A ``FrameTap`` subclass that delegates to the listener's tap, so the Recorder's closed /
+    error handling is unchanged. ``on_ready`` gets the copied frames once: when ``want`` frames
+    were read or the tap is closed, whichever comes first.
+    """
+
+    def __init__(self, inner: FrameTap, want: int, on_ready: Callable[[list[bytes]], None]) -> None:
+        # No super().__init__(): every FrameTap method is overridden and delegates to ``inner``.
+        self._inner = inner
+        self._want = max(1, want)
+        self._on_ready = on_ready
+        self._copied: list[bytes] = []
+        self._fired = False
+        self._tee_lock = threading.Lock()
+
+    @property
+    def closed(self) -> bool:
+        return self._inner.closed
+
+    @property
+    def dropped(self) -> int:
+        return self._inner.dropped
+
+    def push(self, frame: bytes) -> None:
+        self._inner.push(frame)
+
+    def read(self, timeout_s: float) -> bytes | None:
+        frame = self._inner.read(timeout_s)
+        if frame is not None:
+            with self._tee_lock:
+                if not self._fired:
+                    self._copied.append(frame)
+                full = len(self._copied) >= self._want
+            if full:
+                self._fire()
+        return frame
+
+    def peek(self, n_frames: int, timeout_s: float) -> list[bytes]:
+        return self._inner.peek(n_frames, timeout_s)
+
+    def close(self, error: AudioError | None = None) -> None:
+        self._inner.close(error)
+        self._fire()
+
+    def _fire(self) -> None:
+        with self._tee_lock:
+            if self._fired:
+                return
+            self._fired = True
+            frames = list(self._copied)
+            self._copied.clear()
+        try:
+            self._on_ready(frames)
+        except Exception:
+            logger.warning("starting the wake verification failed", exc_info=True)
 
 
 class VoiceFrontEnd:
@@ -96,6 +209,7 @@ class VoiceFrontEnd:
         stt_conf: STTSettings | None = None,
         clock: Clock = time.monotonic,
         beep: Callable[[], None] | None = None,
+        verify_timeout_s: float = VERIFY_TIMEOUT_S,
     ) -> None:
         self._hotkey = hotkey
         self._recorder = recorder
@@ -116,6 +230,14 @@ class VoiceFrontEnd:
         self._threads: list[threading.Thread] = []
         self._started = False
         self._closed = False
+        # wake mode (set_live)
+        self._live: LiveAudio | None = None
+        self._wake = WakeWordSettings()
+        self._verifier: WakeVerifier | None = None
+        self._executor: ThreadPoolExecutor | None = None
+        self._verify_timeout_s = verify_timeout_s
+        self._rec_lock = threading.Lock()  # live mode: one recording at a time
+        self._warned: set[str] = set()
 
     @property
     def state(self) -> VoiceState:
@@ -141,14 +263,20 @@ class VoiceFrontEnd:
             turn = self._turn
             if turn is not None:
                 turn.cancel.set()
+                self._drop_verify(turn)
                 self._turn = None
-                self._set_state(VoiceState.IDLE, turn.request_id, publish=True)
+                self._set_state(VoiceState.IDLE, turn.request_id, publish=turn.announced)
         self._hotkey.stop()
 
     def close(self, timeout: float = DEFAULT_CLOSE_TIMEOUT_S) -> None:
         """Stop everything and join the turn threads (an STT call in flight is abandoned)."""
         with self._lock:
             self._closed = True
+            executor, self._executor = self._executor, None
+            self._verifier = None
+            self._live = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
         self.stop()
         deadline = time.monotonic() + timeout
         me = threading.current_thread()
@@ -159,6 +287,52 @@ class VoiceFrontEnd:
                 # Real time on purpose: the injected clock may be a manual one.
                 thread.join(max(0.0, deadline - time.monotonic()))
 
+    # ---- wake mode ------------------------------------------------------------------
+
+    def set_live(
+        self,
+        live: LiveAudio | None,
+        wake: WakeWordSettings | None = None,
+        verifier: WakeVerifier | None = None,
+    ) -> None:
+        """Record every turn from ``live`` (wake mode) or from the microphone (``None``).
+
+        ``verifier`` None or a pass-through ("off") means no second stage. ``set_live(None)``
+        cancels a turn that is still listening on a tap; later stages finish normally.
+        """
+        with self._lock:
+            old, self._executor = self._executor, None
+            self._verifier = None
+            self._live = live
+            self._wake = wake or WakeWordSettings()
+            if live is not None and verifier is not None and verifier.name != "off":
+                self._verifier = verifier
+                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="luna-verify")
+            turn = self._turn
+            if (
+                turn is not None
+                and turn.live is not None
+                and self._state is VoiceState.LISTENING
+                and (live is None or (turn.verify is not None and turn.verify.pending))
+            ):
+                turn.cancel.set()
+                self._drop_verify(turn)
+                self._turn = None
+                self._set_state(VoiceState.IDLE, turn.request_id, publish=turn.announced)
+        if old is not None:
+            old.shutdown(wait=False, cancel_futures=True)
+
+    def on_wake(self, trigger: WakeTrigger) -> bool:
+        """Start a wake (or follow-up) turn. Listener thread: never blocks, IDLE only."""
+        with self._lock:
+            if self._closed or not self._started or self._live is None:
+                return False
+            if self._state is not VoiceState.IDLE or self._turn is not None:
+                return False
+            kind = "wake" if trigger.event is not None else "follow_up"
+            self._begin_turn(kind, trigger)
+            return True
+
     # ---- hotkey (background thread of the listener) ---------------------------------
 
     def _on_press(self) -> None:
@@ -167,29 +341,227 @@ class VoiceFrontEnd:
                 return
             turn = self._turn
             if self._state is VoiceState.LISTENING and turn is not None:
+                if turn.verify is not None and turn.verify.pending:
+                    # Unverified wake: the press overrides it and starts a normal hotkey turn.
+                    turn.cancel.set()
+                    self._drop_verify(turn)
+                    self._begin_turn()
+                    return
                 turn.stop.set()  # per turn: also applies if record() has not started yet
                 return
             if turn is not None:  # TRANSCRIBING / HANDLING: cancel it, then listen again
                 turn.cancel.set()
             self._begin_turn()
 
-    def _begin_turn(self) -> None:
-        """Start listening (call with the lock held). Speech is stopped before the mic opens."""
-        if self._speaker is not None:
-            try:
-                self._speaker.stop()
-            except Exception:
-                logger.warning("stopping speech failed", exc_info=True)
-        turn = _Turn(new_id(), self._clock())
-        self._turn = turn
-        self._set_state(VoiceState.LISTENING, turn.request_id, publish=True)
-        thread = threading.Thread(
-            target=self._run_turn, args=(turn,), name="luna-voice", daemon=True
+    def _begin_turn(self, kind: str = "hotkey", trigger: WakeTrigger | None = None) -> None:
+        """Start a turn (call with the lock held). Speech is stopped before the mic opens."""
+        live = self._live
+        source = trigger.source if trigger is not None else None
+        verifying = (
+            kind == "wake"
+            and self._verifier is not None
+            and source is not None
+            and isinstance(source.frames, FrameTap)
         )
-        turn.thread = thread
-        self._threads = [t for t in self._threads if t.is_alive()]
-        self._threads.append(thread)
-        thread.start()
+        barge = False
+        if kind == "hotkey" or (kind == "wake" and not verifying):
+            barge = bool(getattr(self._speaker, "active", False))
+            self._stop_speech()
+        now = self._clock()
+        turn = _Turn(new_id(), trigger.detected_at if trigger is not None else now, kind=kind)
+        turn.live = live
+        if live is not None:
+            turn.hold = TURN_HOLD_PREFIX + turn.request_id
+            live.set_hold(turn.hold, True)
+        try:
+            if live is not None and kind == "hotkey":
+                try:
+                    turn.source = (
+                        live.open_tap(0, skip_ms=self._wake.speaking_tail_ms)
+                        if barge
+                        else live.open_tap(self._voice.preroll_ms)
+                    )
+                except AudioError as exc:
+                    turn.open_error = exc
+            elif source is not None:
+                turn.source = source
+            self._turn = turn
+            if verifying:
+                assert source is not None and isinstance(source.frames, FrameTap)
+                turn.verify = _Verify()
+                want = -(-VERIFY_AFTER_MS // self._voice.frame_ms)
+                tee = _TeeTap(source.frames, want, lambda frames: self._submit_verify(turn, frames))
+                turn.source = dataclasses.replace(source, frames=tee)
+                self._state = VoiceState.LISTENING  # announced after the verdict
+            else:
+                turn.announced = True
+                turn.listening_at = now
+                self._set_state(VoiceState.LISTENING, turn.request_id, publish=True)
+            thread = threading.Thread(
+                target=self._run_turn, args=(turn,), name="luna-voice", daemon=True
+            )
+            turn.thread = thread
+            self._threads = [t for t in self._threads if t.is_alive()]
+            self._threads.append(thread)
+            thread.start()
+        except BaseException:
+            self._drop_verify(turn)
+            if self._turn is turn:
+                self._turn = None
+                self._state = VoiceState.IDLE
+            self._release_hold(turn)
+            raise
+
+    def _stop_speech(self) -> None:
+        if self._speaker is None:
+            return
+        try:
+            self._speaker.stop()
+        except Exception:
+            logger.warning("stopping speech failed", exc_info=True)
+
+    def _release_hold(self, turn: _Turn) -> None:
+        """Idempotent; safe on every exit path (takes the listener lock, never the front end's)."""
+        name, turn.hold = turn.hold, None
+        if name is not None and turn.live is not None:
+            try:
+                turn.live.set_hold(name, False)
+            except Exception:
+                logger.warning("releasing the turn hold failed", exc_info=True)
+
+    # ---- wake verification (ADR 0004 amendment 2) ----------------------------------
+
+    def _drop_verify(self, turn: _Turn) -> None:
+        """Lock held. The turn no longer waits for a verdict; a late result is ignored."""
+        v = turn.verify
+        if v is None or not v.pending:
+            return
+        v.pending = False
+        v.outcome = "overridden"
+        if v.timer is not None:
+            v.timer.cancel()
+        if v.future is not None:
+            v.future.cancel()  # drops work still queued behind a running decode
+        v.done.set()
+
+    def _submit_verify(self, turn: _Turn, frames: list[bytes]) -> None:
+        """Recorder thread (tee) or close path: hand the window to the ``luna-verify`` worker."""
+        with self._lock:
+            v = turn.verify
+            executor = self._executor
+            verifier = self._verifier
+            source = turn.source
+            if (
+                v is None
+                or not v.pending
+                or v.submitted_at is not None
+                or turn.cancel.is_set()
+                or executor is None
+                or verifier is None
+                or source is None
+            ):
+                return
+            v.submitted_at = self._clock()
+            timer = threading.Timer(self._verify_timeout_s, self._on_verify_timeout, (turn,))
+            timer.daemon = True
+            v.timer = timer
+        window = verify_window(source.lead_in, frames)
+        timer.start()
+        try:
+            future = executor.submit(verifier.verify, window)
+        except RuntimeError:  # executor shut down meanwhile (set_live / close)
+            self._settle(turn, True, "error")
+            return
+        with self._lock:
+            v.future = future
+            stale = not v.pending
+        if stale:
+            future.cancel()
+        future.add_done_callback(lambda f: self._on_verdict(turn, f))
+
+    def _on_verdict(self, turn: _Turn, future: Future[VerifyResult]) -> None:
+        if future.cancelled():
+            return
+        try:
+            result = future.result()
+        except Exception as exc:
+            if self._settle(turn, True, "error"):
+                self._warn_once("error", f"wake verification failed ({type(exc).__name__})")
+            return
+        if result.text and result.accepted:  # a rejected wake leaves no trace of its audio
+            logger.debug("Verifier heard: %r", result.text)
+        if result.reason == "error":
+            outcome = "error"
+        else:
+            outcome = "accepted" if result.accepted else "rejected"
+        if self._settle(turn, result.accepted, outcome) and outcome == "error":
+            self._warn_once("error", "wake verification error; first stage only")
+
+    def _on_verify_timeout(self, turn: _Turn) -> None:
+        if self._settle(turn, True, "timeout"):
+            self._warn_once("timeout", "wake verification timed out; accepting")
+
+    def _warn_once(self, reason: str, message: str) -> None:
+        with self._lock:
+            first = reason not in self._warned
+            self._warned.add(reason)
+        if first:
+            logger.warning(message)
+
+    def _settle(self, turn: _Turn, accepted: bool, outcome: str) -> bool:
+        """Apply the verdict once; True only if it was applied (False: late or overridden)."""
+        with self._lock:
+            v = turn.verify
+            if v is None or not v.pending:
+                return False
+            v.pending = False
+            if v.timer is not None:
+                v.timer.cancel()
+            if v.submitted_at is not None:
+                v.ms = (self._clock() - v.submitted_at) * 1000
+            if self._turn is not turn or turn.cancel.is_set():
+                v.outcome = "overridden"
+                v.done.set()
+                return False
+            v.outcome = outcome
+            v.accepted = accepted
+            if accepted:
+                turn.announced = True
+                turn.listening_at = self._clock()
+                self._bus.publish(StatusChanged(Status.LISTENING, turn.request_id))
+            else:  # silent cancel: no status, no beep, nothing recognised or sent
+                turn.cancel.set()
+                self._turn = None
+                self._state = VoiceState.IDLE
+            v.done.set()
+        if accepted:
+            self._stop_speech()
+            self._cue()
+        else:
+            logger.info("wake rejected verify_ms=%.0f", v.ms or 0.0)
+        return True
+
+    def _cue(self) -> None:
+        if self._beep is None or self._wake.cue != "beep":
+            return
+        try:
+            self._beep()
+        except Exception:
+            logger.warning("start cue failed", exc_info=True)
+
+    def _await_verdict(self, turn: _Turn) -> bool:
+        """After the recording: wait for the verdict. False = the turn must end silently."""
+        v = turn.verify
+        if v is None:
+            return True
+        deadline = time.monotonic() + self._verify_timeout_s + 1.0
+        while not v.done.wait(0.02):
+            if turn.cancel.is_set():
+                return False
+            if time.monotonic() > deadline:
+                self._settle(turn, True, "timeout")
+                break
+        return v.accepted and not turn.cancel.is_set()
 
     # ---- state helpers (lock held unless noted) ------------------------------------
 
@@ -228,7 +600,7 @@ class VoiceFrontEnd:
         """A superseded turn ended: restore the status that its late events may have hidden."""
         with self._lock:
             turn = self._turn
-            if turn is None or self._closed:
+            if turn is None or self._closed or not turn.announced:
                 return
             if self._state is VoiceState.LISTENING:
                 self._bus.publish(StatusChanged(Status.LISTENING, turn.request_id))
@@ -246,10 +618,15 @@ class VoiceFrontEnd:
             if utt is None:
                 return
             reason = utt.reason
+            if utt.reason == "cancelled":  # also: the listener closed the tap; no verdict wait
+                return
+            if not self._await_verdict(turn):
+                return
             if turn.cancel.is_set() or utt.reason == "cancelled":
                 return
+            quiet = turn.kind != "hotkey"  # wake / follow-up: end without a message
             if utt.reason == "no_speech" or not utt.pcm16:
-                self._end(turn, Status.IDLE, DETAIL_NO_SPEECH)
+                self._end(turn, Status.IDLE, None if quiet else DETAIL_NO_SPEECH)
                 return
             if not self._advance(turn, VoiceState.TRANSCRIBING):
                 return
@@ -260,8 +637,10 @@ class VoiceFrontEnd:
             provider = transcript.provider
             if turn.cancel.is_set():
                 return
+            if turn.kind == "wake":
+                transcript = self._strip_keyword(transcript)
             if transcript.is_empty:
-                self._end(turn, Status.IDLE, DETAIL_NOT_CAUGHT)
+                self._end(turn, Status.IDLE, None if quiet else DETAIL_NOT_CAUGHT)
                 return
             logger.debug("Transcript: %r", transcript.text)
             self._handle(turn, transcript, spans)
@@ -269,11 +648,27 @@ class VoiceFrontEnd:
             logger.exception("voice turn failed")
             self._end(turn, Status.ERROR, "voice error")
         finally:
-            self._log_spans(turn, spans, provider, reason)
-            handled = "handle_ms" in spans
-            self._end_if_current(turn, handled=handled)
-            if turn.cancel.is_set() and handled:
-                self._republish_current()
+            try:
+                with self._lock:
+                    self._drop_verify(turn)
+                self._log_spans(turn, spans, provider, reason)
+                handled = "handle_ms" in spans
+                self._end_if_current(turn, handled=handled)
+                if turn.cancel.is_set() and handled:
+                    self._republish_current()
+            finally:
+                self._release_hold(turn)  # after on_reply: holds overlap with "speaking"
+
+    def _strip_keyword(self, transcript: Transcript) -> Transcript:
+        """Drop a leading address word ("Луна, ..."); the rest is the command."""
+        match = _KEYWORD_TOKEN.match(transcript.text)
+        if match is None:
+            return transcript
+        words = {_fold(w) for w in (*self._wake.keywords, *self._wake.verify_words)}
+        if _fold(match.group(1)) not in words:
+            return transcript
+        rest = transcript.text[match.end() :].lstrip(_KEYWORD_SEPARATORS)
+        return dataclasses.replace(transcript, text=rest)
 
     def _end_if_current(self, turn: _Turn, *, handled: bool) -> None:
         """Safety net: a turn that returned without a final status must not block the next.
@@ -285,25 +680,62 @@ class VoiceFrontEnd:
             if self._turn is turn:
                 self._turn = None
                 self._state = VoiceState.IDLE
-                if not handled:
+                if not handled and turn.announced:  # an unannounced wake turn ends silently
                     self._bus.publish(StatusChanged(Status.IDLE, turn.request_id))
 
     def _record(self, turn: _Turn, spans: dict[str, float]) -> Utterance | None:
-        spans["hotkey_to_listening_ms"] = (self._clock() - turn.pressed_at) * 1000
-        if self._beep is not None:
+        if turn.open_error is not None:
+            logger.warning("Recording failed: %s", turn.open_error)
+            self._end(turn, Status.ERROR, DETAIL_AUDIO_FAILED)
+            return None
+        beep: Callable[[], None] | None = None
+        if turn.kind == "hotkey":
+            spans["hotkey_to_listening_ms"] = (self._clock() - turn.pressed_at) * 1000
+            beep = self._beep
+        elif turn.kind == "wake" and turn.verify is None and self._wake.cue == "beep":
+            beep = self._beep  # with verification the cue waits for the verdict (_settle)
+        if beep is not None:
             try:
-                self._beep()
+                beep()
             except Exception:
                 logger.warning("start cue failed", exc_info=True)
         started = self._clock()
         try:
-            utt = self._recorder.record(turn.cancel, stop=turn.stop)
+            if turn.source is None:
+                utt = self._recorder.record(turn.cancel, stop=turn.stop)
+            else:
+                utt = self._record_live(turn)
         except AudioError as exc:
             logger.warning("Recording failed: %s", exc)
             self._end(turn, Status.ERROR, DETAIL_AUDIO_FAILED)
             return None
         spans["capture_ms"] = (self._clock() - started) * 1000
         return utt
+
+    def _record_live(self, turn: _Turn) -> Utterance:
+        """Record from the turn's tap; the shared Recorder and its VAD serve one turn at a time."""
+        source = turn.source
+        assert source is not None
+        while not self._rec_lock.acquire(timeout=0.05):
+            if turn.cancel.is_set():
+                break
+        else:
+            try:
+                if not turn.cancel.is_set():
+                    if turn.kind == "hotkey":
+                        return self._recorder.record(turn.cancel, stop=turn.stop, live=source)
+                    return self._recorder.record(
+                        turn.cancel,
+                        stop=turn.stop,
+                        live=source,
+                        no_speech_s=self._wake.command_timeout_s,
+                    )
+            finally:
+                self._rec_lock.release()
+        close = getattr(source.frames, "close", None)  # never recorded: free the tap
+        if close is not None:
+            close()
+        return Utterance(b"", SAMPLE_RATE, 0.0, "cancelled")
 
     def _transcribe(
         self, turn: _Turn, utt: Utterance, spans: dict[str, float]
@@ -384,11 +816,24 @@ class VoiceFrontEnd:
     def _log_spans(self, turn: _Turn, spans: dict[str, float], provider: str, reason: str) -> None:
         if "stt_ms" not in spans:
             return  # nothing was recognised: not a completed turn
-        parts = " ".join(f"{k}={v:.0f}" for k, v in spans.items())
+        spans = dict(spans)
+        v = turn.verify
+        if v is not None and v.ms is not None:
+            spans["verify_ms"] = v.ms
+        if turn.kind != "hotkey" and turn.listening_at is not None:
+            spans["wake_to_listening_ms"] = (turn.listening_at - turn.pressed_at) * 1000
+        parts = " ".join(f"{k}={val:.0f}" for k, val in spans.items())
+        verify = v.outcome if v is not None else ("off" if turn.kind == "wake" else "-")
         logger.info(
-            "voice turn %s: %s provider=%s end=%s",
+            "voice turn %s: trigger=%s verify=%s %s provider=%s end=%s",
             turn.request_id[:8],
+            turn.kind,
+            verify,
             parts,
             provider or "-",
             reason,
         )
+
+
+def _fold(word: str) -> str:
+    return word.strip().casefold().replace("\u0451", "\u0435")

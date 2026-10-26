@@ -369,10 +369,35 @@ value in `[voice]` and restart.
 
 ## Voice (text-to-speech)
 
-Replies can be spoken with natural Microsoft neural voices (online, default) or the Windows
-built-in SAPI voices (offline). See ADR 0005. Voice is off by default.
+Replies can be spoken with a local neural voice (Piper, default), Microsoft Edge neural voices
+(online) or the Windows built-in SAPI voices. See ADR 0005. Voice is off by default.
 
-**Privacy and network:** with `provider = "edge"` the text of each spoken reply is sent to
+### Local neural voice (Piper, default)
+
+`provider = "piper"` runs the female voices **Irina** (Russian, `ru_RU-irina-medium`) and
+**Kristin** (English, `en_US-kristin-medium`) on your CPU through `sherpa-onnx`: no network, no
+stalls, about 0.15 s to the first sound on a desktop CPU. The reply text never leaves the PC.
+
+- **First use downloads the voice** (about 65 MB per language, pinned URL and SHA-256 check) into
+  `%LOCALAPPDATA%\LUNA\models` (change it with `[tts.piper] model_dir`). The Russian voice is
+  fetched and loaded in the background right after start, English on its first English reply.
+  While the download runs (or if it fails, e.g. offline) replies are spoken by SAPI and one
+  warning goes to `luna.log`; a failed download is retried after 5 minutes.
+- Numbers, `₽ $ € %`, times and Latin words (YouTube, API, ...) are rewritten into Russian words
+  before synthesis, so "79 764 ₽" is read as a sum, not digit by digit.
+- Memory: about 100 MB per loaded voice. `[tts.piper] num_threads` (default 2) trades CPU for
+  speed.
+- `rate` / `volume` work as described below (rate: 5 % per step, volume: a gain).
+- The Piper voice keys are separate from the SAPI names, so an existing `[tts]` block with
+  `voice_ru = "Irina"` / `voice_en = "Zira"` keeps working: those two now only name the SAPI
+  fallback.
+
+**Licence caveat (personal use).** The Irina dataset's licence is "unknown" (it comes from
+RHVoice, likely non-commercial) and the pinned `sherpa-onnx 1.13.8` bundles the GPL-3.0
+phonemizer espeak-ng. This is fine for personal use; **before any paid or commercial
+distribution the voice and the phonemizer must be replaced** (ADR 0005, amendment 3).
+
+**Privacy and network (Edge):** with `provider = "edge"` the text of each spoken reply is sent to
 Microsoft's Edge text-to-speech service (through the unofficial `edge-tts` library; the endpoint
 may change or break without notice). If the service is unreachable or fails, L.U.N.A. speaks the
 same chunk with the Windows SAPI voices instead and logs a warning. The next chunk tries the
@@ -407,7 +432,11 @@ Without either flag the config decides.
 | Key | Default | Range / meaning |
 |---|---|---|
 | `enabled` | `false` | speak replies |
-| `provider` | `"edge"` | `"edge"` (online neural voices, SAPI fallback) or `"sapi"` (local only) |
+| `provider` | `"piper"` | `"piper"` (local neural voice, SAPI fallback), `"edge"` (online neural voices, SAPI fallback) or `"sapi"` (Windows voices only) |
+| `[tts.piper] voice_ru` | `"ru_RU-irina-medium"` | Piper voice for Russian replies (only this voice is pinned for now) |
+| `[tts.piper] voice_en` | `"en_US-kristin-medium"` | Piper voice for English replies |
+| `[tts.piper] model_dir` | unset | where the voices are stored; unset = `%LOCALAPPDATA%\LUNA\models` |
+| `[tts.piper] num_threads` | `2` | 1 .. 16 CPU threads per synthesis |
 | `edge_voice_ru` | `"ru-RU-SvetlanaNeural"` | Edge voice for Russian replies (`uv run edge-tts --list-voices`) |
 | `edge_voice_en` | `"en-US-JennyNeural"` | Edge voice for English replies |
 | `voice_ru` | `"Irina"` | SAPI voice (the fallback, or `provider = "sapi"`): case-insensitive part of an installed voice name, used for Russian replies |
@@ -451,9 +480,9 @@ To add a voice: Windows Settings -> Time & language -> Speech -> Manage voices -
 install the language pack). A voice added there may be OneCore-only; if it does not show up in the
 list above it cannot be used. Then set `voice_ru` / `voice_en` to part of its name.
 
-Known limits: the SAPI voices sound robotic and are Windows-only; that is why Edge is the default.
-Edge needs the network and each sentence takes about 1.5 s to synthesize. Piper (offline natural
-voices) is planned as an optional provider later.
+Known limits: the SAPI voices sound robotic and are Windows-only; that is why Piper is the default
+and SAPI only the last resort. Edge needs the network, each sentence takes about 1.5 s to
+synthesize and the service sometimes stalls.
 
 ## 8. Troubleshooting
 
@@ -479,16 +508,10 @@ voices) is planned as an optional provider later.
   once but the first app lookup may wait a few seconds. If the scan fails (PowerShell blocked by
   group policy, timeout), a warning goes to `luna.log` and `open <app>` finds nothing; sites and
   answers still work.
-- **`config error: ... tts.provider: Input should be 'edge' or 'sapi'`.** Your `luna.toml` was copied from an
-  older `luna.example.toml` that had `provider = "piper"` and a Piper voice such as
-  `voice_ru = "ru_RU-dmitri-medium"`. Piper is not supported yet. Replace the whole `[tts]` block
-  in `%APPDATA%\LUNA\luna.toml` (or delete it, the defaults are the same apart from `enabled`):
-
-  ```toml
-  [tts]
-  enabled = true
-  provider = "edge"   # or "sapi" for local-only voices
-  ```
+- **No Piper voice, replies are robotic (SAPI).** The voice download failed (offline, disk full,
+  blocked). Look for `voice ... unavailable` in `luna.log`; after fixing the cause restart L.U.N.A.
+  (or wait 5 minutes). You can also unpack the official `vits-piper-ru_RU-irina-medium.tar.bz2`
+  from the sherpa-onnx `tts-models` release into the models folder by hand.
 
 - **`Voice disabled: ... Continuing in text mode.`** Printed at start when `--voice` / `enabled`
   is on but voice cannot start; text mode keeps working. By reason:

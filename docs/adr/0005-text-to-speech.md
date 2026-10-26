@@ -198,3 +198,58 @@ text is sent to Microsoft's online service and that the endpoint is unofficial (
    through `import`), which does not make L.U.N.A. LGPL: the library stays replaceable by the
    user (`uv`-managed dependency). Its dependencies: `aiohttp` (Apache-2.0), `certifi` (MPL-2.0),
    `tabulate` (MIT), `typing-extensions` (PSF). `miniaudio` is MIT.
+
+## Amendment 3 (2026-10-26): Piper (Irina) via sherpa-onnx as the primary voice (#163)
+
+Context: in the owner's log Edge TTS delivered no first audio within 5 s on 4 of 7 replies, so
+the reply fell back to robotic SAPI and the user waited about 10 s. A spike on the owner's
+i3-12100F measured Piper VITS voices run by `sherpa-onnx`: first audio 96-244 ms, real-time
+factor about 0.05, load about 0.8 s, about 100 MB RAM per model. The int8 variants were 4x
+slower on this CPU, so the fp32 models are used. This supersedes the "Piper later/optional,
+separate process" plan above for the local voice.
+
+1. **Default provider: `PiperTTS`** (`luna.tts.piper`) on `sherpa_onnx.OfflineTts` (VITS model
+   config, 2 threads, CPU). `[tts] provider` is `"piper" | "edge" | "sapi"`, default `"piper"`.
+   Chain: `FallbackTTS(PiperTTS, SapiTTS)`; `provider = "edge"` keeps `Edge -> SAPI`; `"sapi"`
+   stays local-only. Piper voices have their own keys in `[tts.piper]` (`voice_ru`, `voice_en`,
+   `model_dir`, `num_threads`), so the SAPI names `voice_ru = "Irina"` / `voice_en = "Zira"` in
+   existing configs keep their meaning and keep loading.
+2. **Voices.** Russian `ru_RU-irina-medium` (female), English `en_US-kristin-medium` (female).
+   One model per language, loaded lazily and once (about 65 MB each on disk), `generate()` is
+   serialised per model. `rate` (-10..10) maps to the model speed (5 % per step), `volume`
+   (0..100) is a linear gain on the samples.
+3. **Model store** (`luna.tts.piper_model.PiperModelStore`), same rules as the wake-word store:
+   pinned URL on the official sherpa-onnx release page and pinned SHA-256 per archive
+   (`ru_RU-irina-medium` `1fc0f54e...3008`, `en_US-kristin-medium` `c2206f57...e6c7`), size caps
+   (download 120 MiB, unpacked 200 MiB, 1000 entries), temp dir plus atomic rename, tar.bz2
+   extraction by hand (only regular files and directories; no links, no `..`, absolute paths,
+   drive letters or reserved Windows names; every member also passes `tarfile.data_filter`;
+   bytes counted while written). Download happens on first use, in the background warm-up, with
+   progress lines in the log. Default location `%LOCALAPPDATA%\LUNA\models`, overridable with
+   `[tts.piper] model_dir`.
+4. **Warm-up.** `PiperTTS.warm_up()` (called by the Speaker's background warm-up from #160) loads
+   the Russian voice (downloading it if needed) and synthesizes one word; it never raises and
+   does nothing once it succeeded. English loads on its first use.
+5. **Failure handling.** A failed download or load raises `ProviderUnavailable` and is
+   remembered for 5 minutes, so the SAPI fallback speaks at once instead of every chunk waiting
+   for another failing download; one warning is logged.
+6. **Text normalisation for local voices** (`luna.tts.normalize`, no dependency): Russian
+   numbers to words (thousands separated by spaces, simple decimals, negatives, `hh:mm`, years
+   such as "в 2024 году"), `₽ $ € %` with the right noun form, a table of common brands
+   (YouTube, Instagram, Google, Telegram, ...), spelled-out acronyms (API -> "эй-пи-ай") and a
+   simple transliteration for other Latin words. English only expands `₽ $ € %`. Edge and SAPI
+   get the original text.
+7. **Dependencies and licences.** `sherpa-onnx==1.13.8` (Apache-2.0) and
+   `sherpa-onnx-core==1.13.8` (the native libraries, which the 1.13.x wheel does not bundle),
+   both pinned **exactly**: sherpa-onnx 2.x removed the bundled espeak-ng phonemizer and cannot
+   run Piper voices without an external one. `numpy` (already present through
+   `faster-whisper`) converts the samples.
+8. **Licence caveat (accepted by the owner for personal use, 2026-10-26).**
+   - `ru_RU-irina-medium`: the dataset comes from RHVoice and its licence is "Unknown"; it is
+     most likely non-commercial.
+   - sherpa-onnx 1.13.8 bundles **espeak-ng (GPL-3.0)**. Used in-process, a distributed
+     combination would be subject to GPL terms.
+   - **Before any paid or commercial distribution** both must be replaced: a voice with a clear
+     licence (for example `ru_RU-dmitri-medium` / `ru_RU-denis-medium`, CC0, male; or a
+     self-trained voice) and a permissively licensed phonemizer (or a GPL-compatible release
+     of L.U.N.A.). `en_US-kristin-medium` is public domain.

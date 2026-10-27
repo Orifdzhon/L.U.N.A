@@ -15,6 +15,7 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
+import shiboken6
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
@@ -150,6 +151,8 @@ def run_tray(
         ticker.stop()
         for dialog in keys_dialogs:
             dialog.close()
+            shiboken6.delete(dialog)  # free the widgets before the QApplication goes away
+        keys_dialogs.clear()
         signal.signal(signal.SIGINT, previous)
         controller.quit()  # idempotent: covers an exit that did not come through Quit
     return 0

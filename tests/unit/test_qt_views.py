@@ -86,13 +86,6 @@ def test_tray_menu_has_six_items_and_reflects_state(app):
     assert tray._menu.defaultAction() is tray.open_action
 
 
-def test_keys_action_invokes_callback(app):
-    calls: list = []
-    tray = _tray(calls)
-    tray.keys_action.trigger()
-    assert calls == [("keys",)]
-
-
 def test_tray_actions_invoke_callbacks(app):
     calls: list = []
     tray = _tray(calls)

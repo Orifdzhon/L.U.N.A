@@ -21,6 +21,4 @@ def _no_real_credential_store(monkeypatch):
     """Tests never read or write the owner's Windows Credential Manager."""
     from luna.config.secrets import InMemoryStore
 
-    monkeypatch.setattr("luna.config.loader.default_store", InMemoryStore)
-    monkeypatch.setattr("luna.ui.qt.app.default_store", InMemoryStore)
     monkeypatch.setattr("luna.config.secrets.default_store", InMemoryStore)

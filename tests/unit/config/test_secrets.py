@@ -69,7 +69,7 @@ def test_explicit_env_without_store_does_not_touch_default_store(tmp_path, monke
     def boom():
         raise AssertionError("default store used")
 
-    monkeypatch.setattr("luna.config.loader.default_store", boom)
+    monkeypatch.setattr("luna.config.secrets.default_store", boom)
     assert _key(load_settings(env={}, cwd=tmp_path), "GROQ_API_KEY") is None
 
 

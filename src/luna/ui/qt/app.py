@@ -19,7 +19,8 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from luna.app import App, build_app
-from luna.config.secrets import CredentialStore, default_store
+from luna.config import secrets as credentials
+from luna.config.secrets import CredentialStore
 from luna.config.settings import Settings
 from luna.platform.base import Autostart, SingleInstance
 from luna.platform.factory import create_autostart
@@ -95,7 +96,7 @@ def run_tray(
 
     def show_keys() -> None:
         if not keys_dialogs:
-            store = keys_store if keys_store is not None else default_store()
+            store = keys_store if keys_store is not None else credentials.default_store()
             keys_dialogs.append(KeysDialog(KeysPresenter(settings, store)))
         dialog = keys_dialogs[0]
         dialog.show()

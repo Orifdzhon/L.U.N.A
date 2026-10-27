@@ -20,7 +20,8 @@ from typing import Any
 from dotenv import dotenv_values
 from pydantic import ValidationError
 
-from luna.config.secrets import CredentialStore, default_store
+from luna.config import secrets as credentials
+from luna.config.secrets import CredentialStore
 from luna.config.settings import Settings
 from luna.core.errors import ConfigError
 
@@ -119,7 +120,7 @@ def load_settings(
         raise ConfigError(_format_validation_error(source, exc)) from exc
     secrets = _read_secrets(env, cwd)
     if store is None and real_env:
-        store = default_store()
+        store = credentials.default_store()
     if store is not None:  # lowest priority: only names nothing else provided
         for name in settings.api_key_names():
             if not secrets.get(name, "").strip() and (saved := store.get(name)):

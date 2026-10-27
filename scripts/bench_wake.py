@@ -376,6 +376,12 @@ class StreamRunner:
             self.feed(
                 bytes(int(tail_s * SAMPLE_RATE) // self._det.frame_samples * self._frame_bytes)
             )
+        flush = getattr(self._det, "flush", None)
+        if flush is not None:  # the listener flushes when a segment closes
+            began = self._clock()
+            event = flush()
+            self.cpu_s += self._clock() - began
+            self._handle(event)
         if self._keep:
             self._settle(final=True)
 

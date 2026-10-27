@@ -433,8 +433,14 @@ class FakeWakeWord:
         name: str = "fake",
         end_lag_samples: int = 0,
         report_end: bool = True,
+        flush_event: WakeEvent | None = None,
+        flush_error: Exception | None = None,
     ) -> None:
         self.name = name
+        self.flush_event = flush_event  # returned (once) by flush()
+        self.flush_error = flush_error
+        self.flush_count = 0
+        self.calls: list[str] = []  # "flush" / "reset" in call order
         self.sample_rate = WAKE_SAMPLE_RATE
         self.frame_samples = frame_samples
         self.keyword = keyword
@@ -464,8 +470,17 @@ class FakeWakeWord:
             return WakeEvent(self.keyword, self.confidence, end if self.report_end else None)
         return None
 
+    def flush(self) -> WakeEvent | None:
+        self.flush_count += 1
+        self.calls.append("flush")
+        if self.flush_error is not None:
+            raise self.flush_error
+        event, self.flush_event = self.flush_event, None
+        return event
+
     def reset(self) -> None:
         self.reset_count += 1
+        self.calls.append("reset")
         self._index = 0
 
     def close(self) -> None:

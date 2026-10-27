@@ -132,6 +132,7 @@ def test_verifier_reuses_the_chain_instance_and_loads_once(
 def test_verifier_built_from_stt_local_when_not_in_chain(tmp_path, wake_apps, fake_local):
     settings = Settings().with_api_keys({})
     settings.stt.local.model = "small"
+    settings.wakeword.verify = "local"
     app = make(tmp_path, wake_apps, settings=settings, mic=FakeLiveMic())  # injected stt: no chain
     assert app.voice_input.enable_wake() is None
     (instance,) = fake_local.instances

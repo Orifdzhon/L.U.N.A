@@ -402,3 +402,26 @@ hides most of it. The real numbers come from the bench extension (item 12) and #
 - faster-whisper 1.2.1 (`uv.lock`): `WhisperModel.transcribe` parameters `language`,
   `without_timestamps`, `max_new_tokens`, `initial_prompt`, `hotwords` checked in the installed
   package (`faster_whisper/transcribe.py`) on 2026-10-26.
+
+## Amendment 3 (2026-10-27): free mode, no stage 2 by default, flush on segment close (#170)
+
+Owner calibration on his own clips (`scripts/bench_wake.py --clips D:\wake-clips`, 7 positive /
+21 negative, C270 microphone):
+
+- Stage 1 (Vosk) recall is 7/7 in every configuration; stage 2 (faster-whisper `base`) mishears the
+  owner's quiet «Луна» ('Олова!', 'Удома', 'Лома, ты здесь?') and rejects 3/7 (recall 57%).
+- Free mode (no grammar), thr 0.5, min_word_s 0.3: recall 7/7, 2/21 false accepts, both sentences
+  that really contain the noun «луна»; «Лена», «лунный», «она», «Луначарский» do not fire. Grammar
+  mode fires on 12/21 negatives.
+- Live, a bare «Луна» rarely triggered: the listener closed the VAD segment after 600 ms of silence
+  and called `reset()` before Vosk emitted its final result, which is where «луна» usually appears.
+
+Decisions:
+
+- `WakeWordDetector` gains an optional `flush() -> WakeEvent | None` (`FlushableDetector`). The
+  listener calls it when a segment closes (silence or max length) before `reset()`; an event is
+  handled like any other. The Vosk spotter scans `FinalResult()` with the same threshold and
+  min-word rules.
+- `[wakeword] mode = "free" | "grammar"` is exposed; project default `"free"`.
+- `[wakeword] verify` project default `"off"`; `"local"` stays available. Existing config files
+  load unchanged (the owner's explicit values win).

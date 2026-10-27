@@ -72,3 +72,15 @@ class WakeWordDetector(Protocol):
     def close(self) -> None:
         """Release engine resources; the detector must not be used afterwards."""
         ...
+
+
+@runtime_checkable
+class FlushableDetector(WakeWordDetector, Protocol):
+    """Optional extension: a detector whose last result only arrives when the audio ends.
+
+    ``flush()`` is called when a speech segment closes, BEFORE ``reset()``; it returns the
+    keyword found in the engine's final result (same filters as ``process()``) or ``None``.
+    Detectors without it are simply reset.
+    """
+
+    def flush(self) -> WakeEvent | None: ...

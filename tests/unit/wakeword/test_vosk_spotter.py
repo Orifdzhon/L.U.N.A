@@ -45,6 +45,9 @@ class FakeRecognizer:
     def PartialResult(self):
         return self._current[1]
 
+    def FinalResult(self):
+        return "{}"
+
 
 class FakeEngine:
     def __init__(self, script=(), vocabulary=("луна",)):
@@ -372,3 +375,40 @@ def test_real_engine_without_vocabulary_check_fails_loudly(monkeypatch):
     monkeypatch.setitem(sys.modules, "vosk", Vosk)
     with pytest.raises(ConfigError, match="upgrade vosk"):
         VoskKeywordSpotter("m", ["луна"], threshold=0.5)
+
+
+# --- flush(): the keyword only in FinalResult (#170) ---------------------------------------
+
+
+def test_flush_reports_keyword_from_final_result_with_filters():
+    spotter, _ = make([])
+    spotter._rec.FinalResult = lambda: final(("луна", 0.45, 0.9))
+    assert spotter.flush() == WakeEvent("луна", 0.9, 0)  # end clamped to the samples fed (0)
+
+
+def test_flush_applies_threshold_and_min_word():
+    spotter, _ = make([])
+    spotter._rec.FinalResult = lambda: final(("луна", 0.45, 0.3))
+    assert spotter.flush() is None
+    spotter._rec.FinalResult = lambda: json.dumps(
+        {"result": [{"word": "луна", "start": 0.0, "end": 0.1, "conf": 0.9}]}
+    )
+    assert spotter.flush() is None
+
+
+def test_flush_does_not_repeat_a_keyword_already_reported_by_a_partial():
+    script = [*SILENCE, (False, partial(("луна", 0.45)))]
+    spotter, _ = make(script)
+    assert feed(spotter, 16)[15] is not None
+    spotter._rec.FinalResult = lambda: final(("луна", 0.45, 0.9))
+    assert spotter.flush() is None
+
+
+def test_free_mode_has_no_grammar_and_flush_garbage_is_ignored():
+    engine = FakeEngine()
+    spotter = VoskKeywordSpotter(
+        "m", ["луна"], threshold=0.5, mode="free", engine_factory=lambda _p: engine
+    )
+    assert engine.created == [(None, 16_000)]
+    spotter._rec.FinalResult = lambda: "not json"
+    assert spotter.flush() is None

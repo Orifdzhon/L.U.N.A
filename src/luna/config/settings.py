@@ -356,12 +356,17 @@ class Settings(_Section):
     # env-variable name -> secret value; never serialized, never in repr().
     _api_keys: dict[str, SecretStr] = PrivateAttr(default_factory=dict)
 
-    def with_api_keys(self, env: Mapping[str, str]) -> Self:
-        """Pick up the keys this config refers to from ``env``; blank values count as missing."""
+    def api_key_names(self) -> set[str]:
+        """Env-variable names of every key this config refers to."""
         names = {(p.api_key_env or "").strip() for p in self.llm.providers.values()}
         names.add(self.search.api_key_env.strip())
         names.add(self.stt.groq.api_key_env.strip())
         names.discard("")
+        return names
+
+    def with_api_keys(self, env: Mapping[str, str]) -> Self:
+        """Pick up the keys this config refers to from ``env``; blank values count as missing."""
+        names = self.api_key_names()
         self._api_keys = {n: SecretStr(env[n].strip()) for n in names if env.get(n, "").strip()}
         return self
 

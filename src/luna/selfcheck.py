@@ -67,6 +67,17 @@ def _check_luna_modules() -> str:
     return "luna modules import"
 
 
+def _check_keyring() -> str:
+    # The saved API keys live in Credential Manager; a frozen build without the Windows backend
+    # silently falls back to the "fail" keyring and loses them.
+    import keyring
+
+    backend = type(keyring.get_keyring()).__name__
+    if sys.platform == "win32" and backend != "WinVaultKeyring":
+        raise RuntimeError(f"keyring backend is {backend}, expected WinVaultKeyring")
+    return f"keyring backend {backend}"
+
+
 def build_checks(has_sherpa: bool) -> list[tuple[str, Callable[[], str]]]:
     checks: list[tuple[str, Callable[[], str]]] = [
         (name, lambda n=name: _check_module(n)) for name in CORE_MODULES
@@ -78,6 +89,7 @@ def build_checks(has_sherpa: bool) -> list[tuple[str, Callable[[], str]]]:
     checks.extend(
         [
             ("luna", _check_luna_modules),
+            ("keyring", _check_keyring),
             ("site_aliases.toml", _check_site_aliases),
             ("app_aliases.toml", _check_app_aliases),
         ]

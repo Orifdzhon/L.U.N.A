@@ -20,7 +20,7 @@ version_file = os.environ.get("LUNA_VERSION_FILE") or None
 
 binaries = []
 datas = []
-hiddenimports = ["vosk.vosk_cffi"]
+hiddenimports = ["vosk.vosk_cffi", "keyring.backends.Windows"]
 excludes = ["tkinter"]
 
 for package in ("vosk", "ctranslate2"):

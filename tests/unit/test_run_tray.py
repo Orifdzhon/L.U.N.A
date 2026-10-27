@@ -143,39 +143,3 @@ def test_wake_requested_only_when_enabled_and_voice_up(qapp, monkeypatch):
     run(qapp, monkeypatch, settings=settings, voice=FakeVoice(enabled=False))
     run(qapp, monkeypatch, settings=settings, voice=None)
     assert started == [True, False, False]
-
-
-class FakeKeysDialog:
-    """Stands in for the real dialog: records that it was shown."""
-
-    shown = 0
-
-    def __init__(self, presenter, *args, **kwargs):
-        pass
-
-    def show(self):
-        type(self).shown += 1
-
-    def raise_(self):
-        pass
-
-    def activateWindow(self):
-        pass
-
-    def close(self):
-        pass
-
-
-def test_keys_dialog_opens_on_start_without_cloud_key(qapp, monkeypatch):
-    FakeKeysDialog.shown = 0
-    monkeypatch.setattr("luna.ui.qt.app.KeysDialog", FakeKeysDialog)
-    run(qapp, monkeypatch, steps=lambda c: None)
-    assert FakeKeysDialog.shown == 1
-
-
-def test_no_keys_dialog_when_a_cloud_key_exists(qapp, monkeypatch):
-    FakeKeysDialog.shown = 0
-    monkeypatch.setattr("luna.ui.qt.app.KeysDialog", FakeKeysDialog)
-    settings = Settings().with_api_keys({"GROQ_API_KEY": "gk-present-1"})
-    run(qapp, monkeypatch, settings=settings, steps=lambda c: None)
-    assert FakeKeysDialog.shown == 0

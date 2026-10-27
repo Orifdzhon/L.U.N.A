@@ -9,6 +9,7 @@ the real adapters (network, browser, app launching) so tests can wire fakes.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import sys
 import threading
@@ -280,6 +281,9 @@ def _build_tts(
     from luna.tts.piper import PiperTTS
 
     def make_piper() -> TTSProvider | None:
+        if importlib.util.find_spec("sherpa_onnx") is None:  # public build: before any download
+            warnings.append("Local voice (Piper) is unavailable (sherpa-onnx is not installed).")
+            return None
         try:
             return PiperTTS(
                 conf.piper.voice_ru,

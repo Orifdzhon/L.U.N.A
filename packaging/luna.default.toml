@@ -1,0 +1,15 @@
+# L.U.N.A. default configuration for a fresh install (ADR 0010, D4).
+# The installer copies this to %APPDATA%\LUNA\luna.toml only if you have no config yet.
+# Every other key keeps its built-in default; see luna.example.toml for the full list.
+# API keys do NOT go here: use the key dialog (Credential Manager) or environment variables.
+
+[tts]
+enabled = true              # speak replies
+provider = "edge"           # Edge voices online -> local Piper voice if present -> Windows SAPI
+
+[voice]
+listen = true               # push-to-talk: press the hotkey below to speak
+hotkey = "ctrl+alt+space"
+
+[wakeword]
+enabled = false             # the "Luna" wake word is off by default; toggle it from the tray menu

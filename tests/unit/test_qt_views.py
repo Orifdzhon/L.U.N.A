@@ -67,10 +67,11 @@ def _tray(calls):
         on_set_voice=lambda v: calls.append(("voice", v)),
         on_set_autostart=lambda v: calls.append(("autostart", v)),
         on_quit=lambda: calls.append(("quit",)),
+        on_keys=lambda: calls.append(("keys",)),
     )
 
 
-def test_tray_menu_has_five_items_and_reflects_state(app):
+def test_tray_menu_has_six_items_and_reflects_state(app):
     calls: list = []
     tray = _tray(calls)
     tray.set_menu(TrayMenuState(True, False, "Starting wake word…", False, True, True, False))
@@ -80,8 +81,16 @@ def test_tray_menu_has_five_items_and_reflects_state(app):
     assert tray.autostart_action.isChecked() and not tray.autostart_action.isEnabled()
     assert calls == []  # programmatic updates do not fire callbacks
     actions = [a for a in tray._menu.actions() if not a.isSeparator()]
-    assert len(actions) == 5
+    assert len(actions) == 6
+    assert tray.keys_action.text() == "API keys…"
     assert tray._menu.defaultAction() is tray.open_action
+
+
+def test_keys_action_invokes_callback(app):
+    calls: list = []
+    tray = _tray(calls)
+    tray.keys_action.trigger()
+    assert calls == [("keys",)]
 
 
 def test_tray_actions_invoke_callbacks(app):

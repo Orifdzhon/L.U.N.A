@@ -141,7 +141,7 @@ def run_tray(
         window.append(ConversationLine("system", NO_TRAY_LINE))
         window.show()
     if not has_cloud_llm_key(settings):
-        QTimer.singleShot(0, show_keys)  # a nudge on every start until a key is saved
+        pass  # BISECT QTimer.singleShot(0, show_keys)  # a nudge on every start until a key is saved
     if on_ready is not None:
         on_ready(qt_app, controller)
     try:

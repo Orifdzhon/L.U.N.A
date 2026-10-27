@@ -14,11 +14,3 @@ def _no_real_single_instance(monkeypatch):
     from luna.platform.fallback import ProcessLocalInstance
 
     monkeypatch.setattr("luna.__main__.create_single_instance", ProcessLocalInstance)
-
-
-@pytest.fixture(autouse=True)
-def _no_real_credential_store(monkeypatch):
-    """Tests never read or write the owner's Windows Credential Manager."""
-    from luna.config.secrets import InMemoryStore
-
-    monkeypatch.setattr("luna.config.secrets.default_store", InMemoryStore)

@@ -1,4 +1,4 @@
-"""System tray view: ``QSystemTrayIcon`` plus a six-item menu driven by ``TrayMenuState``."""
+"""System tray view: ``QSystemTrayIcon`` plus a five-item menu driven by ``TrayMenuState``."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ class QtTrayView:
         on_set_voice: Callable[[bool], None],
         on_set_autostart: Callable[[bool], None],
         on_quit: Callable[[], None],
-        on_keys: Callable[[], None] | None = None,
     ) -> None:
         self._on_open = on_open
         self._icons = make_icons()
@@ -33,8 +32,6 @@ class QtTrayView:
         self.open_action = QAction("Open window", self._menu)
         self.open_action.triggered.connect(lambda _checked=False: on_open())
         self.autostart_action = self._checkable("Start with Windows", on_set_autostart)
-        self.keys_action = QAction("API keys…", self._menu)
-        self.keys_action.triggered.connect(lambda _checked=False: on_keys() if on_keys else None)
         self.quit_action = QAction("Quit", self._menu)
         self.quit_action.triggered.connect(lambda _checked=False: on_quit())
         for action in (
@@ -42,7 +39,6 @@ class QtTrayView:
             self.voice_action,
             self.open_action,
             self.autostart_action,
-            self.keys_action,
         ):
             self._menu.addAction(action)
         self._menu.addSeparator()

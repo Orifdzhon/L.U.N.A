@@ -24,6 +24,7 @@ added in later slices.
 | Desktop shell | Slice 5 (accepted 2026-10-26): `PySide6-Essentials` tray + small window driven by a toolkit-free `ShellController`; `luna` / `pythonw -m luna --tray`; named-mutex single instance; Win32 `RegisterHotKey`; autostart = per-user Startup-folder shortcut (off by default) | tkinter + pystray | [0007](adr/0007-desktop-shell.md), [0009](adr/0009-desktop-shell-mvp.md) |
 | Open apps/sites | `Get-StartApps` index + aliases + `rapidfuzz`; `webbrowser` for sites | `.lnk` scan | [0008](adr/0008-opening-apps-and-websites.md) |
 | Concurrency | **Threads + queues**, Qt on the main thread | asyncio (rejected, §5) | this doc |
+| Distribution | **Proposed** (post-MVP): PyInstaller onedir (`luna.exe` windowed + `luna-cli.exe` console) → Inno Setup per-user setup in `%LOCALAPPDATA%\Programs\L.U.N.A`; API keys from a first-run dialog in Windows Credential Manager (`keyring`); public build without sherpa-onnx (§14) | Nuitka; zip-only portable build | [0010](adr/0010-windows-installer.md) |
 
 ## 1. Components and responsibilities
 
@@ -50,7 +51,7 @@ added in later slices.
 | Component | Package | Responsibility |
 |---|---|---|
 | Composition root | `luna.app` | Reads config, builds providers, wires adapters, starts threads. The only place that knows concrete classes. |
-| Config | `luna.config` | Loads `luna.toml` + `.env`, validates with pydantic, exposes typed `Settings`. |
+| Config | `luna.config` | Loads `luna.toml` + `.env` (+ Windows Credential Manager once ADR 0010 lands), validates with pydantic, exposes typed `Settings`. |
 | Orchestrator | `luna.core.orchestrator` | Runs one request end to end: router → assistant → reply; emits status events; enforces timeouts and cancellation. |
 | Router | `luna.core.router` | Rule-based fast path for simple commands (F3, F4) without an LLM; RU/EN verb patterns + alias/fuzzy lookup. Also flags "needs fresh facts" (F6 heuristics). |
 | Assistant | `luna.core.assistant` | LLM conversation loop with tool calling, system prompt, short dialog history, web-content isolation rule (§9). |
@@ -81,6 +82,7 @@ src/luna/
   config/
     settings.py           # pydantic models: Settings, LLMSettings, VoiceSettings, ...
     loader.py             # tomllib + .env → Settings; config search paths
+    secrets.py            # ADR 0010 (proposed): CredentialStore protocol, KeyringStore (Credential Manager)
   core/
     models.py             # Request, Reply, ToolCall, ToolResult, Message (dataclasses)
     events.py             # EventBus + event types (StatusChanged, ReplyReady, ...)
@@ -151,6 +153,7 @@ src/luna/
       tray.py             # QtTrayView: QSystemTrayIcon + QMenu + showMessage
       window.py           # QtWindowView: conversation, input line, status line
       app.py              # run_tray(settings, args) -> int: QApplication, wiring, quit
+      keys_dialog.py      # ADR 0010 (proposed): first-run API key dialog (Test / Save / Later)
   logs/
     setup.py              # logging config, secret redaction filter
     action_log.py         # JSONL writer
@@ -165,6 +168,9 @@ tests/
   fakes.py                # FakeLLM, FakeSTT, FakeTTS, FakeSearch, FakeAppCatalog, ...
 docs/
   manual-checks.md        # owner's manual checklist (mic, GPU, tray) — added in slice 3
+packaging/                # ADR 0010 (proposed): luna.spec, entry.py, luna.iss, luna.ico,
+                          # luna.default.toml, NOTICES_HEADER.txt, sandbox/luna-test.wsb
+scripts/build_installer.py  # ADR 0010: freeze → self-check → notices → Inno Setup → SHA-256
 ```
 
 Rule: only `luna.platform.windows.*` (and `luna.tts.sapi`) may import Windows-only
@@ -1048,7 +1054,10 @@ after their timeout and their results discarded.
   A committed `luna.example.toml` documents every key.
 - `.env` (gitignored) for secrets only: `GEMINI_API_KEY`, `GROQ_API_KEY`,
   `TAVILY_API_KEY`. Parsed by the loader with `python-dotenv` (no interpolation; environment
-  variables win over `.env`); keys are `SecretStr`, never logged.
+  variables win over `.env`); keys are `SecretStr`, never logged. Lookup order: environment →
+  `./.env` → `%APPDATA%\LUNA\.env`; ADR 0010 (proposed) appends Windows Credential Manager
+  (`keyring`, service `L.U.N.A.`, one entry per variable name) as the last source, written by the
+  first-run key dialog of the installed app.
 - Aliases in `data/*.toml` (shipped defaults) merged with user overrides in `luna.toml`.
 
 ```toml
@@ -1308,7 +1317,7 @@ Each slice ends in something the owner can run. Later slices only add adapters.
 | 3 | Voice in (push-to-talk) — **code merged** (PRs #90–#98, 2026-10-26); STT benchmark #87 and manual checks #88 open | `SoundDeviceMic` capture, `EnergyVAD` + `Recorder`, `STTChain` (`GroqWhisperSTT` → `FasterWhisperSTT` CPU `base`), `WindowsHotkeyListener`, `VoiceFrontEnd` toggle PTT with barge-in, `VoiceInput` + CLI `--listen` / `/listen` / `/mic`, degraded start | hotkey → speak → action + spoken reply; latency spans logged |
 | 4 | Wake word (Issues #102–#116 + verification Issues, ADR 0004 amendment 2) | opt-in wake mode: `WakeListener` owning one always-on stream, energy-VAD gate, `VoskKeywordSpotter` for "луна" (lazy model download) + local faster-whisper second stage (`[wakeword] verify`), `Recorder` continuing from the live stream (one-breath commands), half-duplex gating with Speaker activity, optional cue and follow-up window (off); conditional ONNX spike #116 | "Луна, открой YouTube" works in one breath and with a pause; a spoken reply never wakes it; `/wake off` closes the mic; recall and FA/hour measured in #115 |
 | 5 | Desktop shell ([ADR 0009](adr/0009-desktop-shell-mvp.md)) | `PySide6-Essentials` tray icon with state colours and a 5-item menu (open, wake on/off, voice replies, start with Windows, quit), small window (conversation, text input, status line; close hides), `luna` / `pythonw -m luna --tray --minimized`, single instance, windowless logging, Startup-folder autostart (off by default), `[ui]` settings. Post-MVP: popup at the tray, settings dialog / persisted toggles, open config/logs, activate the running instance, installer | MVP definition of done (spec §6): runs from the tray without a console, starts with Windows when enabled, voice and typed requests show their replies in the window; CI green |
-| 6 | Hardening | offline mode switch, game mode, provider status in tray, custom wake-word model if it beats Vosk, packaging (PyInstaller) investigation | owner's choice |
+| 6 | Hardening | offline mode switch, game mode, provider status in tray, custom wake-word model if it beats Vosk; Windows installer ([ADR 0010](adr/0010-windows-installer.md), proposed, §14) | owner's choice |
 
 ## 13. Open questions for the owner
 
@@ -1330,3 +1339,30 @@ See the decision list in each ADR. Summary:
    toolkit (PySide6-Essentials), autostart mechanism (Startup-folder shortcut), `luna` without
    flags = tray mode, single instance also for `--text`, session-only tray toggles, error-only
    notifications, plain window with English labels, legacy `[ui] autostart`, autostart flags.
+9. **Windows installer** (ADR 0010, proposed 2026-10-27): freezer, setup program, key storage,
+   defaults of a fresh install, public vs personal edition, uninstall data, signing — decisions
+   D1-D10 in [ADR 0010](adr/0010-windows-installer.md).
+
+## 14. Packaging and distribution (ADR 0010, proposed)
+
+```
+scripts/build_installer.py [--edition public|personal] [--skip-setup] [--iscc PATH]
+  1 version check (luna.__version__ == pyproject == tag in CI)
+  2 build/version_info.txt (Windows version resource)
+  3 pyinstaller packaging/luna.spec  ->  dist/luna/{luna.exe, luna-cli.exe, _internal/...}
+  4 dist/luna/luna-cli.exe --self-check   (imports every native package + alias tables)
+  5 THIRD_PARTY_NOTICES.txt (pip-licenses over the build env + packaging/NOTICES_HEADER.txt)
+  6 ISCC packaging/luna.iss /DAppVersion=<ver>  ->  dist/LUNA-Setup-<ver>-x64.exe
+  7 print size + SHA-256
+```
+
+| Item | Installed layout / behaviour |
+|---|---|
+| Program files | `%LOCALAPPDATA%\Programs\L.U.N.A\` (per user, no admin): `luna.exe` (windowed: tray, Start menu, autostart), `luna-cli.exe` (console: `--text`, `--version`, `--self-check`, `--forget-keys`), `_internal\` (Python 3.13 + packages, Qt DLLs as separate files for LGPL), `LICENSE`, `THIRD_PARTY_NOTICES.txt` |
+| User data (unchanged) | `%APPDATA%\LUNA\luna.toml` (installed from `packaging/luna.default.toml` only if absent), `%LOCALAPPDATA%\LUNA\logs`, `%LOCALAPPDATA%\LUNA\models` (lazy downloads; `model_dir` overrides) |
+| Secrets | env → `./.env` → `%APPDATA%\LUNA\.env` → Credential Manager (`L.U.N.A.`) |
+| Autostart | the same `L.U.N.A.lnk` in the Startup folder, now → `luna.exe --tray --minimized` (frozen branch of `own_launch_command`); setup task unchecked by default; uninstall removes it |
+| Single instance | `Local\LUNA-instance`; setup/uninstall use `AppMutex` + `CloseApplications` |
+| Editions | `public` (CI / GitHub Releases): no sherpa-onnx → TTS Edge → SAPI; `personal`: with Piper Irina/Kristin (ADR 0005 amendment 3 licence caveat) |
+| Frozen detection | `getattr(sys, "frozen", False)`; the only frozen-specific code paths are `own_launch_command` and the Piper availability check (`importlib.util.find_spec("sherpa_onnx")`) |
+| Testing | unit tests for the helpers; `--self-check` in the build; Windows Sandbox checklist in `docs/MANUAL_CHECKS.md` |

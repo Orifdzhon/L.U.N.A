@@ -228,6 +228,45 @@ Known limits to expect (not failures): disabling the entry in Task Manager -> St
 reflected in the menu; a second launch does not raise the existing window; tray toggles are not
 saved between runs.
 
+## N. Windows installer (ADR 0010, Windows Sandbox)
+
+Build both setups (about 4-5 minutes each; Inno Setup 6 must be installed, the script finds it):
+
+```
+uv run --frozen --no-dev --group build python scripts/build_installer.py --edition public
+uv run --frozen --no-dev --group build python scripts/build_installer.py --edition personal
+uv sync
+```
+
+Result: `dist\LUNA-Setup-<ver>-x64.exe` (public) and `dist\LUNA-Setup-<ver>-personal-x64.exe`;
+the script prints the size and SHA-256 and writes `dist\luna-test.wsb` with the real path of `dist`.
+Test the setup in **Windows Sandbox**, never on your own profile (enable the optional Windows
+feature "Windows Sandbox" once and reboot - your own system change). Double-click
+`dist\luna-test.wsb`: `dist` appears read-only on the sandbox Desktop. Copy the setup to the
+sandbox Desktop before running it.
+
+| # | Do | Expected | Pass / Fail |
+|---|---|---|---|
+| N1 | Run the setup | SmartScreen "Windows protected your PC": More info -> Run anyway (unsigned, ADR D9). No UAC prompt | [ ] / [ ] |
+| N2 | Walk through the wizard | Install folder `%LOCALAPPDATA%\Programs\L.U.N.A`; "Start L.U.N.A. when Windows starts" and the desktop icon are unchecked | [ ] / [ ] |
+| N3 | Finish with "Launch L.U.N.A." | Tray icon appears, no console window; `%APPDATA%\LUNA\luna.toml` exists (copy of the default) | [ ] / [ ] |
+| N4 | Start menu -> L.U.N.A.; Settings -> Apps | The entry starts the app; "L.U.N.A." (publisher Orifdzhon) is listed with an uninstall button | [ ] / [ ] |
+| N5 | Type `открой ютуб`, then a general question | YouTube opens; the answer is shown and spoken (Edge voice online; offline falls back to SAPI, English-only in the sandbox - expected) | [ ] / [ ] |
+| N6 | Enter a key in the keys dialog (when #177 is merged), restart | The key is used; visible in Credential Manager as `L.U.N.A.` | [ ] / [ ] |
+| N7 | Push-to-talk hotkey `ctrl+alt+space`; tick "Listen for Luna" in the tray | Records and answers; the wake toggle downloads Vosk and arms | [ ] / [ ] |
+| N8 | Start the app a second time | "L.U.N.A. is already running" message | [ ] / [ ] |
+| N9 | Edit `luna.toml`, then run the same setup again while L.U.N.A. runs | Setup asks to close the running application; after Yes the files are replaced (the old `_internal` is wiped first); `luna.toml` is untouched | [ ] / [ ] |
+| N10 | Run the setup with "Start L.U.N.A. when Windows starts" ticked; open `shell:startup` | `L.U.N.A.lnk` is there: target `luna.exe`, arguments `--tray --minimized`, start in the install folder | [ ] / [ ] |
+| N11 | Tray menu item "Start with Windows" | Ticked; untick -> `L.U.N.A.lnk` disappears; tick -> it is back (the tray sees the installer's shortcut) | [ ] / [ ] |
+| N12 | Sign out and in (in the sandbox: close and reopen it after installing with the task) | L.U.N.A. starts by itself in the tray, window hidden | [ ] / [ ] |
+| N13 | Uninstall (Settings -> Apps) while L.U.N.A. runs, answer **No** to "Also delete your settings...?" | Asked to close the app; the program folder is removed completely; `%APPDATA%\LUNA` and `%LOCALAPPDATA%\LUNA` (logs, models) stay; the startup shortcut is gone | [ ] / [ ] |
+| N14 | Reinstall, then uninstall answering **Yes** | `%APPDATA%\LUNA` and `%LOCALAPPDATA%\LUNA` are deleted; saved keys are removed from Credential Manager (needs `luna-cli --forget-keys` from #177; until then remove the `L.U.N.A.` entry in Credential Manager by hand) | [ ] / [ ] |
+| N15 | `unins000.exe /SILENT` | No prompt; user data is kept | [ ] / [ ] |
+| N16 | Look into the install folder | `LICENSE` and `THIRD_PARTY_NOTICES.txt` are there; the notices contain no `C:\Users\...` build paths | [ ] / [ ] |
+| N17 | Public vs personal setup | The public bundle has no `sherpa_onnx`; the personal one has the Piper voice runtime | [ ] / [ ] |
+
+Once on your real PC: install the personal setup and run the MVP phrases by voice (spec section 6).
+
 ### Spec section 6 summary
 
 | Criterion (PRODUCT_SPEC section 6) | Checks | Pass / Fail |

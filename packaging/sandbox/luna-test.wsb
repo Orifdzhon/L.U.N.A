@@ -1,0 +1,18 @@
+<!-- Windows Sandbox config for testing the L.U.N.A. setup (docs/MANUAL_CHECKS.md, "Installer").
+     scripts/build_installer.py writes a ready copy to dist\luna-test.wsb with the real host path
+     of dist; this template shows the shape. dist is mapped read-only. -->
+<Configuration>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\L.U.N.A\dist</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\dist</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <AudioInput>Enable</AudioInput>
+  <Networking>Enable</Networking>
+  <MemoryInMB>6144</MemoryInMB>
+  <LogonCommand>
+    <Command>explorer.exe C:\Users\WDAGUtilityAccount\Desktop\dist</Command>
+  </LogonCommand>
+</Configuration>

@@ -1,8 +1,8 @@
 """Build the Windows distribution of L.U.N.A. (ADR 0010).
 
-Freeze stage (this Issue): version check -> version resource -> PyInstaller -> self-check ->
-THIRD_PARTY_NOTICES.txt -> bundle size. The Inno Setup stage is a later Issue; until then pass
-``--skip-setup``.
+Stages: version check -> version resource -> PyInstaller -> self-check -> THIRD_PARTY_NOTICES.txt
+-> bundle size -> Inno Setup (``dist/LUNA-Setup-<ver>[-personal]-x64.exe``, size + SHA-256) ->
+Windows Sandbox config. ``--skip-setup`` stops after the freeze.
 
 Run it in the locked build environment (always with the same flags, ``uv run`` re-syncs):
 
@@ -12,6 +12,7 @@ Run it in the locked build environment (always with the same flags, ``uv run`` r
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import subprocess
@@ -28,7 +29,7 @@ BUILD = ROOT / "build"
 BUNDLE = DIST / "luna"
 
 PRODUCT_NAME = "L.U.N.A."
-COMPANY_NAME = "L.U.N.A. project"
+COMPANY_NAME = "Orifdzhon"
 COPYRIGHT = "Copyright (c) L.U.N.A. contributors. Apache-2.0."
 EDITIONS = ("public", "personal")
 #: Packages that exist in the build environment but are not shipped in the public edition.
@@ -129,6 +130,18 @@ def find_iscc(
         if var == "LOCALAPPDATA":
             root = root / "Programs"
         candidates.append(root / "Inno Setup 6" / "ISCC.exe")
+    local = env.get("LOCALAPPDATA")
+    if local:
+        # Inno Setup 7 and other per-user (winget) installs: "Inno Setup *".
+        programs = Path(local) / "Programs"
+        try:
+            found = sorted(programs.glob("Inno Setup *"), reverse=True)
+        except OSError:
+            found = []
+        candidates.extend(folder / "ISCC.exe" for folder in found)
+    for base_var in ("ProgramFiles(x86)", "ProgramFiles"):
+        if env.get(base_var):
+            candidates.append(Path(env[base_var]) / "Inno Setup 7" / "ISCC.exe")
     for candidate in candidates:
         if exists(candidate):
             return candidate
@@ -160,6 +173,17 @@ def notices_ignore_packages(edition: str) -> list[str]:
     return ignored
 
 
+_USER_PATH = re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s\"']+", re.IGNORECASE)
+
+
+def strip_build_paths(text: str, roots: Sequence[Path] = ()) -> str:
+    """Remove absolute build-machine paths (the repository, a user profile) from text."""
+    for root in sorted({str(r) for r in roots if str(r)}, key=len, reverse=True):
+        for variant in {root, root.replace("\\", "/")}:
+            text = re.sub(re.escape(variant), "<build>", text, flags=re.IGNORECASE)
+    return _USER_PATH.sub("<user>", text)
+
+
 def generate_notices(edition: str, target: Path) -> None:
     """Write THIRD_PARTY_NOTICES.txt: the hand-written header + pip-licenses of the build env."""
     command = [
@@ -174,11 +198,12 @@ def generate_notices(edition: str, target: Path) -> None:
         *notices_ignore_packages(edition),
     ]
     print(f"+ {' '.join(command)}", flush=True)
-    result = subprocess.run(command, cwd=ROOT, capture_output=True, check=False)
+    env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")  # not the console code page
+    result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, check=False)
     if result.returncode != 0:
         raise BuildError(f"pip-licenses failed: {result.stderr.decode('utf-8', 'replace')}")
     header = (PACKAGING / "NOTICES_HEADER.txt").read_text("utf-8")
-    body = result.stdout.decode("utf-8", "replace")
+    body = strip_build_paths(result.stdout.decode("utf-8", "replace"), (ROOT, Path.home()))
     target.write_text(header + body, encoding="utf-8", newline="\n")
 
 
@@ -207,6 +232,63 @@ def freeze(edition: str, version: str) -> None:
             raise BuildError(f"{BUNDLE / name} was not produced")
     if edition == "public" and any(BUNDLE.rglob("sherpa_onnx")):
         raise BuildError("public edition must not contain sherpa_onnx")
+
+
+def setup_filename(version: str, edition: str) -> str:
+    suffix = "-personal" if edition == "personal" else ""
+    return f"LUNA-Setup-{version}{suffix}-x64.exe"
+
+
+def iscc_command(iscc: Path, version: str, edition: str) -> list[str | Path]:
+    """The ISCC command line; every path reaches the .iss as a define, never as script text."""
+    return [
+        iscc,
+        "/Qp",
+        f"/DAppVersion={version}",
+        f"/DEdition={edition}",
+        f"/DAppPublisher={COMPANY_NAME}",
+        f"/DSourceDir={BUNDLE}",
+        f"/DOutputDir={DIST}",
+        PACKAGING / "luna.iss",
+    ]
+
+
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sandbox_config_text(template: str, host_dist: Path) -> str:
+    """The Sandbox template with ``<HostFolder>`` pointing at the real ``dist`` folder."""
+    escaped = str(host_dist).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    result, count = re.subn(
+        r"<HostFolder>.*?</HostFolder>", lambda _m: f"<HostFolder>{escaped}</HostFolder>", template
+    )
+    if count != 1:
+        raise BuildError("sandbox template must contain exactly one <HostFolder>")
+    return result
+
+
+def build_setup(iscc: Path, version: str, edition: str) -> Path:
+    target = DIST / setup_filename(version, edition)
+    target.unlink(missing_ok=True)
+    _run(iscc_command(iscc, version, edition))
+    if not target.is_file():
+        raise BuildError(f"{target} was not produced")
+    size = target.stat().st_size
+    print(f"setup: {target} - {size / 1024 / 1024:.1f} MB ({size} bytes)")
+    print(f"sha256: {sha256_of(target)}")
+    return target
+
+
+def write_sandbox_config() -> Path:
+    template = (PACKAGING / "sandbox" / "luna-test.wsb").read_text("utf-8")
+    target = DIST / "luna-test.wsb"
+    target.write_text(sandbox_config_text(template, DIST), encoding="utf-8", newline="\n")
+    return target
 
 
 def self_check() -> None:
@@ -246,8 +328,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.skip_setup:
             iscc = find_iscc()
             if iscc is None:
-                raise BuildError("Inno Setup (ISCC.exe) not found; install it or use --skip-setup")
-            raise BuildError("the Inno Setup stage is not implemented yet; use --skip-setup")
+                raise BuildError(
+                    "Inno Setup (ISCC.exe) not found; install it, set ISCC=<path>, "
+                    "or use --skip-setup"
+                )
+            build_setup(iscc, version, args.edition)
+            print(f"sandbox config: {write_sandbox_config()}")
     except BuildError as exc:
         print(f"build_installer: {exc}", file=sys.stderr)
         return 1

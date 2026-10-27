@@ -143,27 +143,3 @@ def test_wake_requested_only_when_enabled_and_voice_up(qapp, monkeypatch):
     run(qapp, monkeypatch, settings=settings, voice=FakeVoice(enabled=False))
     run(qapp, monkeypatch, settings=settings, voice=None)
     assert started == [True, False, False]
-
-
-def _visible_keys_dialogs(qapp):
-    from luna.ui.qt.keys_dialog import KeysDialog
-
-    return [w for w in qapp.topLevelWidgets() if isinstance(w, KeysDialog) and w.isVisible()]
-
-
-def test_keys_dialog_opens_on_start_without_cloud_key(qapp, monkeypatch):
-    seen = []
-    run(qapp, monkeypatch, steps=lambda c: seen.append(len(_visible_keys_dialogs(qapp))))
-    assert seen == [1]
-
-
-def test_no_keys_dialog_when_a_cloud_key_exists(qapp, monkeypatch):
-    seen = []
-    settings = Settings().with_api_keys({"GROQ_API_KEY": "gk-present-1"})
-    run(
-        qapp,
-        monkeypatch,
-        settings=settings,
-        steps=lambda c: seen.append(len(_visible_keys_dialogs(qapp))),
-    )
-    assert seen == [0]

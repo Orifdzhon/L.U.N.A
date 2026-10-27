@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="delete the API keys saved in Windows Credential Manager and exit",
     )
     parser.add_argument("--config", type=Path, metavar="PATH", help="path to luna.toml")
+    parser.add_argument("--self-check", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -101,6 +102,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--text and --tray are mutually exclusive")
     if args.forget_keys:
         return _forget_keys()
+
+    if args.self_check:
+        from luna.selfcheck import run_self_check
+
+        return run_self_check()
     try:
         settings = load_settings(args.config)
     except (OSError, ConfigError) as exc:

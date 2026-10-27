@@ -118,7 +118,9 @@ def wake_apps():
 
 
 def make(tmp_path, apps, *, settings=None, wake=False, **kw):
-    settings = settings or Settings().with_api_keys({})
+    if settings is None:
+        settings = Settings().with_api_keys({})
+        settings.wakeword.verify = "local"  # the project default is "off" (#170); tests use stage 2
     settings.wakeword.enabled = wake
     kw.setdefault("stt", FakeSTT([]))
     kw.setdefault("hotkey", FakeHotkeyListener())

@@ -503,9 +503,22 @@ class WakeListener:
             self._seg_silence * 1000 >= SEGMENT_SILENCE_MS * SAMPLE_RATE
             or self._seg_samples * 1000 >= SEGMENT_MAX_MS * SAMPLE_RATE
         ):
+            event = self._flush_detector()  # the final result may hold the keyword
+            if event is not None:
+                return event  # _on_keyword resets the segment and the detector
             self._reset_segment()
             self._safe_detector_reset()
         return None
+
+    def _flush_detector(self) -> WakeEvent | None:
+        flush = getattr(self._detector, "flush", None)
+        if flush is None:
+            return None
+        try:
+            return flush()  # type: ignore[no-any-return]
+        except Exception as e:
+            log.exception("wake detector flush failed")
+            raise _DetectorFailed(f"wake word detector failed: {type(e).__name__}") from e
 
     def _run_detector(self, data: bytes) -> WakeEvent | None:
         """Re-chunk ``data`` to the detector's frame size and feed it."""

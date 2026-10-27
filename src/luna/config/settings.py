@@ -274,6 +274,9 @@ class WakeWordSettings(_Section):
     engine: Literal["vosk", "off"] = "vosk"
     keywords: list[str] = Field(default_factory=lambda: ["луна"])
     threshold: float = Field(default=0.5, ge=0, le=1)  # detector confidence, 0..1
+    # "free": no grammar, the keyword must be a whole recognised word (rejects homophones such as
+    # "Лена"); "grammar": recognizer restricted to the keywords (more false triggers).
+    mode: Literal["grammar", "free"] = "free"
     cooldown_s: float = Field(default=2.0, ge=0)  # ignore repeated triggers for this long
     model: str = Field(default="small-ru", min_length=1)
     # None = resolved later to %LOCALAPPDATA%\LUNA\models (like [stt.local]).
@@ -284,7 +287,8 @@ class WakeWordSettings(_Section):
     cue: Literal["off", "beep"] = "off"  # sound played when the keyword is heard
     follow_up_s: float = Field(default=0.0, ge=0, le=300)  # 0 = off; conversation window
     # Second stage (ADR 0004 amendment 2): local faster-whisper checks each detection.
-    verify: Literal["local", "off"] = "local"
+    # Off by default (#170): whisper base mishears a quiet "Луна" (3/7 false rejects).
+    verify: Literal["local", "off"] = "off"
     # Inflected forms Whisper often writes for the address word ("лунный", "лена" stay rejected).
     verify_words: list[str] = Field(
         default_factory=lambda: ["луна", "луну", "луне", "луны", "luna"]

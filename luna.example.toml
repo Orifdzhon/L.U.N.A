@@ -133,8 +133,12 @@ follow_up_s = 0.0             # 0 = off. Conversation mode: after a reply keep l
                               # command without "Луна" for this many seconds; every command restarts
                               # the window (try 90, max 300). Say "спасибо" / "стоп" / "отбой" to end it.
                               # While it is open any speech goes to the STT provider (Groq) like a hotkey turn.
-verify = "local"              # "local" | "off": second-stage check of each detection with the
-                              # [stt.local] faster-whisper model (a bigger model = slower check)
+mode = "free"                 # "free" | "grammar": free = no grammar, "луна" must be a whole recognised
+                              # word (rejects "Лена", "лунный"); grammar = more false triggers
+verify = "off"                # "off" | "local": second-stage check of each detection with the
+                              # [stt.local] faster-whisper model. Off by default: whisper "base"
+                              # mishears a quiet "Луна" (3 of 7 rejected) and free mode already
+                              # rejects homophones. "local" = slower check, may reject real wakes
 verify_words = ["луна", "луну", "луне", "луны", "luna"]   # the transcript must START with one
                               # of these (Latin lookalike letters in a Russian word are fixed)
 log_rejects = false           # true: write what the check heard in REJECTED wakes to the local

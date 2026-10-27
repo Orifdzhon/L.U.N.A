@@ -52,6 +52,7 @@ class Recognizer(Protocol):
 
     def AcceptWaveform(self, data: bytes) -> bool: ...
     def Result(self) -> str: ...
+    def FinalResult(self) -> str: ...
     def PartialResult(self) -> str: ...
 
 
@@ -182,6 +183,14 @@ class VoskKeywordSpotter:
         if not self._report_partials:
             return None
         return self._scan(self._payload(self._rec.PartialResult()), "partial_result")
+
+    def flush(self) -> WakeEvent | None:
+        """Scan the recognizer's final result (the keyword often only appears there)."""
+        if self._rec is None:
+            raise RuntimeError("VoskKeywordSpotter is closed")
+        event = self._scan(self._payload(self._rec.FinalResult()), "result")
+        self._seen = 0
+        return event
 
     def reset(self) -> None:
         if self._engine is None:

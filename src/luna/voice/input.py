@@ -442,7 +442,9 @@ class VoiceInput:
                 return factory(model_path)
             from luna.wakeword.vosk_spotter import VoskKeywordSpotter
 
-            return VoskKeywordSpotter(model_path, conf.keywords, threshold=conf.threshold)
+            return VoskKeywordSpotter(
+                model_path, conf.keywords, threshold=conf.threshold, mode=conf.mode
+            )
         except Exception as exc:
             raise _Degraded(f"cannot start the wake word engine: {exc}") from exc
 

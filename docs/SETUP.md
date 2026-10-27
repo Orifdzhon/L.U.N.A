@@ -176,8 +176,12 @@ model_dir = "D:/LUNA/models"
 ```
 
 `[wakeword] model_dir` defaults to the same folder as `[stt.local] model_dir`. Other keys
-(`threshold`, `cooldown_s`, `cue`, `follow_up_s`, `verify`, ...) are annotated in
-`luna.example.toml`. `[stt] language` (default `"ru"`) applies to wake commands too. Spoken
+(`threshold`, `cooldown_s`, `cue`, `follow_up_s`, `mode`, `verify`, ...) are annotated in
+`luna.example.toml`. Defaults since #170: `mode = "free"` (Vosk without a grammar: only a whole
+recognised word «луна» counts, so «Лена» / «лунный» do not wake) and `verify = "off"` (the
+whisper `base` second stage mishears a quiet «Луна» and rejected 3 of 7 real wakes; set
+`verify = "local"` to bring it back). A bare «Луна» followed by a pause is now caught: the
+recognizer's final result is read when the speech segment closes. `[stt] language` (default `"ru"`) applies to wake commands too. Spoken
 replies fall back from Edge to the local Irina voice (then SAPI) when the network fails (see [Voice](#voice-text-to-speech)).
 
 ### Conversation mode (`follow_up_s`)

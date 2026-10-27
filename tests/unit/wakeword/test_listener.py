@@ -10,6 +10,7 @@ from luna.audio.capture import FrameTap
 from luna.config.settings import VoiceSettings, WakeWordSettings
 from luna.core.errors import AudioError
 from luna.core.events import EventBus
+from luna.wakeword.base import WakeEvent
 from luna.wakeword.listener import (
     WakeGate,
     WakeListener,
@@ -620,3 +621,52 @@ def test_accepted_trigger_consumes_the_window(make):
     assert wait_until(lambda: h.listener.state is WakeState.ARMED)
     h.feed(*[speech(i) for i in range(8)])
     assert len(h.triggers) == 1
+
+
+# --- flush of the detector's final result on segment close (#170) ---------------------------
+
+
+def test_final_only_keyword_triggers_when_segment_closes_by_silence(make):
+    event = WakeEvent("luna", 0.9, 2 * FRAME_SAMPLES)
+    h = started(make(detector=FakeWakeWord(flush_event=event)))
+    h.feed(speech(0), speech(1))
+    h.feed(*[SILENCE] * 19)
+    assert not h.triggers  # the segment is still open
+    h.feed(SILENCE)  # 600 ms: the segment closes, flush() finds the keyword
+    assert wait_until(lambda: len(h.triggers) == 1)
+    assert h.triggers[0].event == event
+    assert h.detector.calls[-2:] == ["flush", "reset"]  # the event path resets after the flush
+
+
+def test_flush_is_called_before_reset_and_nothing_found_means_no_trigger(make):
+    h = started(make())
+    h.feed(speech(0), speech(1))
+    h.feed(*[SILENCE] * 20)
+    assert h.detector.flush_count == 1
+    assert h.detector.calls[-2:] == ["flush", "reset"]
+    assert not h.triggers
+
+
+def test_final_only_keyword_is_not_lost_on_max_length_close(make):
+    event = WakeEvent("luna", 0.9, 100 * FRAME_SAMPLES)
+    h = started(make(detector=FakeWakeWord(flush_event=event)))
+    h.feed(*[speech(i) for i in range(340)])  # 10.2 s of unbroken speech
+    assert wait_until(lambda: len(h.triggers) == 1)
+    assert h.triggers[0].event == event
+
+
+def test_flush_error_fails_the_listener(make):
+    h = started(make(detector=FakeWakeWord(flush_error=RuntimeError("boom"))))
+    h.mic.feed(speech(0), speech(1), *[SILENCE] * 20)
+    assert wait_until(lambda: h.listener.state is WakeState.FAILED)
+    assert (WakeState.FAILED, "wake word detector failed: RuntimeError") in h.states()
+
+
+def test_detector_without_flush_is_just_reset(make):
+    class NoFlush(FakeWakeWord):
+        flush = None  # type: ignore[assignment]
+
+    h = started(make(detector=NoFlush()))
+    base = h.detector.reset_count
+    h.feed(speech(0), *[SILENCE] * 20)
+    assert h.detector.reset_count == base + 1

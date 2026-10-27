@@ -42,6 +42,7 @@ from luna.core.prompts import (
 )
 from luna.core.router import clean_query, detect_lang
 from luna.llm.base import ChatResponse, Message, ToolCall, ToolSchema
+from luna.logs.redact import redact_text
 from luna.tools.base import ToolContext, ToolResult
 from luna.tools.builtin.datetime import current_datetime_context
 from luna.tools.registry import ToolRegistry
@@ -174,7 +175,9 @@ class Assistant:
         except Abandoned:
             return Reply(fallback_text("cancelled", lang), lang)
         except ProviderError as exc:
-            logger.warning("LLM unavailable: %s", type(exc).__name__)
+            logger.warning(
+                "LLM unavailable: %s: %s", type(exc).__name__, redact_text(str(exc))[:300]
+            )
             return Reply(fallback_text("unavailable", lang), lang)
         except _GaveUp:
             return Reply(fallback_text("gave_up", lang), lang)

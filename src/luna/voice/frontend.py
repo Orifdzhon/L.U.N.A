@@ -58,6 +58,7 @@ from luna.core.clock import Clock
 from luna.core.errors import AudioError, ProviderError
 from luna.core.events import EventBus, Status, StatusChanged, TranscriptReady
 from luna.core.models import Reply, Request, new_id
+from luna.logs.redact import redact_text
 from luna.platform.base import HotkeyListener
 from luna.stt.base import UNKNOWN_LANG, STTProvider, Transcript
 from luna.wakeword.verify import VERIFY_AFTER_MS, VERIFY_TIMEOUT_S, VerifyResult, verify_window
@@ -889,7 +890,9 @@ class VoiceFrontEnd:
                 timeout_s=self._stt_conf.timeout_s,
             )
         except ProviderError as exc:
-            logger.warning("Speech recognition failed: %s", type(exc).__name__)
+            logger.warning(
+                "Speech recognition failed: %s: %s", type(exc).__name__, redact_text(str(exc))[:300]
+            )
             self._end(turn, Status.ERROR, DETAIL_STT_FAILED)
             return None
         finally:

@@ -1,6 +1,6 @@
 # ADR 0010 — Windows installer: frozen app, setup program, first-run keys, release build
 
-- Status: **proposed**
+- Status: **accepted** (owner, 2026-10-27: all recommendations D1-D10 accepted; two editions — personal with Piper Irina, public without sherpa-onnx; Inno Setup 6.7.3 installed on the dev PC via winget)
 - Date: 2026-10-27
 - Deciders: owner (approval, decisions D1-D10 below), architect (proposal)
 - Related: [ADR 0001](0001-python-version-packaging-tooling.md) (Python 3.13, uv),

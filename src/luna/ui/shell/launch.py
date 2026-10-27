@@ -20,7 +20,7 @@ def own_launch_command(
 ) -> LaunchCommand:
     """``pythonw -m luna --tray --minimized [--config <abs>]`` in ``cwd``.
 
-    Frozen build (``sys.frozen``): ``<install dir>\luna.exe --tray --minimized [--config <abs>]``
+    Frozen build (``sys.frozen``): ``<install dir>\\luna.exe --tray --minimized [--config <abs>]``
     with the install dir as working directory, also when the running exe is ``luna-cli.exe``.
 
     ``executable`` is ``sys.executable`` (the interpreter of the current venv); ``pythonw`` is

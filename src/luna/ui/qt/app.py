@@ -15,17 +15,22 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
+import shiboken6
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from luna.app import App, build_app
+from luna.config import secrets as credentials
+from luna.config.secrets import CredentialStore
 from luna.config.settings import Settings
 from luna.platform.base import Autostart, SingleInstance
 from luna.platform.factory import create_autostart
 from luna.ui.qt.dispatch import QtUiThread
+from luna.ui.qt.keys_dialog import KeysDialog
 from luna.ui.qt.tray import QtTrayView
 from luna.ui.qt.window import QtWindowView
 from luna.ui.shell.controller import ShellController, arm_watchdog
+from luna.ui.shell.keys import KeysPresenter, has_cloud_llm_key
 from luna.ui.shell.launch import own_launch_command
 from luna.ui.shell.state import ConversationLine
 
@@ -58,6 +63,7 @@ def run_tray(
     watchdog: Callable[[], None] = arm_watchdog,
     app_factory: Callable[..., App] = build_app,
     on_ready: Callable[[QApplication, ShellController], Any] | None = None,
+    keys_store: CredentialStore | None = None,
 ) -> int:
     """Run the tray shell until Quit. ``instance`` is released when the shell quits."""
     qt_app = _application()
@@ -87,12 +93,24 @@ def run_tray(
         on_cancel=lambda: holder["controller"].cancel(),
         on_closed=on_closed,
     )
+    keys_dialogs: list[KeysDialog] = []
+
+    def show_keys() -> None:
+        if not keys_dialogs:
+            store = keys_store if keys_store is not None else credentials.default_store()
+            keys_dialogs.append(KeysDialog(KeysPresenter(settings, store)))
+        dialog = keys_dialogs[0]
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
     tray = QtTrayView(
         on_open=lambda: holder["controller"].toggle_window(),
         on_set_wake=lambda on: holder["controller"].set_wake(on),
         on_set_voice=lambda on: holder["controller"].set_voice(on),
         on_set_autostart=lambda on: holder["controller"].set_autostart(on),
         on_quit=quit_shell,
+        on_keys=show_keys,
     )
     controller = ShellController(
         app,
@@ -123,12 +141,18 @@ def run_tray(
     if not tray_available:
         window.append(ConversationLine("system", NO_TRAY_LINE))
         window.show()
+    if not has_cloud_llm_key(settings):
+        QTimer.singleShot(0, show_keys)  # a nudge on every start until a key is saved
     if on_ready is not None:
         on_ready(qt_app, controller)
     try:
         qt_app.exec()
     finally:
         ticker.stop()
+        for dialog in keys_dialogs:
+            dialog.close()
+            shiboken6.delete(dialog)  # free the widgets before the QApplication goes away
+        keys_dialogs.clear()
         signal.signal(signal.SIGINT, previous)
         controller.quit()  # idempotent: covers an exit that did not come through Quit
     return 0

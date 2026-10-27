@@ -11,7 +11,13 @@ Open-source voice assistant for Windows. Call it by voice ("Луна") to open a
 - Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md)
 - Development rules for humans and AI agents: [CLAUDE.md](CLAUDE.md)
 
-## Quick start
+## Download and install (Windows)
+
+Download `LUNA-Setup-<version>-x64.exe` from the [Releases page](https://github.com/Orifdzhon/L.U.N.A/releases) and run it: per-user install, no administrator rights, no Python needed. The setup is not code-signed, so Windows SmartScreen asks for **More info -> Run anyway**. On first start L.U.N.A. asks for a free Groq key (optionally Gemini) and stores it in Windows Credential Manager. Details (keys, data folders, model downloads, uninstall, building the setup yourself): [Install from the setup](docs/SETUP.md#install-from-the-setup).
+
+The public setup has no local Irina voice (Edge and Windows voices only): the Piper runtime brings GPL-3.0 espeak-ng. Third-party licences (including LGPL Qt/PySide6 and edge-tts) are in `THIRD_PARTY_NOTICES.txt` inside the install folder; see [licences](docs/SETUP.md#licences). Maintainers: the proposed release workflow is in [docs/release-workflow.md](docs/release-workflow.md).
+
+## Quick start (from source)
 
 ```
 winget install astral-sh.uv

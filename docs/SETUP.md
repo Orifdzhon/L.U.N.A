@@ -4,7 +4,163 @@ L.U.N.A. lives in the system tray with a small window (see [Tray mode](#tray-mod
 or runs as a text REPL (`--text`). You type or say requests ("Луна, ..."), it opens apps and sites,
 searches the web and answers, optionally out loud (see [Voice](#voice-text-to-speech)) and by
 voice via the hotkey or the wake word (see [Voice input](#voice-input-push-to-talk) and
-[Wake word](#wake-word)). For the checks after setup see [MANUAL_CHECKS.md](MANUAL_CHECKS.md).
+[Wake word](#wake-word)). To install without Python or Git see
+[Install from the setup](#install-from-the-setup). For the checks after setup see [MANUAL_CHECKS.md](MANUAL_CHECKS.md).
+
+## Install from the setup
+
+For a normal user: no Git, no `uv`, no Python. (To run from source instead, skip to
+[section 1](#1-prerequisites).)
+
+### Download and verify
+
+1. Open the [Releases page](https://github.com/Orifdzhon/L.U.N.A/releases) and download
+   `LUNA-Setup-<version>-x64.exe` from the latest release (about 130 MB). Releases are created as
+   drafts and published by the owner, so a version appears there only after that.
+2. Optional but recommended: compare the SHA-256 shown in the release notes with your file:
+
+```powershell
+Get-FileHash .\LUNA-Setup-<version>-x64.exe -Algorithm SHA256
+```
+
+### SmartScreen warning
+
+The setup is **not code-signed** (ADR 0010 D9), so Windows shows "Windows protected your PC".
+Click **More info**, then **Run anyway**. Some antivirus programs may also flag the executable
+(the app is packed with PyInstaller); if you want to be sure, check the SHA-256 above or build the
+setup yourself ([below](#build-the-setup-yourself)).
+
+### What the setup does
+
+- Per-user install, **no administrator rights and no UAC prompt**. Default folder:
+  `%LOCALAPPDATA%\Programs\L.U.N.A` (you can pick another folder in the wizard).
+- Start menu entry "L.U.N.A." and an optional desktop icon (unchecked).
+- Task **"Start L.U.N.A. when Windows starts"** (unchecked). It creates the same
+  `L.U.N.A.lnk` in your Startup folder that the tray item "Start with Windows" manages
+  (see [Start with Windows](#start-with-windows)), so you can switch it later in either place.
+- Wizard languages: English and Russian.
+- `%APPDATA%\LUNA\luna.toml` is created from a default file **only if you do not have one**; it is
+  never overwritten by an upgrade or removed by the uninstaller. Defaults: spoken replies on
+  (Edge online voice, then Windows voices), push-to-talk hotkey on, wake word off (switch it on
+  in the tray).
+- Upgrade: run a newer setup over the old one. If L.U.N.A. is running, the setup asks to close it.
+  Your settings, keys and models stay.
+
+### First run: the API keys dialog
+
+On the first start the tray app opens **"L.U.N.A. - API keys"** when no cloud LLM key is found:
+
+- **Groq key** is needed for the cloud defaults ([get one](https://console.groq.com/keys));
+  **Gemini key** is optional ([get one](https://aistudio.google.com/apikey)). Both are free tiers,
+  see [section 3](#3-api-keys-free-tiers) for the privacy note.
+- **Test** checks the key online (10 s timeout: OK / Rejected / No connection), **Save** stores
+  it, **Later** closes the dialog. The dialog opens again on every start until a cloud key is
+  saved; without a key the router still opens apps and sites, and a local LM Studio model still
+  answers.
+- Saved keys take effect after you restart L.U.N.A. (the dialog offers it).
+
+**Where keys are stored:** in **Windows Credential Manager** (Control Panel -> Credential Manager
+-> Windows Credentials -> generic credentials of the service `L.U.N.A.`, one per variable, for
+example `GROQ_API_KEY`), protected by your Windows account. Not in `luna.toml`, not in the logs,
+and the dialog never shows a saved key again.
+
+**Change a key:** tray menu -> **API keys…**, enter the new value, Save, restart.
+
+**Forget the keys:** delete the `L.U.N.A.` entries in Credential Manager, or run
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\L.U.N.A\luna-cli.exe" --forget-keys
+```
+
+(use your own install folder if you changed it). Lookup order is: environment variables,
+`.\.env`, `%APPDATA%\LUNA\.env`, then Credential Manager, so a key in the environment or a `.env`
+file overrides the saved one.
+
+### Data folders and model downloads
+
+| What | Where |
+|---|---|
+| Program | `%LOCALAPPDATA%\Programs\L.U.N.A` (exes, `LICENSE`, `THIRD_PARTY_NOTICES.txt`) |
+| Settings | `%APPDATA%\LUNA\luna.toml` |
+| Logs, app cache | `%LOCALAPPDATA%\LUNA\logs`, `%LOCALAPPDATA%\LUNA\apps.json` (see [section 6](#6-where-files-live)) |
+| Downloaded models | `%LOCALAPPDATA%\LUNA\models` |
+| API keys | Windows Credential Manager, service `L.U.N.A.` |
+
+The setup itself contains no speech or wake-word models. They download **on first use** in the
+background: the local speech model (faster-whisper "base", used when the cloud recognizer is
+unavailable), the wake-word model (Vosk, when you first switch the wake word on) and, in the
+personal edition, the Piper voices (~65 MB each). Progress and errors go to the log; a failure
+shows a tray notification. This needs internet and some hundreds of MB on drive C:. **Low space
+on C:?** Point the models to another drive in `luna.toml` (before the first download, or move the
+folder yourself):
+
+```toml
+[stt.local]
+model_dir = 'D:\LUNA\models'
+
+[wakeword]
+model_dir = 'D:\LUNA\models'
+
+[tts.piper]          # personal edition only
+model_dir = 'D:\LUNA\models'
+```
+
+### Autostart
+
+Tick the task in the wizard, or use the tray item **Start with Windows** at any time. To remove
+it by hand, run `shell:startup` (Win+R) and delete `L.U.N.A.lnk`.
+
+### Uninstall
+
+Settings -> Apps -> L.U.N.A. -> Uninstall (or `unins000.exe` in the install folder). If L.U.N.A.
+is running, you are asked to close it. Then one question is asked:
+**"Also delete your L.U.N.A. settings, logs, downloaded models and saved API keys?"**
+
+- **No** (default): only the program is removed; `%APPDATA%\LUNA`, `%LOCALAPPDATA%\LUNA` and the
+  saved keys stay, handy if you reinstall.
+- **Yes**: also deletes both data folders and runs `luna-cli.exe --forget-keys`.
+- A silent uninstall (`unins000.exe /SILENT`) always keeps your data.
+
+### Two editions: public and personal
+
+| | Public (GitHub Releases) | Personal (built by the owner) |
+|---|---|---|
+| File | `LUNA-Setup-<ver>-x64.exe` | `LUNA-Setup-<ver>-personal-x64.exe` |
+| Voices | Edge online voices, then Windows (SAPI) voices | plus the local Piper voice (Irina) |
+
+The local Piper runtime uses sherpa-onnx, which contains **espeak-ng (GPL-3.0)**, and the Irina
+voice has its own licence. They cannot be redistributed under this project's Apache-2.0 licence,
+so the public setup is built **without** sherpa-onnx and Piper is skipped automatically (one log
+line). You can build the personal edition for yourself.
+
+### Build the setup yourself
+
+You need `git`, [`uv`](https://docs.astral.sh/uv/) and [Inno Setup 6 or 7](https://jrsoftware.org/isinfo.php)
+(`winget install JRSoftware.InnoSetup`); the build script finds `ISCC.exe`, or set the `ISCC`
+environment variable to its path.
+
+```powershell
+git clone https://github.com/Orifdzhon/L.U.N.A.git
+cd L.U.N.A
+uv run --frozen --no-dev --group build python scripts/build_installer.py --edition public
+uv sync --all-extras --dev     # restore the dev environment afterwards
+```
+
+The result is `dist\LUNA-Setup-<version>-x64.exe` (4-5 minutes; the script prints the size and
+SHA-256). `--edition personal` produces `dist\LUNA-Setup-<version>-personal-x64.exe` (for your own
+use only), `--skip-setup` stops after the frozen folder `dist\luna` (no Inno Setup needed). Test a
+setup in Windows Sandbox, not on your own profile:
+[MANUAL_CHECKS.md, section N](MANUAL_CHECKS.md#n-windows-installer-adr-0010-windows-sandbox).
+The release workflow that builds the public setup on GitHub is described in
+[release-workflow.md](release-workflow.md).
+
+### Licences
+
+L.U.N.A. is [Apache-2.0](../LICENSE). The install folder contains `THIRD_PARTY_NOTICES.txt` with
+the licence texts of the bundled components. Copyleft parts are shipped unmodified as separate,
+replaceable files: **Qt 6 / PySide6 (LGPL-3.0)** (source: <https://download.qt.io/official_releases/qt/>
+and <https://code.qt.io/>) and **edge-tts (LGPL-3.0)**; you may replace them with your own build
+of the same libraries. MPL-2.0 parts (certifi, tqdm) are also unmodified.
 
 ## 1. Prerequisites
 

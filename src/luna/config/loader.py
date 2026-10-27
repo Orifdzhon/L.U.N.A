@@ -5,7 +5,9 @@ A missing file (outside an explicit path) means defaults. User values are deep-m
 defaults, so overriding one key of a provider keeps the rest.
 
 API keys come from the process environment, then from ``.env`` (``./.env``, then
-``%APPDATA%\\LUNA\\.env``) and are stored as ``SecretStr`` on the settings object.
+``%APPDATA%\\LUNA\\.env``), then from the Windows Credential Manager (``luna.config.secrets``) and
+are stored as ``SecretStr`` on the settings object. The store is used only with the real process
+environment or when passed explicitly.
 Any problem with the config raises :class:`~luna.core.errors.ConfigError` naming the key.
 """
 
@@ -18,6 +20,7 @@ from typing import Any
 from dotenv import dotenv_values
 from pydantic import ValidationError
 
+from luna.config.secrets import CredentialStore, default_store
 from luna.config.settings import Settings
 from luna.core.errors import ConfigError
 
@@ -84,12 +87,14 @@ def load_settings(
     explicit: Path | None = None,
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
+    store: CredentialStore | None = None,
 ) -> Settings:
     """Load settings from the first existing config file, or return defaults.
 
     An explicitly given path must exist. Raises ``ConfigError`` for a missing explicit file,
     malformed TOML or invalid values.
     """
+    real_env = env is None
     env = os.environ if env is None else env
     cwd = cwd or Path.cwd()
     if explicit is not None and not explicit.is_file():
@@ -112,4 +117,11 @@ def load_settings(
         settings = Settings.model_validate(merged)
     except ValidationError as exc:
         raise ConfigError(_format_validation_error(source, exc)) from exc
-    return settings.with_api_keys(_read_secrets(env, cwd))
+    secrets = _read_secrets(env, cwd)
+    if store is None and real_env:
+        store = default_store()
+    if store is not None:  # lowest priority: only names nothing else provided
+        for name in settings.api_key_names():
+            if not secrets.get(name, "").strip() and (saved := store.get(name)):
+                secrets[name] = saved
+    return settings.with_api_keys(secrets)

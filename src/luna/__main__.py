@@ -50,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     wake.add_argument(
         "--no-wake", action="store_true", help="no wake word (overrides wakeword.enabled)"
     )
+    parser.add_argument(
+        "--forget-keys",
+        action="store_true",
+        help="delete the API keys saved in Windows Credential Manager and exit",
+    )
     parser.add_argument("--config", type=Path, metavar="PATH", help="path to luna.toml")
     return parser
 
@@ -77,11 +82,25 @@ def _report(message: str) -> None:
         print(message, file=sys.stderr)
 
 
+def _forget_keys() -> int:
+    from luna.config.secrets import SecretStoreError, default_store, forget_keys
+
+    try:
+        removed = forget_keys(default_store())
+    except SecretStoreError as exc:
+        _report(f"luna: {exc}")
+        return 1
+    _report(f"luna: deleted saved keys: {', '.join(removed) or 'none'}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.text and args.tray:
         parser.error("--text and --tray are mutually exclusive")
+    if args.forget_keys:
+        return _forget_keys()
     try:
         settings = load_settings(args.config)
     except (OSError, ConfigError) as exc:

@@ -221,3 +221,16 @@ def test_voice_on_no_output_device_degrades(made, monkeypatch):
     app = made(tts=FakeTTS())
     assert app.speaker is None
     assert any("no audio output device" in w for w in app.warnings)
+
+
+def test_piper_skipped_before_any_download_without_sherpa(made, monkeypatch):
+    ensured = []
+    monkeypatch.setattr("luna.tts.sapi.SapiTTS", _FakeSapi)
+    monkeypatch.setattr(
+        "luna.tts.piper_model.PiperModelStore.ensure", lambda *a, **k: ensured.append(1)
+    )
+    monkeypatch.setattr("importlib.util.find_spec", lambda name, *a: None)
+    app = made(platform="win32", player=FakePlayer())
+    assert app.speaker._tts.name == "edge+sapi"
+    assert len([w for w in app.warnings if "Piper" in w]) == 1
+    assert ensured == []

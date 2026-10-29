@@ -89,12 +89,16 @@ def run_tray(
         finally:
             qt_app.quit()
 
+    lang = resolve_language(settings.ui.language)
     window = QtWindowView(
         on_submit=lambda text: holder["controller"].submit(text),
         on_cancel=lambda: holder["controller"].cancel(),
         on_closed=on_closed,
+        on_listen=lambda: holder["controller"].toggle_listen(),
+        on_open_file=lambda index, action: holder["controller"].open_result(index, action),
+        history_lines=settings.ui.history_lines,
+        lang=lang,
     )
-    lang = resolve_language(settings.ui.language)
     keys_dialogs: list[KeysDialog] = []
 
     def show_keys() -> None:
@@ -125,6 +129,7 @@ def run_tray(
         conf=settings.ui,
         watchdog=watchdog,
         on_quit=on_quit,
+        lang=lang,
     )
     holder["controller"] = controller
     qt_app.aboutToQuit.connect(controller.quit)

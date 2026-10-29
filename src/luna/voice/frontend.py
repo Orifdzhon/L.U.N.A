@@ -387,6 +387,10 @@ class VoiceFrontEnd:
         """Session counters: first-stage detections and the verifier's verdicts."""
         return dict(self._wake_stats)
 
+    def press(self) -> None:
+        """Same as the push-to-talk hotkey (the window's microphone button)."""
+        self._on_press()
+
     # ---- hotkey (background thread of the listener) ---------------------------------
 
     def _on_press(self) -> None:

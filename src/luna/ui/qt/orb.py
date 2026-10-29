@@ -198,7 +198,9 @@ class OrbWidget(QWidget):
         self._timer.stop()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is self._window and event.type() == QEvent.Type.WindowStateChange:
+        if watched is getattr(self, "_window", None) and (
+            event.type() == QEvent.Type.WindowStateChange
+        ):
             self._sync_timer()
         return False
 

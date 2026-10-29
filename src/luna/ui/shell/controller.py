@@ -29,13 +29,16 @@ from luna.core.events import (
     TranscriptReady,
 )
 from luna.core.models import Reply, Request
+from luna.llm.base import ToolCall
 from luna.platform.base import Autostart, LaunchCommand
+from luna.tools.base import ToolContext, ToolResult
 from luna.ui.replies import is_silent
 from luna.ui.shell.state import (
     Conversation,
     ConversationLine,
     IconState,
     TrayMenuState,
+    caption_for,
     derive_icon_state,
     tooltip_for,
 )
@@ -52,11 +55,24 @@ WAKE_LABEL = "Listen for «Луна»"
 WAKE_STARTING_LABEL = "Starting wake word…"
 COMMANDS_HINT = "Commands are in the tray menu"
 NOTIFY_TITLE = "L.U.N.A."
+NO_VOICE_REASON = "Voice input is not available"
 
 LineKind = Literal["user", "assistant", "action", "system"]
 Clock = Callable[[], float]
 StartThread = Callable[[str, Callable[[], None]], None]
 Job = Callable[[], None]
+
+
+class _DenyConfirmer:
+    def confirm(self, prompt: str) -> bool:
+        return False
+
+
+class VoicePress(Protocol):
+    enabled: bool
+
+    def enable(self, *, hotkey_required: bool = True) -> str | None: ...
+    def press(self) -> bool: ...
 
 
 class Cancellable(Protocol):
@@ -165,6 +181,7 @@ class ShellController:
             self._notify("degraded", "L.U.N.A. started with limited features; see its window.")
         self._refresh_icon()
         self._refresh_status()
+        self._refresh_voice_available()
         if wake:
             self._queue_wake_on(from_start=True)
         else:
@@ -298,6 +315,32 @@ class ShellController:
         if cancel is not None:
             cancel.set()
 
+    def open_result(self, index: int, action: str) -> None:
+        """A "Open N" / "Folder N" chip: ``open_file`` through the registry (logged, SAFE)."""
+        if self._quitting or action not in ("open", "reveal") or not 1 <= index <= 10:
+            return
+        self._request_seq += 1
+        number = self._request_seq
+        self._start_thread(f"luna-ui-open-{number}", lambda: self._run_open(number, index, action))
+
+    def _run_open(self, number: int, index: int, action: str) -> None:
+        call = ToolCall(f"ui-open-{number}", "open_file", {"index": index, "action": action})
+        ctx = ToolContext(f"ui-open-{number}", "text", _DenyConfirmer(), "")
+        try:
+            result: ToolResult | None = self._app.registry.execute(call, ctx)
+        except Exception:
+            logger.exception("open_file from the window failed")
+            result = None
+        self._ui.post(lambda: self._open_done(result))
+
+    def _open_done(self, result: ToolResult | None) -> None:
+        if self._quitting:
+            return
+        if result is None:
+            self._line("system", "Could not open the file. See the log.")
+        else:
+            self._add(self._conversation.add_action(result))
+
     # ---- speech ----------------------------------------------------------------------
 
     def _speak(self, reply: Reply) -> None:
@@ -315,6 +358,33 @@ class ShellController:
         return None
 
     # ---- window ----------------------------------------------------------------------
+
+    def toggle_listen(self) -> None:
+        """The window's microphone button: push-to-talk, like the hotkey (never blocks the UI)."""
+        voice = self._app.voice_input
+        if self._quitting:
+            return
+        if voice is None:
+            self._line("system", NO_VOICE_REASON)
+            return
+        self._start_thread("luna-ui-mic", lambda: self._run_press(voice))
+
+    def _run_press(self, voice: VoicePress) -> None:
+        reason: str | None = None
+        try:
+            if not voice.enabled:
+                reason = voice.enable(hotkey_required=False)
+            if reason is None and not voice.press():
+                reason = "listening is off"
+        except Exception as exc:
+            logger.warning("push-to-talk from the window failed", exc_info=True)
+            reason = f"unexpected error ({type(exc).__name__})"
+        if reason is not None:
+            self._ui.post(lambda: self._mic_failed(reason))
+
+    def _mic_failed(self, reason: str) -> None:
+        if not self._quitting:
+            self._line("system", f"Cannot listen: {reason}.")
 
     def toggle_window(self) -> None:
         if self._quitting:
@@ -520,6 +590,11 @@ class ShellController:
         )
         self._icon = state
         self._tray.set_state(state, tooltip_for(state))
+        self._window.set_state(state, caption_for(state))
+
+    def _refresh_voice_available(self) -> None:
+        available = self._app.voice_input is not None
+        self._window.set_voice_available(available, "" if available else NO_VOICE_REASON)
 
     def _refresh_status(self) -> None:
         parts = [self._status.value if self._status is not None else Status.IDLE.value]

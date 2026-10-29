@@ -33,6 +33,21 @@ _TOOLTIPS = {
 }
 
 
+_CAPTIONS = {
+    IconState.IDLE: "Idle",
+    IconState.WAKE: "Listening for «Luna»…",
+    IconState.RECORDING: "Listening…",
+    IconState.THINKING: "Thinking…",
+    IconState.SPEAKING: "Speaking…",
+    IconState.ERROR: "Something went wrong",
+}
+
+
+def caption_for(state: IconState) -> str:
+    """Short text under the orb in the window."""
+    return _CAPTIONS[state]
+
+
 def tooltip_for(state: IconState) -> str:
     return _TOOLTIPS[state]
 
@@ -57,10 +72,42 @@ def derive_icon_state(
     return IconState.IDLE
 
 
+MAX_FILE_CHIPS = 10
+
+
+@dataclass(frozen=True)
+class FileChip:
+    """One ``find_file`` hit as the window shows it: buttons "Open N" / "Folder N" (no path)."""
+
+    index: int  # 1-based, as ``open_file(index, ...)`` expects
+    label: str = ""  # file name for the tooltip; never a full path
+
+
 @dataclass(frozen=True)
 class ConversationLine:
     kind: Literal["user", "assistant", "action", "system"]
     text: str
+    ok: bool | None = None  # action lines: chip colour
+    files: tuple[FileChip, ...] = ()  # find_file hits (C6)
+
+
+def file_chips(result: ToolResult) -> tuple[FileChip, ...]:
+    """Chips for a successful ``find_file`` result; empty for every other tool."""
+    if result.tool != "find_file" or not result.ok:
+        return ()
+    raw = result.data.get("results")
+    if not isinstance(raw, list):
+        return ()
+    chips: list[FileChip] = []
+    for item in raw[:MAX_FILE_CHIPS]:
+        if not isinstance(item, dict):
+            continue
+        index = item.get("index")
+        if not isinstance(index, int) or isinstance(index, bool) or not 1 <= index <= 10:
+            continue
+        name = item.get("name")
+        chips.append(FileChip(index, name if isinstance(name, str) else ""))
+    return tuple(chips)
 
 
 def format_action_line(result: ToolResult) -> ConversationLine:
@@ -72,7 +119,7 @@ def format_action_line(result: ToolResult) -> ConversationLine:
             if len(summary) > MAX_SUMMARY_CHARS:
                 summary = summary[: MAX_SUMMARY_CHARS - 1].rstrip() + "…"
             text = f"{text} - {summary}"
-    return ConversationLine("action", text)
+    return ConversationLine("action", text, ok=result.ok, files=file_chips(result))
 
 
 class Conversation:

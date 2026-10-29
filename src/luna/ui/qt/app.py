@@ -92,6 +92,9 @@ def run_tray(
         on_submit=lambda text: holder["controller"].submit(text),
         on_cancel=lambda: holder["controller"].cancel(),
         on_closed=on_closed,
+        on_listen=lambda: holder["controller"].toggle_listen(),
+        on_open_file=lambda index, action: holder["controller"].open_result(index, action),
+        history_lines=settings.ui.history_lines,
     )
     keys_dialogs: list[KeysDialog] = []
 

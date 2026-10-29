@@ -67,7 +67,7 @@ def test_conversation_rejects_bad_bound():
 def test_action_line_ok_and_failed():
     assert format_action_line(ToolResult("open_website", True, "")).text == "open_website: ok"
     line = format_action_line(ToolResult("open_app", False, "not found"))
-    assert line == ConversationLine("action", "open_app: failed - not found")
+    assert line == ConversationLine("action", "open_app: failed - not found", ok=False)
 
 
 def test_action_line_untrusted_has_no_summary():

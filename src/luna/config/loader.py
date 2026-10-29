@@ -2,7 +2,8 @@
 
 Search order: explicit ``--config PATH`` -> ``%APPDATA%\\LUNA\\luna.toml`` -> ``./luna.toml``.
 A missing file (outside an explicit path) means defaults. User values are deep-merged over the
-defaults, so overriding one key of a provider keeps the rest.
+defaults, so overriding one key of a provider keeps the rest. The dialog-generated
+``%APPDATA%\\LUNA\\providers.toml`` (``[llm]`` only) is merged on top of that.
 
 API keys come from the process environment, then from ``.env`` (``./.env``, then
 ``%APPDATA%\\LUNA\\.env``), then from the Windows Credential Manager (``luna.config.secrets``) and
@@ -21,6 +22,8 @@ from dotenv import dotenv_values
 from pydantic import ValidationError
 
 from luna.config import secrets as credentials
+from luna.config.providers_file import deep_merge as _deep_merge
+from luna.config.providers_file import providers_path, read_overlay
 from luna.config.secrets import CredentialStore
 from luna.config.settings import Settings
 from luna.core.errors import ConfigError
@@ -44,16 +47,6 @@ def candidate_paths(
         paths.append(Path(appdata) / "LUNA" / CONFIG_FILENAME)
     paths.append((cwd or Path.cwd()) / CONFIG_FILENAME)
     return paths
-
-
-def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in override.items():
-        if isinstance(value, Mapping) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
 
 
 def _format_validation_error(path: Path | None, exc: ValidationError) -> str:
@@ -118,6 +111,13 @@ def load_settings(
         settings = Settings.model_validate(merged)
     except ValidationError as exc:
         raise ConfigError(_format_validation_error(source, exc)) from exc
+    overlay_path = providers_path(env)
+    overlay = read_overlay(overlay_path)
+    if overlay:  # the dialog's generated file wins over luna.toml (ADR 0011 D11)
+        try:
+            settings = Settings.model_validate(_deep_merge(merged, overlay))
+        except ValidationError as exc:
+            raise ConfigError(_format_validation_error(overlay_path, exc)) from exc
     secrets = _read_secrets(env, cwd)
     if store is None and real_env:
         store = credentials.default_store()

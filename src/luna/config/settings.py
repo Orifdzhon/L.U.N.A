@@ -48,6 +48,9 @@ class ProviderSettings(_Section):
     supports_tool_choice: bool | None = None
     reasoning_effort: str | None = None
     max_tokens: int | None = Field(default=None, gt=0)
+    # Result of the dialog's tool-calling probe; False = the chain sends this provider no tools
+    # (it only answers). None = unknown, tools are sent as usual (ADR 0011 D16).
+    supports_tools: bool | None = None
 
 
 def _default_providers() -> dict[str, ProviderSettings]:

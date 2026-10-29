@@ -79,8 +79,8 @@ def test_find_returns_untrusted_wrapped_relative_paths(env):
     assert "secretuser" not in text and str(env.base) not in text
     first = result.data["results"][0]
     assert result.data["count"] == 2 and first["index"] == 1
-    assert first["path"].startswith(str(env.root.path))  # full path only in data
-    assert first["kind"] == "pdf" and first["size"] == 2048
+    assert first == {"index": 1, "name": "Резюме_2026.pdf"}  # no full path in data
+    assert str(env.base) not in str(result.data)
     assert text.rstrip().endswith(text.split("id=")[1].split(">")[0] + ">")
 
 
@@ -123,10 +123,7 @@ def test_send_names_to_llm_false_sends_only_counts(env):
     assert result.untrusted
     assert "Секретный" not in result.summary and "Documents" not in result.summary
     assert "1 pdf" in result.summary and "1 folder" in result.summary
-    assert (
-        "Секретный_отчет.pdf"
-        in result.data["results"][0]["path"] + result.data["results"][1]["path"]
-    )
+    assert {r["name"] for r in result.data["results"]} == {"Секретный_отчет.pdf", "отчет папка"}
 
 
 @pytest.mark.parametrize("query", ["", "   ", "..\\x", "*.pdf", "пдф"])
@@ -146,7 +143,7 @@ def test_kind_argument_filters(env):
     make_files(env.root.path, ["отчет.pdf", "отчет.docx"])
     find_tool, _ = env.tools()
     result = find(find_tool, "отчет", kind="pdf")
-    assert [r["kind"] for r in result.data["results"]] == ["pdf"]
+    assert [r["name"] for r in result.data["results"]] == ["отчет.pdf"]
 
 
 # -- open_file ---------------------------------------------------------------------------------

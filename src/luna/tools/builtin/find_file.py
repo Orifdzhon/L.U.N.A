@@ -183,13 +183,9 @@ class FindFileTool:
             "timed_out": outcome.timed_out,
             "backend": outcome.backend,
             "results": [
-                {
-                    "index": i,
-                    "kind": _kind_of(hit, self._kinds),
-                    "size": hit.size,
-                    "modified": hit.modified.isoformat() if hit.modified else None,
-                    "path": str(hit.path),
-                }
+                # For the UI chips: the number open_file accepts and a short display name.
+                # Full paths stay in FileResults.
+                {"index": i, "name": clean_text(hit.path.name, max_chars=80, keep_newlines=False)}
                 for i, hit in enumerate(outcome.hits, 1)
             ],
         }

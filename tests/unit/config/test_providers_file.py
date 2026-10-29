@@ -161,3 +161,16 @@ def test_forget_keys_cli_includes_overlay_names(tmp_path, monkeypatch, capsys):
     assert main(["--forget-keys"]) == 0
     assert store.values == {}
     assert "LUNA_MINE_API_KEY" in capsys.readouterr().err
+
+
+def test_luna_toml_sets_chain(tmp_path):
+    from luna.config.loader import luna_toml_sets_chain
+
+    env, folder = appdata(tmp_path)
+    assert luna_toml_sets_chain(env=env, cwd=tmp_path) is False
+    (folder / "luna.toml").write_text('[app]\nlog_level = "DEBUG"\n', encoding="utf-8")
+    assert luna_toml_sets_chain(env=env, cwd=tmp_path) is False
+    (folder / "luna.toml").write_text('[llm]\nchain = ["groq"]\n', encoding="utf-8")
+    assert luna_toml_sets_chain(env=env, cwd=tmp_path) is True
+    (folder / "luna.toml").write_text("[llm\n", encoding="utf-8")
+    assert luna_toml_sets_chain(env=env, cwd=tmp_path) is False

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from luna.app import App, build_app
 from luna.config import secrets as credentials
+from luna.config.loader import luna_toml_sets_chain
 from luna.config.providers_file import providers_path
 from luna.config.secrets import CredentialStore
 from luna.config.settings import Settings
@@ -37,6 +38,7 @@ from luna.ui.shell.keys import has_cloud_llm_key
 from luna.ui.shell.launch import own_launch_command
 from luna.ui.shell.providers import ProvidersPresenter
 from luna.ui.shell.state import ConversationLine
+from luna.ui.shell.strings import resolve_language
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +117,7 @@ def run_tray(
         on_cancel=lambda: holder["controller"].cancel(),
         on_closed=on_closed,
     )
+    lang = resolve_language(settings.ui.language)
     keys_dialogs: list[ProvidersDialog] = []
     restart = {"requested": False}
 
@@ -129,8 +132,15 @@ def run_tray(
             if target is None:
                 QMessageBox.warning(None, "L.U.N.A.", "%APPDATA% is not set: cannot save settings")
                 return
-            presenter = ProvidersPresenter(settings, store, load_presets(), target)
-            keys_dialogs.append(ProvidersDialog(presenter, on_restart=request_restart))
+            presenter = ProvidersPresenter(
+                settings,
+                store,
+                load_presets(),
+                target,
+                lang=lang,
+                order_overridden=luna_toml_sets_chain(args.config),
+            )
+            keys_dialogs.append(ProvidersDialog(presenter, lang=lang, on_restart=request_restart))
         dialog = keys_dialogs[0]
         dialog.show()
         dialog.raise_()
@@ -143,6 +153,7 @@ def run_tray(
         on_set_autostart=lambda on: holder["controller"].set_autostart(on),
         on_quit=quit_shell,
         on_keys=show_keys,
+        lang=lang,
     )
     controller = ShellController(
         app,

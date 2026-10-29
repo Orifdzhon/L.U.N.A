@@ -14,12 +14,12 @@ from luna.llm.presets import load_presets
 from luna.logs.redact import clear_secrets, redact_text
 from luna.ui.shell.keys import KeyCheck, has_cloud_llm_key
 from luna.ui.shell.providers import (
-    NO_TOOLS_WARNING,
     ProviderCheck,
     ProvidersPresenter,
     ToolSupport,
     check_provider,
 )
+from luna.ui.shell.strings import t
 
 BASE = "https://llm.example.com/v1"
 
@@ -222,7 +222,7 @@ def test_add_custom(tmp_path):
 
 def test_set_base_url_only_for_custom_and_resets_tools(tmp_path):
     p, _ = make(tmp_path)
-    with pytest.raises(ValueError, match="fixed"):
+    with pytest.raises(ValueError, match="нельзя"):
         p.set_base_url(0, BASE)
     i = p.add_custom("mine", BASE, "m")
     p.drafts[i].conf.supports_tools = True
@@ -235,15 +235,15 @@ def test_set_base_url_only_for_custom_and_resets_tools(tmp_path):
 
 def test_key_status_texts(tmp_path):
     p, store = make(tmp_path)
-    assert p.key_status(0) == "not set"
-    assert p.key_status(2) == "no key needed"
+    assert p.key_status(0) == t("providers.key.not_set", "ru")
+    assert p.key_status(2) == t("providers.key.none", "ru")
     store.set("GROQ_API_KEY", "gk-1234")
-    assert p.key_status(0) == "saved"
+    assert p.key_status(0) == t("providers.key.saved", "ru")
     settings = Settings().with_api_keys({"GROQ_API_KEY": "env-12345"})
     p2, _ = make(tmp_path, settings, InMemoryStore({"GROQ_API_KEY": "saved-1234"}))
-    assert "overrides" in p2.key_status(0)
+    assert t("providers.key.overridden", "ru") == p2.key_status(0)
     p3, _ = make(tmp_path, settings)
-    assert p3.key_status(0) == "set in environment / .env"
+    assert p3.key_status(0) == t("providers.key.env", "ru")
 
 
 def test_save_key_and_redaction(tmp_path):
@@ -252,7 +252,7 @@ def test_save_key_and_redaction(tmp_path):
     assert not p.save_key(2, "ignored-1234")  # local provider: no key name
     assert p.save_key(0, " gk-saved-value ")
     assert store.values == {"GROQ_API_KEY": "gk-saved-value"}
-    assert p.key_status(0) == "saved"
+    assert p.key_status(0) == t("providers.key.saved", "ru")
     assert "gk-saved-value" not in redact_text("gk-saved-value")
     assert p.key_for_test(0, "") == "gk-saved-value"
     assert p.key_for_test(0, " typed ") == "typed"
@@ -263,7 +263,9 @@ def test_record_check_sets_supports_tools_and_warnings(tmp_path):
     p, _ = make(tmp_path)
     assert any("не проверена" in w for w in p.warnings(0))
     p.record_check(0, ProviderCheck(KeyCheck.OK, ToolSupport.NO))
-    assert p.drafts[0].conf.supports_tools is False and NO_TOOLS_WARNING in p.warnings(0)
+    assert p.drafts[0].conf.supports_tools is False and t(
+        "providers.warn.no_tools", "ru"
+    ) in p.warnings(0)
     p.record_check(0, ProviderCheck(KeyCheck.OK, ToolSupport.YES))
     assert p.drafts[0].conf.supports_tools is True and p.warnings(0) == []
     p.record_check(0, ProviderCheck(KeyCheck.OK, ToolSupport.UNCLEAR))
@@ -304,11 +306,11 @@ def test_save_rejects_empty_chain_and_missing_model(tmp_path):
     p, _ = make(tmp_path)
     for i in range(len(p.drafts)):
         p.set_enabled(i, False)
-    with pytest.raises(ConfigError, match="at least one"):
+    with pytest.raises(ConfigError, match="хотя бы"):
         p.save()
     by_id = {x.id: x for x in p.presets}
     i = p.add_from_preset(by_id["openrouter"])  # no default model
-    with pytest.raises(ConfigError, match="no model"):
+    with pytest.raises(ConfigError, match="не указана модель"):
         p.save()
     p.set_model(i, "x/y:free")
     p.save()

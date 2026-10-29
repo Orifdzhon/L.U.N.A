@@ -33,21 +33,19 @@ from luna.core.errors import ConfigError
 from luna.llm.presets import ProviderPreset
 from luna.ui.shell.keys import KeyCheck
 from luna.ui.shell.providers import (
-    STT_NOTE,
     ProviderCheck,
     ProvidersPresenter,
-    ToolSupport,
     check_provider,
 )
+from luna.ui.shell.strings import t
 
 logger = logging.getLogger(__name__)
 
-RESTART_NOTE = "Saved. The new setup applies after a restart."
-RESTART_LABEL = "Перезапустить L.U.N.A."
-TOOLS_TEXT = {
-    ToolSupport.YES: "tools: yes",
-    ToolSupport.UNCLEAR: "tools: unclear (the model answered without calling the tool)",
-    ToolSupport.NO: "tools: no",
+CHECK_KEYS = {
+    KeyCheck.OK: "providers.check.ok",
+    KeyCheck.REJECTED: "providers.check.rejected",
+    KeyCheck.NO_CONNECTION: "providers.check.no_connection",
+    KeyCheck.ERROR: "providers.check.error",
 }
 
 CheckFn = Callable[[str, str, str | None], ProviderCheck]
@@ -62,19 +60,19 @@ class _Bridge(QObject):
 
 
 class _CustomDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, lang: str = "en") -> None:
         super().__init__(parent)
-        self.setWindowTitle("Custom provider (OpenAI-compatible)")
+        self.setWindowTitle(t("providers.custom_title", lang))
         form = QFormLayout(self)
         self.name = QLineEdit()
-        self.name.setPlaceholderText("e.g. myserver")
+        self.name.setPlaceholderText(t("providers.custom_name_hint", lang))
         self.url = QLineEdit()
         self.url.setPlaceholderText("https://host/v1")
         self.model = QLineEdit()
-        form.addRow("Name", self.name)
-        form.addRow("Base URL", self.url)
-        form.addRow("Model", self.model)
-        ok = QPushButton("Add")
+        form.addRow(t("providers.custom_name", lang), self.name)
+        form.addRow(t("providers.base_url", lang), self.url)
+        form.addRow(t("providers.model", lang), self.model)
+        ok = QPushButton(t("providers.custom_add", lang))
         ok.clicked.connect(lambda _c=False: self.accept())
         form.addRow(ok)
 
@@ -87,12 +85,14 @@ class ProvidersDialog(QDialog):
         presenter: ProvidersPresenter,
         parent: QWidget | None = None,
         *,
+        lang: str = "en",
         run_check: CheckFn = _default_check,
         open_url: Callable[[str], object] = lambda url: QDesktopServices.openUrl(QUrl(url)),
         on_restart: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("L.U.N.A. - Models / providers")
+        self._lang = lang
+        self.setWindowTitle(t("providers.title", lang))
         self.resize(780, 460)
         self._presenter = presenter
         self._run_check = run_check
@@ -108,14 +108,14 @@ class ProvidersDialog(QDialog):
 
         # left: the chain
         left = QVBoxLayout()
-        left.addWidget(QLabel("Order (the first one answers first)"))
+        left.addWidget(QLabel(t("providers.order", lang)))
         self.list = QListWidget()
         left.addWidget(self.list)
         row = QHBoxLayout()
-        self.up_button = QPushButton("Up")
-        self.down_button = QPushButton("Down")
-        self.remove_button = QPushButton("Remove")
-        self.add_button = QPushButton("Add provider")
+        self.up_button = QPushButton(t("providers.up", lang))
+        self.down_button = QPushButton(t("providers.down", lang))
+        self.remove_button = QPushButton(t("providers.remove", lang))
+        self.add_button = QPushButton(t("providers.add", lang))
         for button in (self.up_button, self.down_button, self.remove_button, self.add_button):
             row.addWidget(button)
         left.addLayout(row)
@@ -125,7 +125,7 @@ class ProvidersDialog(QDialog):
             action = self.add_menu.addAction(preset.label)
             action.triggered.connect(lambda _c=False, p=preset: self._add_preset(p))
         self.add_menu.addSeparator()
-        self.add_menu.addAction("Custom (OpenAI-compatible)...").triggered.connect(
+        self.add_menu.addAction(t("providers.custom_item", lang)).triggered.connect(
             lambda _c=False: self._ask_custom()
         )
         self.add_button.setMenu(self.add_menu)
@@ -138,24 +138,24 @@ class ProvidersDialog(QDialog):
         self.url_edit = QLineEdit()
         self.model_box = QComboBox()
         self.model_box.setEditable(True)
-        self.fetch_button = QPushButton("Fetch models")
+        self.fetch_button = QPushButton(t("providers.fetch", lang))
         self.key_edit = QLineEdit()
         self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key_edit.setPlaceholderText("paste the key here")
+        self.key_edit.setPlaceholderText(t("providers.key_placeholder", lang))
         self.key_status = QLabel("")
-        self.get_key_button = QPushButton("Get a key")
-        self.test_button = QPushButton("Test")
+        self.get_key_button = QPushButton(t("providers.get_key", lang))
+        self.test_button = QPushButton(t("providers.test", lang))
         self.result = QLabel("")
         self.result.setWordWrap(True)
         self.warning = QLabel("")
         self.warning.setWordWrap(True)
         form = QFormLayout()
-        form.addRow("Base URL", self.url_edit)
+        form.addRow(t("providers.base_url", lang), self.url_edit)
         model_row = QHBoxLayout()
         model_row.addWidget(self.model_box, 1)
         model_row.addWidget(self.fetch_button)
-        form.addRow("Model", model_row)
-        form.addRow("Key", self.key_edit)
+        form.addRow(t("providers.model", lang), model_row)
+        form.addRow(t("providers.key", lang), self.key_edit)
         for widget in (self.title, self.preset_note):
             right.addWidget(widget)
         right.addLayout(form)
@@ -169,18 +169,22 @@ class ProvidersDialog(QDialog):
         right.addStretch(1)
         body.addLayout(right, 2)
 
-        self.stt_note = QLabel(STT_NOTE)
+        self.stt_note = QLabel(t("providers.stt_note", lang))
         self.stt_note.setWordWrap(True)
         outer.addWidget(self.stt_note)
+        self.order_hint = QLabel(t("providers.order_hint", lang))
+        self.order_hint.setWordWrap(True)
+        self.order_hint.setVisible(presenter.order_overridden)
+        outer.addWidget(self.order_hint)
         self.note = QLabel("")
         self.note.setWordWrap(True)
         outer.addWidget(self.note)
         bottom = QHBoxLayout()
         bottom.addStretch(1)
-        self.save_button = QPushButton("Save")
-        self.restart_button = QPushButton(RESTART_LABEL)
+        self.save_button = QPushButton(t("providers.save", lang))
+        self.restart_button = QPushButton(t("providers.restart", lang))
         self.restart_button.setVisible(False)
-        self.close_button = QPushButton("Close")
+        self.close_button = QPushButton(t("providers.close", lang))
         for button in (self.save_button, self.restart_button, self.close_button):
             bottom.addWidget(button)
         outer.addLayout(bottom)
@@ -273,7 +277,7 @@ class ProvidersDialog(QDialog):
         self._refresh_list(self._presenter.add_from_preset(preset))
 
     def _ask_custom(self) -> None:
-        dialog = _CustomDialog(self)
+        dialog = _CustomDialog(self, self._lang)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.add_custom(dialog.name.text(), dialog.url.text(), dialog.model.text())
 
@@ -281,7 +285,7 @@ class ProvidersDialog(QDialog):
         try:
             index = self._presenter.add_custom(name, url, model)
         except ValueError as exc:
-            self.note.setText(f"Cannot add: {exc}")
+            self.note.setText(t("providers.cannot_add", self._lang, error=exc))
             return False
         self._refresh_list(index)
         return True
@@ -302,7 +306,7 @@ class ProvidersDialog(QDialog):
         try:
             self._presenter.set_base_url(row, self.url_edit.text())
         except ValueError as exc:
-            self.note.setText(f"Base URL: {exc}")
+            self.note.setText(t("providers.url_error", self._lang, error=exc))
             return
         self._show_warnings(row)
 
@@ -319,14 +323,14 @@ class ProvidersDialog(QDialog):
         draft = self._presenter.drafts[row]
         key = self._presenter.key_for_test(row, self.key_edit.text())
         if self._presenter.needs_key(row) and not key:
-            self.result.setText("Enter a key first")
+            self.result.setText(t("providers.enter_key", self._lang))
             return
         model = "" if fetch_only else self.model_box.currentText().strip()
         if not fetch_only and not model:
-            self.result.setText("Enter a model name first")
+            self.result.setText(t("providers.enter_model", self._lang))
             return
         base_url, name = draft.conf.base_url, draft.name
-        self.result.setText("Testing...")
+        self.result.setText(t("providers.testing", self._lang))
         self.test_button.setEnabled(False)
         self.fetch_button.setEnabled(False)
 
@@ -349,13 +353,14 @@ class ProvidersDialog(QDialog):
         self._presenter.record_check(row, check)
         if self._current() != row:
             return
-        parts = [check.key.value]
+        lang = self._lang
+        parts = [t(CHECK_KEYS[check.key], lang)]
         if check.tools is not None:
-            parts.append(TOOLS_TEXT[check.tools])
+            parts.append(t(f"providers.tools.{check.tools.value}", lang))
         if check.latency_ms is not None:
-            parts.append(f"{check.latency_ms} ms")
+            parts.append(t("providers.latency", lang, ms=check.latency_ms))
         if check.models:
-            parts.append(f"{len(check.models)} models")
+            parts.append(t("providers.models_count", lang, n=len(check.models)))
             self._fill_models(check.models)
         self.result.setText(" - ".join(parts))
         self._show_warnings(row)
@@ -384,12 +389,12 @@ class ProvidersDialog(QDialog):
             self._presenter.save()
         except SecretStoreError as exc:
             logger.warning("[keys] %s", exc)
-            self.note.setText(f"Could not save the key: {exc}")
+            self.note.setText(t("providers.cannot_save_key", self._lang, error=exc))
             return False
         except ConfigError as exc:
-            self.note.setText(f"Could not save: {exc}")
+            self.note.setText(t("providers.cannot_save", self._lang, error=exc))
             return False
-        self.note.setText(RESTART_NOTE)
+        self.note.setText(t("providers.saved", self._lang))
         self.restart_button.setVisible(True)
         logger.info("[providers] providers.toml saved")
         return True

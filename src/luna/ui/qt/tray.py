@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from luna.ui.qt.icons import make_icons
 from luna.ui.shell.state import IconState, TrayMenuState
+from luna.ui.shell.strings import t
 
 
 class QtTrayView:
@@ -23,19 +24,20 @@ class QtTrayView:
         on_set_autostart: Callable[[bool], None],
         on_quit: Callable[[], None],
         on_keys: Callable[[], None] | None = None,
+        lang: str = "en",
     ) -> None:
         self._on_open = on_open
         self._icons = make_icons()
         self._tray = QSystemTrayIcon(self._icons[IconState.IDLE])
         self._menu = QMenu()
-        self.wake_action = self._checkable("Listen for «Луна»", on_set_wake)
-        self.voice_action = self._checkable("Voice replies", on_set_voice)
-        self.open_action = QAction("Open window", self._menu)
+        self.wake_action = self._checkable(t("tray.wake", lang), on_set_wake)
+        self.voice_action = self._checkable(t("tray.voice", lang), on_set_voice)
+        self.open_action = QAction(t("tray.open", lang), self._menu)
         self.open_action.triggered.connect(lambda _checked=False: on_open())
-        self.autostart_action = self._checkable("Start with Windows", on_set_autostart)
-        self.keys_action = QAction("Models / providers…", self._menu)
+        self.autostart_action = self._checkable(t("tray.autostart", lang), on_set_autostart)
+        self.keys_action = QAction(t("tray.keys", lang), self._menu)
         self.keys_action.triggered.connect(lambda _checked=False: on_keys() if on_keys else None)
-        self.quit_action = QAction("Quit", self._menu)
+        self.quit_action = QAction(t("tray.quit", lang), self._menu)
         self.quit_action.triggered.connect(lambda _checked=False: on_quit())
         for action in (
             self.wake_action,

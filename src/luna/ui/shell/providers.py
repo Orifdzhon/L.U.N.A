@@ -1,4 +1,3 @@
-# ruff: noqa: RUF001
 """Models / providers dialog logic without Qt (ADR 0011, Feature D).
 
 ``check_provider`` is the dialog's *Test* (blocking: run it in a worker thread);
@@ -27,22 +26,11 @@ from luna.core.errors import ConfigError
 from luna.llm.presets import LOCAL_HOSTS, ProviderPreset, validate_base_url
 from luna.logs.redact import register_secret
 from luna.ui.shell.keys import TEST_TIMEOUT_S, KeyCheck
+from luna.ui.shell.strings import DEFAULT_LANG, t
 
 PROVIDER_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 MAX_MODELS = 500
 PROBE_MAX_TOKENS = 32
-
-STT_NOTE = (
-    "Распознавание речи использует Groq - оставьте ключ Groq, даже если отвечает другая модель."
-)
-NO_TOOLS_WARNING = (
-    "Эта модель не умеет вызывать инструменты: она сможет только отвечать, "
-    "но не открывать приложения и не искать в интернете."
-)
-PAID_WARNING = "Платный провайдер: запросы оплачиваются с вашего баланса."
-TRIAL_WARNING = "Пробный период: после его окончания запросы станут платными."
-UNTESTED_WARNING = "Поддержка инструментов не проверена - нажмите Test."
-BADGES = {"yes": "бесплатно", "trial": "пробный период", "paid": "платно", "local": "локально"}
 
 _PING_TOOL = {
     "type": "function",
@@ -185,7 +173,12 @@ class ProvidersPresenter:
         store: CredentialStore,
         presets: Sequence[ProviderPreset],
         overlay: Path,
+        *,
+        lang: str = DEFAULT_LANG,
+        order_overridden: bool = False,
     ) -> None:
+        self.lang = lang
+        self.order_overridden = order_overridden  # luna.toml also sets [llm] chain
         self._settings = settings
         self._store = store
         self.presets = tuple(presets)
@@ -246,9 +239,9 @@ class ProvidersPresenter:
         """Add a custom OpenAI-compatible provider. ``ValueError`` for a bad name or URL."""
         name = name.strip().lower()
         if not PROVIDER_NAME_PATTERN.match(name):
-            raise ValueError("name: 1-32 characters, a-z 0-9 _, starting with a letter")
+            raise ValueError(t("providers.name_rule", self.lang))
         if name in {d.name for d in self.drafts}:
-            raise ValueError("a provider with this name already exists")
+            raise ValueError(t("providers.name_taken", self.lang))
         url = validate_base_url(base_url)
         if needs_key is None:
             needs_key = not _is_local(url)
@@ -270,7 +263,7 @@ class ProvidersPresenter:
         """Only custom providers have an editable URL. ``ValueError`` for a bad one."""
         draft = self.drafts[index]
         if not draft.custom:
-            raise ValueError("the URL of a preset provider is fixed")
+            raise ValueError(t("providers.url_fixed", self.lang))
         draft.conf = draft.conf.model_copy(
             update={"base_url": validate_base_url(base_url), "supports_tools": None}
         )
@@ -279,7 +272,7 @@ class ProvidersPresenter:
 
     def badge(self, index: int) -> str:
         preset = self.drafts[index].preset
-        return BADGES[preset.free] if preset else ""
+        return t(f"providers.badge.{preset.free}", self.lang) if preset else ""
 
     def note(self, index: int) -> str:
         preset = self.drafts[index].preset
@@ -296,26 +289,26 @@ class ProvidersPresenter:
         draft = self.drafts[index]
         found = []
         if draft.preset is not None and draft.preset.free == "paid":
-            found.append(PAID_WARNING)
+            found.append(t("providers.warn.paid", self.lang))
         if draft.preset is not None and draft.preset.free == "trial":
-            found.append(TRIAL_WARNING)
+            found.append(t("providers.warn.trial", self.lang))
         if draft.conf.supports_tools is False:
-            found.append(NO_TOOLS_WARNING)
+            found.append(t("providers.warn.no_tools", self.lang))
         elif draft.conf.supports_tools is None:
-            found.append(UNTESTED_WARNING)
+            found.append(t("providers.warn.untested", self.lang))
         return found
 
     def key_status(self, index: int) -> str:
         env_name = (self.drafts[index].conf.api_key_env or "").strip()
         if not env_name:
-            return "no key needed"
+            return t("providers.key.none", self.lang)
         saved = self._store.get(env_name)
         active = self._settings.api_key(env_name)
         if active is not None and active.get_secret_value() != saved:
             if saved:
-                return "saved; the key from environment / .env overrides it"
-            return "set in environment / .env"
-        return "saved" if saved else "not set"
+                return t("providers.key.overridden", self.lang)
+            return t("providers.key.env", self.lang)
+        return t("providers.key.saved" if saved else "providers.key.not_set", self.lang)
 
     # --- keys and tests -----------------------------------------------------------------------
 
@@ -354,10 +347,10 @@ class ProvidersPresenter:
         """Write ``providers.toml``. ``ConfigError`` (nothing written) when invalid."""
         chain = [d.name for d in self.drafts if d.enabled]
         if not chain:
-            raise ConfigError("Enable at least one provider")
+            raise ConfigError(t("providers.err.no_provider", self.lang))
         for draft in self.drafts:
             if draft.enabled and not draft.conf.model.strip():
-                raise ConfigError(f"Provider {draft.name!r} has no model name")
+                raise ConfigError(t("providers.err.no_model", self.lang, name=draft.name))
         providers = {d.name: d.conf for d in self.drafts}
         write_overlay(self._overlay, chain, providers, base=self._settings)
         return self._overlay

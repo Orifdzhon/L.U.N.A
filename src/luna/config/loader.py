@@ -49,6 +49,24 @@ def candidate_paths(
     return paths
 
 
+def luna_toml_sets_chain(
+    explicit: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> bool:
+    """True when the active ``luna.toml`` sets ``[llm] chain`` (the dialog's order overrides it)."""
+    env = os.environ if env is None else env
+    for path in candidate_paths(explicit, env, cwd):
+        if path.is_file():
+            try:
+                with path.open("rb") as fh:
+                    llm = tomllib.load(fh).get("llm", {})
+            except (tomllib.TOMLDecodeError, OSError):
+                return False
+            return isinstance(llm, dict) and "chain" in llm
+    return False
+
+
 def _format_validation_error(path: Path | None, exc: ValidationError) -> str:
     where = f" in {path}" if path else ""
     lines = [

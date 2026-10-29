@@ -14,9 +14,10 @@ from luna.config.secrets import InMemoryStore
 from luna.config.settings import Settings
 from luna.llm.presets import load_presets
 from luna.logs.redact import clear_secrets
-from luna.ui.qt.providers_dialog import RESTART_NOTE, ProvidersDialog
+from luna.ui.qt.providers_dialog import ProvidersDialog
 from luna.ui.shell.keys import KeyCheck
-from luna.ui.shell.providers import STT_NOTE, ProviderCheck, ProvidersPresenter, ToolSupport
+from luna.ui.shell.providers import ProviderCheck, ProvidersPresenter, ToolSupport
+from luna.ui.shell.strings import t
 
 
 @pytest.fixture(scope="module")
@@ -44,12 +45,17 @@ def _delete_dialogs():
         shiboken6.delete(dialog)
 
 
-def make(tmp_path, run_check=None, on_restart=None, opened=None):
+def make(tmp_path, run_check=None, on_restart=None, opened=None, order_overridden=False):
     store = InMemoryStore()
     presenter = ProvidersPresenter(
-        Settings().with_api_keys({}), store, load_presets(), tmp_path / "providers.toml"
+        Settings().with_api_keys({}),
+        store,
+        load_presets(),
+        tmp_path / "providers.toml",
+        lang="ru",
+        order_overridden=order_overridden,
     )
-    kwargs = {"on_restart": on_restart}
+    kwargs = {"on_restart": on_restart, "lang": "ru"}
     if run_check is not None:
         kwargs["run_check"] = run_check
     if opened is not None:
@@ -75,9 +81,9 @@ def test_lists_chain_with_badges_and_stt_note(app, tmp_path):
         "gemini  [бесплатно]",
         "local  [локально]",
     ]
-    assert dialog.stt_note.text() == STT_NOTE
+    assert dialog.stt_note.text() == t("providers.stt_note", "ru")
     assert dialog.url_edit.isReadOnly()  # preset URL is fixed
-    assert dialog.key_status.text() == "not set"
+    assert dialog.key_status.text() == t("providers.key.not_set", "ru")
 
 
 def test_order_buttons_enable_and_remove(app, tmp_path):
@@ -112,7 +118,9 @@ def test_add_preset_and_custom(app, tmp_path):
 def test_local_provider_has_no_key_field(app, tmp_path):
     dialog, _ = make(tmp_path)
     dialog.list.setCurrentRow(2)
-    assert not dialog.key_edit.isEnabled() and dialog.key_status.text() == "no key needed"
+    assert not dialog.key_edit.isEnabled() and dialog.key_status.text() == t(
+        "providers.key.none", "ru"
+    )
     assert not dialog.get_key_button.isEnabled()
 
 
@@ -136,7 +144,7 @@ def test_test_button_runs_in_a_worker_and_records_tools(app, tmp_path):
     assert not dialog.test_button.isEnabled()
     wait_idle(app, dialog)
     assert seen == [("https://api.groq.com/openai/v1", "openai/gpt-oss-120b", "gk-x-12345")]
-    assert dialog.result.text() == "OK - tools: no - 123 ms - 2 models"
+    assert dialog.result.text() == "Ключ принят - инструменты: нет - 123 мс - моделей: 2"
     assert dialog._presenter.drafts[0].conf.supports_tools is False
     assert "инструменты" in dialog.warning.text()
     assert dialog.model_box.currentText() == "openai/gpt-oss-120b"  # kept; list filled
@@ -146,11 +154,11 @@ def test_test_button_runs_in_a_worker_and_records_tools(app, tmp_path):
 def test_test_needs_a_key_and_a_model(app, tmp_path):
     dialog, _ = make(tmp_path, lambda *a: pytest.fail("must not run"))
     dialog.test_button.click()
-    assert dialog.result.text() == "Enter a key first"
+    assert dialog.result.text() == t("providers.enter_key", "ru")
     dialog.key_edit.setText("k-12345678")
     dialog.model_box.setCurrentText("")
     dialog.test_button.click()
-    assert dialog.result.text() == "Enter a model name first"
+    assert dialog.result.text() == t("providers.enter_model", "ru")
 
 
 def test_fetch_models_fills_empty_model(app, tmp_path):
@@ -175,7 +183,7 @@ def test_failed_check_is_shown(app, tmp_path):
     dialog.key_edit.setText("k-12345678")
     dialog.test_button.click()
     wait_idle(app, dialog)
-    assert dialog.result.text() == KeyCheck.ERROR.value
+    assert dialog.result.text() == t("providers.check.error", "ru")
 
 
 def test_save_writes_file_key_and_offers_restart(app, tmp_path):
@@ -185,10 +193,12 @@ def test_save_writes_file_key_and_offers_restart(app, tmp_path):
     dialog.key_edit.setText("gk-dialog-key")
     assert dialog.save() is True
     assert store.values == {"GROQ_API_KEY": "gk-dialog-key"}
-    assert dialog.key_edit.text() == "" and dialog.key_status.text() == "saved"
+    assert dialog.key_edit.text() == "" and dialog.key_status.text() == t(
+        "providers.key.saved", "ru"
+    )
     assert (tmp_path / "providers.toml").is_file()
     assert "gk-dialog-key" not in (tmp_path / "providers.toml").read_text(encoding="utf-8")
-    assert dialog.note.text() == RESTART_NOTE
+    assert dialog.note.text() == t("providers.saved", "ru")
     assert dialog.restart_button.isVisibleTo(dialog)
     assert dialog.restart_button.text() == "Перезапустить L.U.N.A."
     dialog.restart_button.click()
@@ -200,7 +210,7 @@ def test_save_error_is_shown_and_nothing_written(app, tmp_path):
     for i in range(3):
         dialog.list.item(i).setCheckState(Qt.CheckState.Unchecked)
     assert dialog.save() is False
-    assert "at least one" in dialog.note.text()
+    assert "хотя бы" in dialog.note.text()
     assert not (tmp_path / "providers.toml").exists()
     assert not dialog.restart_button.isVisibleTo(dialog)
 
@@ -210,3 +220,24 @@ def test_close_button_closes(app, tmp_path):
     dialog.show()
     dialog.close_button.click()
     assert not dialog.isVisible()
+
+
+def test_order_hint_only_when_luna_toml_sets_the_chain(app, tmp_path):
+    plain, _ = make(tmp_path)
+    assert not plain.order_hint.isVisibleTo(plain)
+    hinted, _ = make(tmp_path, order_overridden=True)
+    assert hinted.order_hint.isVisibleTo(hinted)
+    assert hinted.order_hint.text() == t("providers.order_hint", "ru")
+
+
+def test_english_dialog_texts(app, tmp_path):
+    presenter = ProvidersPresenter(
+        Settings().with_api_keys({}),
+        InMemoryStore(),
+        load_presets(),
+        tmp_path / "p.toml",
+        lang="en",
+    )
+    dialog = ProvidersDialog(presenter, lang="en")
+    CREATED.append(dialog)
+    assert dialog.save_button.text() == "Save" and dialog.list.item(0).text() == "groq  [free]"

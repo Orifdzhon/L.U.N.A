@@ -23,6 +23,10 @@ added in later slices.
 | Web search | `ddgs` metasearch + `trafilatura` extraction | self-hosted SearXNG; Tavily free key | [0006](adr/0006-web-search.md) |
 | Desktop shell | Slice 5 (accepted 2026-10-26): `PySide6-Essentials` tray + small window driven by a toolkit-free `ShellController`; `luna` / `pythonw -m luna --tray`; named-mutex single instance; Win32 `RegisterHotKey`; autostart = per-user Startup-folder shortcut (off by default) | tkinter + pystray | [0007](adr/0007-desktop-shell.md), [0009](adr/0009-desktop-shell-mvp.md) |
 | Open apps/sites | `Get-StartApps` index + aliases + `rapidfuzz`; `webbrowser` for sites | `.lnk` scan | [0008](adr/0008-opening-apps-and-websites.md) |
+| Close apps (accepted 2026-10-29) | `close_app` SAFE tool: WM_CLOSE to the app's windows, matched by catalog identity (AUMID / exe path / known folder) then exe `FileDescription`; protected system/security processes; force-kill only after a voice re-ask enforced by the tool | on-screen confirm dialog for force | [0011](adr/0011-close-app-find-file-new-ui-llm-providers.md) |
+| Find files (accepted 2026-10-29) | `find_file` / `open_file`: bounded `os.scandir` walk now; Windows Search index (PowerShell + ADODB) deferred; names only, untrusted; open allowlist, everything else revealed in Explorer | `comtypes` for the index | [0011](adr/0011-close-app-find-file-new-ui-llm-providers.md) |
+| Window look (accepted 2026-10-29) | Dark Qt Widgets window: QPainter "moon" orb per `IconState`, chat bubbles + action chips, send + push-to-talk buttons; RU UI with EN fallback | QML / Qt Quick (in Essentials, +20-45 MB) | [0011](adr/0011-close-app-find-file-new-ui-llm-providers.md) |
+| LLM providers UI (accepted 2026-10-29) | "Models / providers" dialog: presets (Groq, Gemini, OpenRouter, Mistral, Qwen, Cerebras, DeepSeek, Together, local, custom), Test (key + tool calling), order; writes `%APPDATA%\LUNA\providers.toml` (`tomli-w`), keys in Credential Manager | edit `luna.toml` with `tomlkit` | [0011](adr/0011-close-app-find-file-new-ui-llm-providers.md) |
 | Concurrency | **Threads + queues**, Qt on the main thread | asyncio (rejected, §5) | this doc |
 | Distribution | **Proposed** (post-MVP): PyInstaller onedir (`luna.exe` windowed + `luna-cli.exe` console) → Inno Setup per-user setup in `%LOCALAPPDATA%\Programs\L.U.N.A`; API keys from a first-run dialog in Windows Credential Manager (`keyring`); public build without sherpa-onnx (§14) | Nuitka; zip-only portable build | [0010](adr/0010-windows-installer.md) |
 
@@ -56,9 +60,10 @@ added in later slices.
 | Router | `luna.core.router` | Rule-based fast path for simple commands (F3, F4) without an LLM; RU/EN verb patterns + alias/fuzzy lookup. Also flags "needs fresh facts" (F6 heuristics). |
 | Assistant | `luna.core.assistant` | LLM conversation loop with tool calling, system prompt, short dialog history, web-content isolation rule (§9). |
 | LLM providers | `luna.llm` | `LLMProvider` protocol, `OpenAICompatProvider`, `LLMChain` (fallback + cooldown; default order Groq → Gemini → local LM Studio). |
-| Tools | `luna.tools` | `Tool` protocol, `ToolRegistry`, safety levels, built-in tools: `open_app`, `open_website`, `web_search`, `get_datetime`. |
+| Tools | `luna.tools` | `Tool` protocol, `ToolRegistry`, safety levels, built-in tools: `open_app`, `open_website`, `web_search`, `get_datetime`; planned (ADR 0011, accepted): `close_app`, `find_file`, `open_file`. |
+| Files (planned, ADR 0011) | `luna.files` | OS-neutral file-name search: query parsing (RU/EN, stems, transliteration, kind words), bounded walker, ranking, `FileSearch` (index → walk → rank). Never reads file contents. |
 | Search | `luna.search` | `SearchProvider` protocol, `DdgsSearch`, `SearxngSearch`, page fetch + extraction. |
-| Platform | `luna.platform` | OS adapters behind protocols: app catalog/launcher, browser, hotkey, autostart (Startup-folder shortcut, slice 5), single instance (named mutex, slice 5). `luna.platform.windows` implements them. |
+| Platform | `luna.platform` | OS adapters behind protocols: app catalog/launcher, browser, hotkey, autostart (Startup-folder shortcut, slice 5), single instance (named mutex, slice 5); planned (ADR 0011, accepted): running apps (list / graceful close / terminate), file index, file opener (open / reveal), dark title bar. `luna.platform.windows` implements them. |
 | Audio | `luna.audio` | `AudioClip`, `AudioPlayer` protocol + interruptible `sounddevice` playback (slice 2); `MicSource` / `SoundDeviceMic` capture, `RingBuffer`, `EnergyVAD`, utterance `Recorder` (slice 3); `FrameSource` / `FrameTap` / `LiveSource` so a recording can continue from the wake listener's live stream (slice 4). |
 | STT | `luna.stt` | `STTProvider` protocol, `Transcript`, `STTChain` (fallback + cooldown), `GroqWhisperSTT` (default), `FasterWhisperSTT` (local CPU fallback). |
 | TTS | `luna.tts` | `TTSProvider` protocol, `EdgeTTS` (optional online neural voices), `SapiTTS` (local fallback), `PiperTTS` + `PiperModelStore` (default local neural voice, #163), `FallbackTTS`, speech text preparation (`text`, `normalize`), `Speaker` worker (explicit `speak(reply)` from the UI; exposes `active` + activity listeners for half-duplex). |
@@ -99,6 +104,12 @@ src/luna/
     base.py               # Tool protocol, SafetyLevel, ToolSpec
     registry.py
     builtin/open_app.py, open_website.py, web_search.py, datetime.py
+    builtin/close_app.py, find_file.py   # ADR 0011: close_app; find_file + open_file
+    running_match.py      # ADR 0011: spoken name → running app (catalog identity, FileDescription)
+  files/                  # ADR 0011, OS-neutral
+    base.py               # FileHit, FileQuery, FileIndex, FileOpener protocols
+    query.py, rank.py     # RU/EN name query (stems, transliteration, kind words), fuzzy ranking
+    walk.py, search.py    # bounded os.scandir walk; FileSearch: index → walk → rank
   search/
     base.py               # SearchProvider, SearchResult
     ddgs_search.py
@@ -110,6 +121,10 @@ src/luna/
     windows/hotkey.py     # RegisterHotKey via ctypes
     windows/autostart.py  # Startup-folder shortcut L.U.N.A.lnk (ADR 0009; PowerShell WScript.Shell)
     windows/single_instance.py  # named mutex Local\LUNA-instance (ADR 0009)
+    windows/processes.py  # ADR 0011: windows → processes, protected list, WM_CLOSE, terminate (ctypes)
+    windows/search_index.py  # ADR 0011: Windows Search SystemIndex query (fixed script, env terms)
+    windows/files.py      # ADR 0011: known folders, fixed drives, open (startfile) / reveal
+    windows/dwm.py        # ADR 0011: dark title bar (DwmSetWindowAttribute)
     fallback.py           # non-Windows: NoAutostart (unsupported), ProcessLocalInstance (always acquires)
   audio/
     capture.py            # MicSource, SoundDeviceMic (RawInputStream → bounded queue), RingBuffer
@@ -153,7 +168,9 @@ src/luna/
       tray.py             # QtTrayView: QSystemTrayIcon + QMenu + showMessage
       window.py           # QtWindowView: conversation, input line, status line
       app.py              # run_tray(settings, args) -> int: QApplication, wiring, quit
-      keys_dialog.py      # ADR 0010 (proposed): first-run API key dialog (Test / Save / Later)
+      keys_dialog.py      # ADR 0010: first-run API key dialog; superseded by providers_dialog.py (ADR 0011)
+      orb.py, chat.py, theme.py   # ADR 0011: moon orb, chat bubbles/chips, dark QSS
+      providers_dialog.py # ADR 0011: "Models / providers" (presets, Test, order, keys)
   logs/
     setup.py              # logging config, secret redaction filter
     action_log.py         # JSONL writer
@@ -735,6 +752,44 @@ class ShellController:            # every public method runs on the UI thread
     def icon_state(self) -> IconState: ...
 ```
 
+```python
+# ADR 0011 — full sketches and rules in the ADR; summary here.
+# luna/platform/base.py
+class CloseOutcome(enum.Enum):     # CLOSED | PROMPTED | HIDDEN | NOT_RESPONDING | NOT_RUNNING
+@dataclass(frozen=True)
+class RunningApp:                  # key (image path|pid|creation time, opaque), name, exe_path,
+    ...                            # app_id (AUMID or None), pids, windows (count; titles never read)
+class RunningApps(Protocol):
+    def list_running(self) -> Sequence[RunningApp]: ...    # protected processes never appear
+    def close(self, app: RunningApp, *, wait_s: float) -> CloseOutcome: ...  # WM_CLOSE + bounded wait
+    def terminate(self, app: RunningApp) -> None: ...      # force path only; identity re-checked
+    def identity_matches(self, app: RunningApp, entry: AppEntry) -> bool: ...
+
+# luna/files/base.py
+class FileIndex(Protocol):         # OS search index (Windows Search); optional
+    def available(self) -> bool: ...
+    def query(self, q: FileQuery, roots: Sequence[Path], *, limit: int,
+              timeout_s: float) -> list[FileHit]: ...
+class FileOpener(Protocol):
+    def open(self, path: Path) -> None: ...                # ShellExecute "open", allowlisted types
+    def reveal(self, path: Path) -> None: ...              # SHOpenFolderAndSelectItems
+
+# tools (all SAFE): close_app {name, force=false}; find_file {query, max_results?};
+# open_file {index 1..10, action: "open" | "reveal"} over the last find_file results (memory, TTL).
+
+# luna/ui/shell/views.py additions
+class WindowView(Protocol):
+    ...                                                    # existing methods unchanged
+    def set_state(self, state: IconState, caption: str) -> None: ...   # moon orb
+    def set_voice_available(self, available: bool, reason: str) -> None: ...  # mic button
+# ShellController: + toggle_listen() (→ VoiceInput.press(), non-blocking), + open_result(n, action)
+
+# luna/llm/presets.py, luna/config/providers_file.py, luna/ui/shell/providers.py
+# ProviderPreset (data/llm_presets.toml); read_overlay / write_overlay (%APPDATA%\LUNA\providers.toml,
+# validated before an atomic write, never keys); check_provider(base_url, model, key) → key status,
+# tool-calling support (dummy `ping` tool), latency, models. ProviderSettings + supports_tools.
+```
+
 ## 4. Pipeline and event flow
 
 ### 4.1 Text request (slice 1)
@@ -1025,6 +1080,12 @@ follows the same order: it checks under the front end lock that its turn is stil
 unverified, records the verdict, releases the lock, and only then calls `speaker.stop()`,
 publishes status, beeps or sets `turn.cancel`.
 
+ADR 0011 adds **no long-lived threads**: `close_app` (enumeration ~10 ms, WM_CLOSE wait
+≤ 3 s) and `find_file` (index subprocess ≤ 2 s, walk within the 4 s budget, cancel checked between
+roots) run on the turn thread `luna-req-<id>`; the moon orb is a `QTimer` on the GUI thread, stopped
+while the window is hidden or minimized; the providers dialog's Test and "Fetch models" run as
+`luna-ui-worker` jobs (HTTP, 10 s each) and post results back.
+
 GUI-thread rule (slice 5): the GUI thread never blocks on core work. It may call only
 non-blocking core methods (`Speaker.set_muted/stop`, `VoiceInput` state properties,
 `wake_status_line()`, setting a `cancel` event); anything that loads models, joins threads,
@@ -1144,6 +1205,39 @@ history_lines = 200             # conversation lines kept in the window (memory 
                                 # `true` logs one warning saying so.
 ```
 
+Planned keys (ADR 0011, accepted; not implemented yet):
+
+```toml
+[llm.providers.openrouter]      # any OpenAI-compatible endpoint, usually written by the dialog
+base_url = "https://openrouter.ai/api/v1"
+model = "<a :free model with tools>"
+api_key_env = "OPENROUTER_API_KEY"   # value in Credential Manager / .env, never in a TOML file
+supports_tools = true           # set by Test; false → the chain calls it without tools (answers only)
+
+[apps]                          # close_app
+close_wait_s = 3.0              # wait for the app to exit after WM_CLOSE
+force_window_s = 60.0           # force-close is accepted this long after the "not responding" question
+protected_extra = []            # more exe names never to close (built-ins cannot be removed)
+
+[files]                         # find_file / open_file
+roots = ["user", "drives"]      # user = Known Folders + OneDrive; drives = all fixed drives
+extra_roots = []
+exclude = []                    # more directory names to skip (built-in skip list stays)
+use_index = true                # Windows Search index first, then the bounded walk
+time_budget_s = 4.0
+max_entries = 300000
+max_results = 5
+send_names_to_llm = true        # false: only counts/kinds go to the LLM
+
+[ui]
+language = "auto"               # "auto" | "ru" | "en" (auto: Russian Windows → ru)
+animations = "auto"             # "auto" (follows Windows "Show animations") | "on" | "off"
+```
+
+`%APPDATA%\LUNA\providers.toml` (ADR 0011, generated by the "Models / providers" dialog) holds only
+`[llm] chain` and the `[llm.providers.*]` tables it manages; the loader merges defaults ←
+`luna.toml` ← `providers.toml`, so a hand-edited `luna.toml` is never rewritten.
+
 `[ui]` compatibility: the owner's file has `[ui] autostart = false`; it must load unchanged.
 `autostart` is dropped (warning only if `true`); every other unknown key is an error
 (`extra="forbid"`), like the legacy keys of `[stt]` and `[wakeword]`.
@@ -1174,6 +1268,10 @@ wake mode" and implies listening (`[voice] listen`).
   placeholder with the length).
 - Timing spans (wake→end of speech→STT→LLM→first audio) are logged at INFO to
   validate latency targets N4.
+- ADR 0011: file names and paths are never written to either log — `find_file` summaries
+  are untrusted (placeholder with the length), `open_file` summaries name only the result number and
+  extension, the app log records counts, durations and the backend. `close_app` records the app's
+  display name; window titles are never read.
 - **Windowless mode (slice 5, `pythonw`):** there is no console, so `luna.log` is the only
   diagnostic channel. `logs.windowless.install(log_dir)` runs before anything else when
   `sys.stdout` or `sys.stderr` is `None`: both become UTF-8 `os.devnull` writers (libraries such
@@ -1257,6 +1355,20 @@ wake mode" and implies listening (`[voice] listen`).
   LLM text, and is created only by an explicit click on "Start with Windows". Agents and tests
   never touch the real Startup folder (fake writer + `tmp_path`); the real toggle is a manual
   owner check.
+- ADR 0011:
+  - `close_app` is SAFE (owner decision): graceful WM_CLOSE only; never touches protected
+    processes (everything under `%SystemRoot%` except a small allowlist, a shell/security denylist,
+    L.U.N.A. and its parent, processes it cannot open, other sessions). Force-kill only when the same
+    process (path + pid + creation time) was reported "not responding" within 60 s and the user
+    answered in a later turn; the LLM never passes PIDs.
+  - `find_file` reads names only (no contents, no hydration of cloud placeholders), returns them as
+    untrusted wrapped data (tools off for the rest of the turn), with paths shortened so the Windows
+    user name is not sent. `open_file` acts only on stored hits, re-validated; executables, scripts
+    and shortcuts are revealed in Explorer, never opened.
+  - The new window renders all text as plain text (no rich-text markup from replies or file names).
+  - Provider URLs must be `https` (plain `http` only for localhost); keys go only to their own
+    provider and only to Credential Manager / `.env`, never into `providers.toml`.
+  - The history marker `WEB_MARKER` generalizes to `UNTRUSTED_MARKER` (web and file results).
 
 ## 10. Testing strategy
 
@@ -1268,7 +1380,8 @@ wake mode" and implies listening (`[voice] listen`).
 | Integration (opt-in) | real Gemini/Groq/Ollama tool calls, real search, faster-whisper on fixture WAVs | markers `live`, `gpu`, `audio`; `pytest -m live` run manually with keys |
 | Wake word (CI, slice 4) | `WakeGate` holds/tail/cooldown/window with a fake clock; listener with `FakeMic` frames + `FakeWakeWord` (scripted events at given positions): cut/lead_in/backlog math, one-breath and pause cases, reply-containing-keyword never fires while held, `/wake off` closes the mic, mic loss → `FAILED`; `Recorder(live=...)` never calls `mic.start/stop`; Speaker activity transitions; settings legacy keys; `keyword_first` table (accept "Луна, открой", "луна.", "Luna"; reject "лунный", "Лена", "она", "Луначарский", "Луна-парк", "на луну", ""); `verify_window` math; `FrameTap.peek` non-consuming; front end with `FakeVerifier` (scripted verdict/delay/exception): accept, silent reject cancels the recording, fail open on error/timeout, hotkey override, deferred status/cue | `pytest`; no `vosk` or `faster_whisper` import, no model, no microphone (real engines only under the `audio` marker / `bench_wake.py`) |
 | Desktop shell (CI, slice 5) | `derive_icon_state` table; `Conversation` bound + action-line formatting (untrusted summary hidden); `ShellController` with `FakeTrayView`, `FakeWindowView`, an immediate `FakeUiThread`, a synchronous `start_thread`, `FakeAutostart` and the existing fakes (`FakeLLM`, `FakeSTT`, fake `VoiceInput`): events → icon/status/lines, typed request → one user + one assistant line and speech, silent apologies not spoken, wake toggle via worker incl. failure reason and `FAILED` → error + one notification, mute, autostart toggle + failure, close → hide + one notification, quit order (subscription closed, `app.close()` once); `own_launch_command` (pythonw path, flags, `--config` only when given); `StartupFolderAutostart` with `tmp_path` + fake writer (create/exists/delete exactly `L.U.N.A.lnk`, env passed, never the real folder); `NamedMutexInstance` with a fake `_Kernel32`; `[ui]` settings incl. legacy `autostart`; `windowless.install` with `None` streams; Qt views smoke-tested with `QT_QPA_PLATFORM=offscreen` (set in `tests/conftest.py`, no CI change) | `pytest`; no real tray, no Startup folder, no registry; the real shortcut writer only under the `desktop` marker writing into `tmp_path` |
-| Manual (owner) | microphone, wake word false accepts/hour, latency, tray, autostart, real app launch | checklist `docs/MANUAL_CHECKS.md`, listed in each PR |
+| ADR 0011 features (CI) | `close_app`: protected rules, UWP frame mapping, outcomes and the force rule with fake `_User32/_Kernel32/_Version` and a fake clock; matching with a decoy window title; `find_file`: query table (RU/EN, stems, transliteration, kinds), walker on `tmp_path` trees (skip list, hidden/reparse, deadline, entries, cancel), index escaping, untrusted wrapping without the user name, open allowlist vs reveal, `caplog` shows no names; orb model table and timer stop on hide (offscreen); chat view plain text + bound; providers: presets valid, overlay merge/validate/atomic write, `check_provider` via `httpx.MockTransport` (key, tools yes/unclear/no) | `pytest`; no real processes closed, no real disk walk outside `tmp_path`, no network; the Windows Search backend only under `live` |
+| Manual (owner) | microphone, wake word false accepts/hour, latency, tray, autostart, real app launch; ADR 0011: Notepad with unsaved text, Telegram (tray), a hung app → force, Explorer refused, UWP Calculator, find «резюме» / «отчёт за май», window look and idle CPU, providers Test | checklist `docs/MANUAL_CHECKS.md`, listed in each PR |
 
 CI: GitHub Actions on `windows-latest`, `uv sync --frozen`, `ruff check`,
 `ruff format --check`, `pytest -m "not live and not gpu and not audio"`.
@@ -1317,6 +1430,7 @@ Each slice ends in something the owner can run. Later slices only add adapters.
 | 3 | Voice in (push-to-talk) — **code merged** (PRs #90–#98, 2026-10-26); STT benchmark #87 and manual checks #88 open | `SoundDeviceMic` capture, `EnergyVAD` + `Recorder`, `STTChain` (`GroqWhisperSTT` → `FasterWhisperSTT` CPU `base`), `WindowsHotkeyListener`, `VoiceFrontEnd` toggle PTT with barge-in, `VoiceInput` + CLI `--listen` / `/listen` / `/mic`, degraded start | hotkey → speak → action + spoken reply; latency spans logged |
 | 4 | Wake word (Issues #102–#116 + verification Issues, ADR 0004 amendment 2) | opt-in wake mode: `WakeListener` owning one always-on stream, energy-VAD gate, `VoskKeywordSpotter` for "луна" (lazy model download) + local faster-whisper second stage (`[wakeword] verify`), `Recorder` continuing from the live stream (one-breath commands), half-duplex gating with Speaker activity, optional cue and follow-up window (off); conditional ONNX spike #116 | "Луна, открой YouTube" works in one breath and with a pause; a spoken reply never wakes it; `/wake off` closes the mic; recall and FA/hour measured in #115 |
 | 5 | Desktop shell ([ADR 0009](adr/0009-desktop-shell-mvp.md)) | `PySide6-Essentials` tray icon with state colours and a 5-item menu (open, wake on/off, voice replies, start with Windows, quit), small window (conversation, text input, status line; close hides), `luna` / `pythonw -m luna --tray --minimized`, single instance, windowless logging, Startup-folder autostart (off by default), `[ui]` settings. Post-MVP: popup at the tray, settings dialog / persisted toggles, open config/logs, activate the running instance, installer | MVP definition of done (spec §6): runs from the tray without a console, starts with Windows when enabled, voice and typed requests show their replies in the window; CI green |
+| 7 | New features ([ADR 0011](adr/0011-close-app-find-file-new-ui-llm-providers.md), accepted 2026-10-29) | 5 Issues (owner's compressed plan): A `close_app`; B `find_file` / `open_file` with the bounded walk only; C1 moon orb + RU/EN strings; C2 chat view + window assembly + controller (+ file chips); D "Models / providers" dialog with presets, Test, order, `providers.toml`. Deferred: router fast paths "закрой X" / "найди и открой", Windows Search index, tray icons from the orb | "Луна, закрой телеграм" closes it; "найди резюме" lists matches and "открой первый" opens it; the new window shows every state; a second provider (e.g. OpenRouter) is added and tested from the dialog; CI green |
 | 6 | Hardening | offline mode switch, game mode, provider status in tray, custom wake-word model if it beats Vosk; Windows installer ([ADR 0010](adr/0010-windows-installer.md), proposed, §14) | owner's choice |
 
 ## 13. Open questions for the owner
@@ -1342,6 +1456,10 @@ See the decision list in each ADR. Summary:
 9. **Windows installer** (ADR 0010, proposed 2026-10-27): freezer, setup program, key storage,
    defaults of a fresh install, public vs personal edition, uninstall data, signing — decisions
    D1-D10 in [ADR 0010](adr/0010-windows-installer.md).
+
+10. ~~New features~~ — **decided** (owner, 2026-10-29, ADR 0011 accepted): all recommendations
+    D1-D16 in [ADR 0011](adr/0011-close-app-find-file-new-ui-llm-providers.md); PRODUCT_SPEC amended
+    (§3.3, §4, §4.1); compressed plan of 5 Issues, index / router fast paths / orb tray icons later.
 
 ## 14. Packaging and distribution (ADR 0010, proposed)
 

@@ -103,6 +103,14 @@ class RouterSettings(_Section):
     site_aliases: dict[str, str] = Field(default_factory=dict)
 
 
+class AppsSettings(_Section):
+    """``close_app`` (ADR 0011)."""
+
+    close_wait_s: float = Field(default=3.0, gt=0, le=30)  # wait for a window to close
+    force_window_s: float = Field(default=60.0, gt=0, le=600)  # how long a force offer stays valid
+    protected_extra: list[str] = Field(default_factory=list)  # more exe names never closed
+
+
 EDGE_VOICE_PATTERN = r"^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z0-9]+Neural$"
 
 
@@ -348,6 +356,7 @@ class Settings(_Section):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     router: RouterSettings = Field(default_factory=RouterSettings)
+    apps: AppsSettings = Field(default_factory=AppsSettings)
     tts: TTSSettings = Field(default_factory=TTSSettings)
     stt: STTSettings = Field(default_factory=STTSettings)
     voice: VoiceSettings = Field(default_factory=VoiceSettings)

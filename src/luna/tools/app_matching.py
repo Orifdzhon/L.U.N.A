@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
 from importlib import resources
-from typing import Any
+from typing import Any, Literal
 
 from rapidfuzz import fuzz
 
@@ -109,6 +109,21 @@ _OTHER_VERBS = frozenset(
         "restart",
         "reboot",
         "shutdown",
+    ]
+)
+# verbs="close": these are fillers at the edges instead of "another intent".
+_CLOSE_FILLERS = frozenset(
+    [
+        "закрой",
+        "закрыть",
+        "закрывай",
+        "выключи",
+        "выключить",
+        "выйди",
+        "из",
+        "close",
+        "quit",
+        "exit",
     ]
 )
 _CONJUNCTIONS = frozenset(["и", "также", "плюс", "and", "or", "plus", "then", "потом", "затем"])
@@ -222,11 +237,11 @@ def normalize_name(text: str) -> str:
     return " ".join(_PUNCT_RE.sub(" ", text.casefold().replace("ё", "е")).split())  # noqa: RUF001
 
 
-def _strip_fillers(tokens: list[str]) -> list[str]:
+def _strip_fillers(tokens: list[str], fillers: frozenset[str] = _FILLER_WORDS) -> list[str]:
     start, end = 0, len(tokens)
-    while start < end - 1 and tokens[start] in _FILLER_WORDS:
+    while start < end - 1 and tokens[start] in fillers:
         start += 1
-    while end > start + 1 and tokens[end - 1] in _FILLER_WORDS:
+    while end > start + 1 and tokens[end - 1] in fillers:
         end -= 1
     return tokens[start:end]
 
@@ -353,13 +368,20 @@ def match_app(
     *,
     threshold: int = DEFAULT_THRESHOLD,
     margin: int = DEFAULT_MARGIN,
+    verbs: Literal["open", "close"] = "open",
 ) -> MatchResult:
-    """Pick the catalog entry for ``name``. Never returns an entry that is not in ``apps``."""
+    """Pick the catalog entry for ``name``. Never returns an entry that is not in ``apps``.
+
+    ``verbs="close"`` treats "закрой/close/quit/выйди из ..." as edge fillers (for
+    ``close_app``) instead of rejecting them as another intent.
+    """
+    fillers = _FILLER_WORDS | _CLOSE_FILLERS if verbs == "close" else _FILLER_WORDS
+    other_verbs = _OTHER_VERBS - _CLOSE_FILLERS if verbs == "close" else _OTHER_VERBS
     if not isinstance(name, str) or len(name) > MAX_NAME_CHARS:
         return _NONE
     if any(ch in _FORBIDDEN_CHARS or not ch.isprintable() for ch in name):
         return _NONE  # paths, command lines, shell metacharacters
-    tokens = _strip_fillers(normalize_name(name).split())
+    tokens = _strip_fillers(normalize_name(name).split(), fillers)
     query = " ".join(tokens)
     if len(query) < MIN_QUERY_CHARS:
         return _NONE
@@ -369,7 +391,7 @@ def match_app(
 
     full_name = any(query == normalize_name(e.name) for e in pool)
     if not full_name:
-        if "," in name or any(t in _OTHER_VERBS or t in _CONJUNCTIONS for t in tokens):
+        if "," in name or any(t in other_verbs or t in _CONJUNCTIONS for t in tokens):
             return _UNSUPPORTED
         if all(t in _GENERIC_WORDS for t in tokens):
             return _NONE

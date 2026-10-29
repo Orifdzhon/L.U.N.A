@@ -85,6 +85,11 @@ def default_store() -> CredentialStore:
     return KeyringStore()
 
 
+def known_key_names(extra: Iterable[str] = ()) -> list[str]:
+    """Built-in key names followed by ``extra`` (e.g. ``settings.api_key_names()``), no repeats."""
+    return list(dict.fromkeys([*KNOWN_KEY_NAMES, *sorted(n for n in extra if n)]))
+
+
 def forget_keys(store: CredentialStore, names: Iterable[str] = KNOWN_KEY_NAMES) -> list[str]:
     """Delete every saved key in ``names``; return the names that were actually saved."""
     removed = []

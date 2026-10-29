@@ -1,0 +1,244 @@
+"""providers.toml overlay: loader merge, validation, atomic writer, key names (ADR 0011 D2)."""
+
+import tomllib
+
+import pytest
+
+from luna.config import providers_file
+from luna.config.loader import load_settings
+from luna.config.providers_file import providers_path, read_overlay, write_overlay
+from luna.config.secrets import InMemoryStore, forget_keys, known_key_names
+from luna.config.settings import ProviderSettings, Settings
+from luna.core.errors import ConfigError
+
+OVERLAY = """
+[llm]
+chain = ["mine", "groq"]
+
+[llm.providers.mine]
+base_url = "https://llm.example.com/v1"
+model = "big-1"
+api_key_env = "LUNA_MINE_API_KEY"
+supports_tools = false
+"""
+
+
+def appdata(tmp_path):
+    folder = tmp_path / "LUNA"
+    folder.mkdir()
+    return {"APPDATA": str(tmp_path)}, folder
+
+
+def test_providers_path():
+    assert providers_path({}) is None
+    assert providers_path({"APPDATA": "C:/x"}).name == "providers.toml"
+
+
+def test_loader_merges_defaults_luna_toml_providers(tmp_path):
+    env, folder = appdata(tmp_path)
+    (folder / "luna.toml").write_text(
+        '[llm.providers.groq]\nmodel = "from-luna-toml"\n[app]\nlog_level = "DEBUG"\n',
+        encoding="utf-8",
+    )
+    (folder / "providers.toml").write_text(OVERLAY, encoding="utf-8")
+    s = load_settings(env=env, cwd=tmp_path, store=InMemoryStore())
+    assert s.llm.chain == ["mine", "groq"]
+    assert s.llm.providers["mine"].supports_tools is False
+    assert s.llm.providers["groq"].model == "from-luna-toml"  # overlay did not touch it
+    assert s.llm.providers["gemini"].model  # default kept
+    assert s.app.log_level == "DEBUG"
+    assert "LUNA_MINE_API_KEY" in s.api_key_names()
+
+
+def test_loader_reads_saved_key_of_overlay_provider(tmp_path):
+    env, folder = appdata(tmp_path)
+    (folder / "providers.toml").write_text(OVERLAY, encoding="utf-8")
+    store = InMemoryStore({"LUNA_MINE_API_KEY": "k-12345"})
+    s = load_settings(env=env, cwd=tmp_path, store=store)
+    assert s.api_key("LUNA_MINE_API_KEY").get_secret_value() == "k-12345"
+    assert "mine" in s.available_providers()
+
+
+BAD_OVERLAYS = [
+    "[llm\nchain = ",  # bad TOML
+    '[llm]\nchain = ["nope"]\n',  # unknown provider
+    '[app]\nlog_level = "DEBUG"\n',  # not an [llm] table
+    "[llm]\ntimeout_s = 3\n",  # not managed by the dialog
+    '[llm.providers.x]\nbase_url = "https://x"\nmodel = "m"\napi_key = "secret"\n',
+    # a token of another service sent to an attacker's URL
+    '[llm.providers.x]\nbase_url = "https://evil.example/v1"\nmodel = "m"\n'
+    'api_key_env = "GITHUB_TOKEN"\n',
+    '[llm.providers.x]\nbase_url = "http://evil.example/v1"\nmodel = "m"\n',
+    '[llm.providers.x]\nbase_url = "https://u:p@evil.example/v1"\nmodel = "m"\n',
+]
+
+
+@pytest.mark.parametrize("text", BAD_OVERLAYS)
+def test_broken_overlay_is_skipped_quarantined_and_warned(tmp_path, text, caplog):
+    env, folder = appdata(tmp_path)
+    (folder / "providers.toml").write_text(text, encoding="utf-8")
+    with caplog.at_level("WARNING", logger="luna.config.loader"):
+        s = load_settings(env=env, cwd=tmp_path, store=InMemoryStore())
+    assert s == Settings()  # startup continues with luna.toml / defaults
+    assert not (folder / "providers.toml").exists()
+    assert len(list(folder.glob("providers.toml.bad-*"))) == 1
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "providers.toml" in warnings[0].getMessage()
+
+
+def test_read_overlay_names_the_file_for_unsafe_urls(tmp_path):
+    path = tmp_path / "providers.toml"
+    path.write_text(BAD_OVERLAYS[6], encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"providers\.toml.*https"):
+        read_overlay(path)
+
+
+@pytest.mark.parametrize("name", ["GITHUB_TOKEN", "lower_case", "AWS SECRET", "PATH"])
+def test_api_key_env_is_validated_everywhere(tmp_path, name):
+    with pytest.raises(ValueError, match="api_key_env"):
+        ProviderSettings(base_url="https://x.example/v1", model="m", api_key_env=name)
+    cfg = tmp_path / "luna.toml"
+    cfg.write_text(
+        '[llm.providers.x]\nbase_url = "https://evil.example/v1"\nmodel = "m"\n'
+        f'api_key_env = "{name}"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="api_key_env"):
+        load_settings(cfg, env={}, cwd=tmp_path)
+
+
+@pytest.mark.parametrize("name", ["GROQ_API_KEY", "OPENROUTER_API_KEY", "LUNA_ANYTHING_API_KEY"])
+def test_known_and_luna_key_names_are_accepted(name):
+    ProviderSettings(base_url="https://x.example/v1", model="m", api_key_env=name)
+
+
+def test_overlay_can_clear_a_luna_toml_value(tmp_path):
+    env, folder = appdata(tmp_path)
+    (folder / "luna.toml").write_text(
+        '[llm.providers.groq]\nsupports_tools = false\nreasoning_effort = "high"\n',
+        encoding="utf-8",
+    )
+    base = load_settings(env=env, cwd=tmp_path, store=InMemoryStore())
+    assert base.llm.providers["groq"].supports_tools is False
+    providers = {
+        n: c.model_copy(update={"supports_tools": None, "reasoning_effort": None})
+        if n == "groq"
+        else c
+        for n, c in base.llm.providers.items()
+    }
+    path = folder / "providers.toml"
+    write_overlay(path, base.llm.chain, providers, base=base)
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert data["llm"]["providers"]["groq"]["supports_tools"] == "auto"
+    assert data["llm"]["providers"]["groq"]["reasoning_effort"] == ""
+    again = load_settings(env=env, cwd=tmp_path, store=InMemoryStore())
+    assert again.llm.providers["groq"].supports_tools is None
+    assert again.llm.providers["groq"].reasoning_effort is None
+
+
+def test_tmp_names_are_unique_and_cleaned(tmp_path):
+    base, providers = _providers()
+    path = tmp_path / "providers.toml"
+    for _ in range(3):
+        write_overlay(path, ["mine"], providers, base=base)
+    assert [p.name for p in tmp_path.iterdir()] == ["providers.toml"]
+
+
+def test_no_appdata_means_no_overlay(tmp_path):
+    assert load_settings(env={}, cwd=tmp_path) == Settings()
+    assert read_overlay(None) == {}
+    assert read_overlay(tmp_path / "missing.toml") == {}
+
+
+def _providers():
+    base = Settings()
+    providers = dict(base.llm.providers)
+    providers["mine"] = ProviderSettings(
+        base_url="https://llm.example.com/v1",
+        model="big-1",
+        api_key_env="LUNA_MINE_API_KEY",
+        supports_tools=False,
+    )
+    return base, providers
+
+
+def test_write_round_trip_and_no_keys(tmp_path):
+    base, providers = _providers()
+    path = tmp_path / "LUNA" / "providers.toml"
+    write_overlay(path, ["mine", "groq"], providers, base=base)
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("# Managed by L.U.N.A.")
+    data = tomllib.loads(text)
+    assert data["llm"]["chain"] == ["mine", "groq"]
+    assert data["llm"]["providers"]["mine"]["supports_tools"] is False
+    assert "supports_tools" not in data["llm"]["providers"]["groq"]  # None is not written
+    assert not list(path.parent.glob("*.tmp"))
+    assert read_overlay(path) == data
+
+
+def test_writer_validates_before_writing(tmp_path):
+    base, providers = _providers()
+    path = tmp_path / "providers.toml"
+    path.write_text("# old\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="Invalid providers"):
+        write_overlay(path, ["ghost"], providers, base=base)
+    bad = dict(providers, mine=providers["mine"].model_copy(update={"base_url": "http://evil/v1"}))
+    with pytest.raises(ConfigError, match="https"):
+        write_overlay(path, ["mine"], bad, base=base)
+    assert path.read_text(encoding="utf-8") == "# old\n"
+
+
+def test_failed_replace_keeps_old_file_and_cleans_tmp(tmp_path, monkeypatch):
+    base, providers = _providers()
+    path = tmp_path / "providers.toml"
+    path.write_text("# old\n", encoding="utf-8")
+
+    def boom(src, dst):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(providers_file.os, "replace", boom)
+    with pytest.raises(ConfigError, match="Cannot write"):
+        write_overlay(path, ["mine"], providers, base=base)
+    assert path.read_text(encoding="utf-8") == "# old\n"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_known_key_names_and_forget_covers_configured_names():
+    names = known_key_names({"LUNA_MINE_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"})
+    assert names[:2] == ["GROQ_API_KEY", "GEMINI_API_KEY"]
+    assert set(names) == {
+        "GROQ_API_KEY",
+        "GEMINI_API_KEY",
+        "LUNA_MINE_API_KEY",
+        "OPENROUTER_API_KEY",
+    }
+    store = InMemoryStore({"LUNA_MINE_API_KEY": "a-1234", "OTHER": "keep-1234"})
+    assert forget_keys(store, names) == ["LUNA_MINE_API_KEY"]
+    assert store.values == {"OTHER": "keep-1234"}
+
+
+def test_forget_keys_cli_includes_overlay_names(tmp_path, monkeypatch, capsys):
+    from luna.__main__ import main
+
+    env, folder = appdata(tmp_path)
+    (folder / "providers.toml").write_text(OVERLAY, encoding="utf-8")
+    monkeypatch.setenv("APPDATA", env["APPDATA"])
+    monkeypatch.chdir(tmp_path)
+    store = InMemoryStore({"LUNA_MINE_API_KEY": "a-1234"})
+    monkeypatch.setattr("luna.config.secrets.default_store", lambda: store)
+    assert main(["--forget-keys"]) == 0
+    assert store.values == {}
+    assert "LUNA_MINE_API_KEY" in capsys.readouterr().err
+
+
+def test_luna_toml_sets_chain(tmp_path):
+    from luna.config.loader import luna_toml_sets_chain
+
+    env, folder = appdata(tmp_path)
+    assert luna_toml_sets_chain(env=env, cwd=tmp_path) is False
+    (folder / "luna.toml").write_text('[app]\nlog_level = "DEBUG"\n', encoding="utf-8")
+    assert luna_toml_sets_chain(env=env, cwd=tmp_path) is False
+    (folder / "luna.toml").write_text('[llm]\nchain = ["groq"]\n', encoding="utf-8")
+    assert luna_toml_sets_chain(env=env, cwd=tmp_path) is True
+    (folder / "luna.toml").write_text("[llm\n", encoding="utf-8")
+    assert luna_toml_sets_chain(env=env, cwd=tmp_path) is False

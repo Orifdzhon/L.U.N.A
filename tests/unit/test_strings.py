@@ -35,8 +35,8 @@ def test_unknown_language_falls_back_to_english_and_default_is_russian() -> None
 
 
 def test_placeholders_are_formatted() -> None:
-    assert t("keys.save_failed", "en", error="boom") == "Could not save: boom"
-    assert "boom" in t("keys.save_failed", "ru", error="boom")
+    assert t("providers.cannot_save", "en", error="boom") == "Could not save: boom"
+    assert "boom" in t("providers.cannot_save", "ru", error="boom")
 
 
 def test_auto_uses_the_injected_probe() -> None:

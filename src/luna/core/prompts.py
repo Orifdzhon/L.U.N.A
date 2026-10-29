@@ -39,16 +39,18 @@ _PERSONA = {
 _CAPABILITIES = {
     "en": (
         "If asked who you are or what you can do, answer in two or three natural spoken "
-        "sentences, no lists: you open apps and websites, search the web and inside sites "
-        "(YouTube, VK...), tell the time and date, find and open files by name, answer "
-        "questions, and keep chatting after the wake word 'Luna' in conversation mode; "
-        "mention you were created by Orif."
+        "sentences, no lists: you open and close apps, open websites, search the web and "
+        "inside sites (YouTube, VK...), tell the time and date, find and open files by name, "
+        "answer questions, and keep "
+        "chatting after the wake word 'Luna' in conversation mode; mention you were created "
+        "by Orif."
     ),
     "ru": (
         "Если спросят, кто ты и что умеешь, ответь двумя-тремя естественными фразами без "
-        "списков: ты открываешь приложения и сайты, ищешь в интернете и на сайтах (YouTube, "
-        "ВК...), называешь время и дату, находишь и открываешь файлы по названию, отвечаешь на "
-        "вопросы и после слова «Луна» продолжаешь разговор в режиме диалога; упомяни, что "
+        "списков: ты открываешь и закрываешь приложения, открываешь сайты, ищешь в "
+        "интернете и на сайтах (YouTube, ВК...), называешь время и дату, находишь и "
+        "открываешь файлы по названию, отвечаешь на вопросы и после слова «Луна» "
+        "продолжаешь разговор в режиме диалога; упомяни, что "
         "тебя создал Orif."
     ),
 }

@@ -6,9 +6,12 @@ Failures of ``launch`` / ``open_url`` / hotkey and autostart operations are repo
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+
+from luna.core.errors import ToolError
 
 
 @dataclass(frozen=True)
@@ -91,4 +94,49 @@ class SingleInstance(Protocol):
 
     def release(self) -> None:
         """Give the claim up. Idempotent."""
+        ...
+
+
+class CloseOutcome(enum.Enum):
+    CLOSED = "closed"  # every process of the app exited
+    PROMPTED = "prompted"  # the app asks the user something (e.g. "save changes?")
+    HIDDEN = "hidden"  # windows are gone but the process lives on (tray apps)
+    NOT_RESPONDING = "not_responding"  # a window is hung or did not close in time
+    NOT_RUNNING = "not_running"  # already gone
+
+
+class ProtectedApp(ToolError):
+    """The target is a protected (system / security / own) process and is never touched."""
+
+
+@dataclass(frozen=True)
+class RunningApp:
+    """A running app as listed by ``RunningApps``. Window titles are never part of it."""
+
+    key: str  # opaque identity "<image path>|<pid>|<creation time>"; never shown
+    name: str  # display name: exe FileDescription, else exe stem
+    exe_path: str | None
+    app_id: str | None  # AUMID of a packaged app, else None
+    pids: tuple[int, ...]
+    windows: int  # visible top-level windows (count only)
+
+
+@runtime_checkable
+class RunningApps(Protocol):
+    def list_running(self) -> Sequence[RunningApp]:
+        """Snapshot of running user apps. Protected processes never appear."""
+        ...
+
+    def close(self, app: RunningApp, *, wait_s: float) -> CloseOutcome:
+        """Ask the app to close like its window's X button, wait up to ``wait_s`` seconds.
+        Raises ``ToolError`` on failure and ``ProtectedApp`` for protected targets."""
+        ...
+
+    def terminate(self, app: RunningApp) -> None:
+        """Kill the app's processes. Raises ``ToolError`` if the app is gone or changed (pid
+        reuse) and ``ProtectedApp`` for protected targets."""
+        ...
+
+    def identity_matches(self, app: RunningApp, entry: AppEntry) -> bool:
+        """Whether ``app`` is the running instance of the catalog ``entry`` (AUMID / exe path)."""
         ...

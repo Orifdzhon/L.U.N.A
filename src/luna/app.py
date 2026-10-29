@@ -34,9 +34,16 @@ from luna.llm.chain import LLMChain
 from luna.llm.openai_compat import OpenAICompatProvider, Quirks
 from luna.logs.action_log import ActionLog
 from luna.logs.setup import default_log_dir
-from luna.platform.base import AppCatalog, AppLauncher, BrowserOpener, HotkeyListener
+from luna.platform.base import (
+    AppCatalog,
+    AppLauncher,
+    BrowserOpener,
+    HotkeyListener,
+    RunningApps,
+)
 from luna.search.base import SearchProvider
 from luna.stt.base import STTProvider
+from luna.tools.builtin.close_app import CloseAppTool
 from luna.tools.builtin.datetime import GetDatetimeTool
 from luna.tools.builtin.find_file import FileResults, FindFileTool, OpenFileTool
 from luna.tools.builtin.open_app import OpenAppTool
@@ -406,6 +413,7 @@ def _assemble(
     launcher: AppLauncher | None = None,
     file_opener: FileOpener | None = None,
     file_roots: Callable[[], Sequence[RootDir]] | None = None,
+    running: RunningApps | None = None,
     log_dir: Path | None = None,
     platform: str | None = None,
     clock: Clock | None = None,
@@ -438,7 +446,8 @@ def _assemble(
         providers, missing = _build_providers(settings)
         closers.extend(providers)
         active = [p.name for p in providers]
-        chat = LLMChain(providers, clock, bus) if providers else _NoLLM()
+        no_tools = {n for n, c in settings.llm.providers.items() if c.supports_tools is False}
+        chat = LLMChain(providers, clock, bus, no_tools=no_tools) if providers else _NoLLM()
 
     # Tools
     if browser is None:
@@ -454,6 +463,10 @@ def _assemble(
 
         catalog = WindowsAppCatalog()
         launcher = launcher or WindowsAppLauncher(catalog)
+        if running is None:
+            from luna.platform.factory import create_running_apps
+
+            running = create_running_apps(settings.apps.protected_extra)
     if catalog is not None and launcher is not None:
         registry.register(
             OpenAppTool(
@@ -464,6 +477,17 @@ def _assemble(
                 margin=settings.router.margin,
             )
         )
+        if running is not None:
+            registry.register(
+                CloseAppTool(
+                    running,
+                    catalog,
+                    settings.router.app_aliases,
+                    conf=settings.apps,
+                    threshold=settings.router.threshold,
+                    margin=settings.router.margin,
+                )
+            )
         thread = threading.Thread(
             target=_warm_catalog, args=(catalog,), name="luna-app-catalog", daemon=True
         )

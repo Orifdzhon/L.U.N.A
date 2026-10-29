@@ -24,6 +24,13 @@ from pydantic import (
 _log = logging.getLogger(__name__)
 
 
+def _known_key_envs() -> set[str]:
+    from luna.config.secrets import KNOWN_KEY_NAMES
+    from luna.llm.presets import load_presets
+
+    return {*KNOWN_KEY_NAMES, *(p.key_env for p in load_presets() if p.key_env)}
+
+
 class _Section(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -48,6 +55,26 @@ class ProviderSettings(_Section):
     supports_tool_choice: bool | None = None
     reasoning_effort: str | None = None
     max_tokens: int | None = Field(default=None, gt=0)
+    # Result of the dialog's tool-calling probe; False = the chain sends this provider no tools
+    # (it only answers). None = unknown, tools are sent as usual (ADR 0011 D16).
+    supports_tools: bool | None = None
+
+    @field_validator("api_key_env")
+    @classmethod
+    def _key_env_is_safe(cls, value: str | None) -> str | None:
+        """Only a pattern-conforming name that is a known preset key or ``LUNA_*``.
+
+        Stops a config / overlay from pointing a provider at another secret (``GITHUB_TOKEN``)
+        and sending it to an arbitrary URL.
+        """
+        if value is None or not value.strip():
+            return value
+        name = value.strip()
+        if not re.fullmatch(r"[A-Z0-9_]+", name):
+            raise ValueError("api_key_env must match [A-Z0-9_]+")
+        if not name.startswith("LUNA_") and name not in _known_key_envs():
+            raise ValueError("api_key_env must be a known provider key name or start with LUNA_")
+        return value
 
 
 def _default_providers() -> dict[str, ProviderSettings]:
@@ -114,6 +141,14 @@ class FilesSettings(_Section):
     max_entries: int = Field(default=300_000, ge=1000)
     max_results: int = Field(default=5, ge=1, le=10)
     send_names_to_llm: bool = True  # False: the LLM gets only counts, names stay on screen
+
+
+class AppsSettings(_Section):
+    """``close_app`` (ADR 0011)."""
+
+    close_wait_s: float = Field(default=3.0, gt=0, le=30)  # wait for a window to close
+    force_window_s: float = Field(default=60.0, gt=0, le=600)  # how long a force offer stays valid
+    protected_extra: list[str] = Field(default_factory=list)  # more exe names never closed
 
 
 EDGE_VOICE_PATTERN = r"^[a-z]{2,3}-[A-Z]{2,4}-[A-Za-z0-9]+Neural$"
@@ -361,6 +396,7 @@ class Settings(_Section):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
     router: RouterSettings = Field(default_factory=RouterSettings)
+    apps: AppsSettings = Field(default_factory=AppsSettings)
     tts: TTSSettings = Field(default_factory=TTSSettings)
     stt: STTSettings = Field(default_factory=STTSettings)
     voice: VoiceSettings = Field(default_factory=VoiceSettings)

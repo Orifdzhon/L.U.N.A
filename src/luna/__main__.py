@@ -84,10 +84,22 @@ def _report(message: str) -> None:
 
 
 def _forget_keys() -> int:
-    from luna.config.secrets import SecretStoreError, default_store, forget_keys
+    from luna.config.loader import load_settings
+    from luna.config.secrets import (
+        InMemoryStore,
+        SecretStoreError,
+        default_store,
+        forget_keys,
+        known_key_names,
+    )
 
+    extra: set[str] = set()
+    try:  # key names of the configured providers (providers.toml); built-ins if config is broken
+        extra = load_settings(store=InMemoryStore()).api_key_names()
+    except Exception:
+        _report("luna: configuration unreadable, deleting the built-in key names only")
     try:
-        removed = forget_keys(default_store())
+        removed = forget_keys(default_store(), known_key_names(extra))
     except SecretStoreError as exc:
         _report(f"luna: {exc}")
         return 1

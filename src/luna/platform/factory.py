@@ -9,8 +9,8 @@ from pathlib import Path
 from luna.config.settings import FilesSettings
 from luna.files.base import FileOpener, RootDir
 from luna.files.roots import resolve_roots
-from luna.platform.base import Autostart, SingleInstance
-from luna.platform.fallback import NoAutostart, ProcessLocalInstance
+from luna.platform.base import Autostart, RunningApps, SingleInstance
+from luna.platform.fallback import NoAutostart, NoRunningApps, ProcessLocalInstance
 
 
 def create_autostart() -> Autostart:
@@ -55,3 +55,11 @@ def create_roots_provider(conf: FilesSettings) -> Callable[[], Sequence[RootDir]
             return []
 
     return lambda: resolve_roots(conf, known_folders=known, drives=drives)
+
+
+def create_running_apps(protected_extra: Sequence[str] = ()) -> RunningApps:
+    if sys.platform == "win32":
+        from luna.platform.windows.processes import WindowsRunningApps
+
+        return WindowsRunningApps(protected_extra=protected_extra)
+    return NoRunningApps()

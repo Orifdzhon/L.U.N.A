@@ -19,10 +19,11 @@ from PySide6.QtWidgets import (
 
 from luna.config.secrets import SecretStoreError
 from luna.ui.shell.keys import KeyCheck, KeyField, KeysPresenter, check_key
+from luna.ui.shell.strings import t
 
 logger = logging.getLogger(__name__)
 
-RESTART_NOTE = "Saved. Restart L.U.N.A. to use the new key."
+RESTART_NOTE = t("keys.saved", "en")
 
 
 class _Bridge(QObject):
@@ -30,12 +31,12 @@ class _Bridge(QObject):
 
 
 class _Row:
-    def __init__(self, field: KeyField, status: str) -> None:
+    def __init__(self, field: KeyField, status: str, lang: str) -> None:
         self.field = field
         self.edit = QLineEdit()
         self.edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.edit.setPlaceholderText("paste the key here")
-        self.test = QPushButton("Test")
+        self.edit.setPlaceholderText(t("keys.placeholder", lang))
+        self.test = QPushButton(t("keys.test", lang))
         self.result = QLabel(status)
 
 
@@ -48,20 +49,24 @@ class KeysDialog(QDialog):
         parent: QWidget | None = None,
         *,
         run_check: Callable[[str, str], KeyCheck] = check_key,
+        lang: str = "en",
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("L.U.N.A. - API keys")
+        self.setWindowTitle(t("keys.title", lang))
         self._presenter = presenter
+        self._lang = lang
         self._run_check = run_check
         self._bridge = _Bridge()
         self._bridge.tested.connect(self._on_tested)
         self.rows: dict[str, _Row] = {}
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Cloud keys for the voice assistant (stored in Windows)."))
+        layout.addWidget(QLabel(t("keys.intro", lang)))
         for field in presenter.fields:
-            row = _Row(field, presenter.status(field))
+            row = _Row(field, presenter.status(field), lang)
             self.rows[field.env_name] = row
-            layout.addWidget(QLabel(field.label + (" - required" if field.required else "")))
+            layout.addWidget(
+                QLabel(field.label + (t("keys.required", lang) if field.required else ""))
+            )
             line = QHBoxLayout()
             line.addWidget(row.edit)
             line.addWidget(row.test)
@@ -71,8 +76,8 @@ class KeysDialog(QDialog):
         self.note = QLabel("")
         layout.addWidget(self.note)
         buttons = QHBoxLayout()
-        self.save_button = QPushButton("Save")
-        self.later_button = QPushButton("Later")
+        self.save_button = QPushButton(t("keys.save", lang))
+        self.later_button = QPushButton(t("keys.later", lang))
         buttons.addStretch(1)
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.later_button)
@@ -84,9 +89,9 @@ class KeysDialog(QDialog):
         row = self.rows[env_name]
         key = row.edit.text().strip()
         if not key:
-            row.result.setText("Enter a key first")
+            row.result.setText(t("keys.enter_first", self._lang))
             return
-        row.result.setText("Testing...")
+        row.result.setText(t("keys.testing", self._lang))
         row.test.setEnabled(False)
         url = row.field.models_url
 
@@ -114,8 +119,8 @@ class KeysDialog(QDialog):
                     row.result.setText(self._presenter.status(row.field))
         except SecretStoreError as exc:
             logger.warning("[keys] %s", exc)
-            self.note.setText(f"Could not save: {exc}")
+            self.note.setText(t("keys.save_failed", self._lang, error=exc))
             return
-        self.note.setText(RESTART_NOTE if saved else "Nothing to save")
+        self.note.setText(t("keys.saved" if saved else "keys.nothing", self._lang))
         if saved:
             logger.info("[keys] API keys saved")

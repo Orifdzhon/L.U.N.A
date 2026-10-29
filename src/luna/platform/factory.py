@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 
-from luna.platform.base import Autostart, SingleInstance
-from luna.platform.fallback import NoAutostart, ProcessLocalInstance
+from luna.platform.base import Autostart, RunningApps, SingleInstance
+from luna.platform.fallback import NoAutostart, NoRunningApps, ProcessLocalInstance
 
 
 def create_autostart() -> Autostart:
@@ -22,3 +23,11 @@ def create_single_instance() -> SingleInstance:
 
         return NamedMutexInstance()
     return ProcessLocalInstance()
+
+
+def create_running_apps(protected_extra: Sequence[str] = ()) -> RunningApps:
+    if sys.platform == "win32":
+        from luna.platform.windows.processes import WindowsRunningApps
+
+        return WindowsRunningApps(protected_extra=protected_extra)
+    return NoRunningApps()

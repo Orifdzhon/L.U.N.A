@@ -16,7 +16,7 @@ from typing import Any, NamedTuple
 from luna.audio.base import AudioClip
 from luna.core.errors import ToolError
 from luna.llm.base import ChatResponse, Message, ToolSchema
-from luna.platform.base import AppEntry
+from luna.platform.base import AppEntry, CloseOutcome, RunningApp
 from luna.search.base import SearchResult
 from luna.stt.base import Transcript
 from luna.tools.base import SafetyLevel, ToolContext, ToolResult
@@ -642,3 +642,53 @@ class FakeVerifier:
 
     def close(self) -> None:
         self.closed = True
+
+
+# --- close_app: running apps (#189) --------------------------------------------------------------
+
+
+class FakeRunningApps:
+    """Scripted ``RunningApps``: records closes/terminations, never touches a real process.
+
+    ``outcomes`` maps ``RunningApp.key`` to a ``CloseOutcome`` (or a list consumed in order);
+    default ``CLOSED``. ``identity`` maps ``RunningApp.key`` to the catalog ``app_id`` it is.
+    """
+
+    def __init__(
+        self,
+        apps: Sequence[RunningApp] = (),
+        *,
+        outcomes: dict[str, Any] | None = None,
+        identity: dict[str, str] | None = None,
+        close_error: BaseException | None = None,
+        terminate_error: BaseException | None = None,
+    ) -> None:
+        self.apps = list(apps)
+        self.outcomes = dict(outcomes or {})
+        self.identity = dict(identity or {})
+        self.close_error = close_error
+        self.terminate_error = terminate_error
+        self.closed: list[str] = []  # keys passed to close()
+        self.terminated: list[str] = []  # keys passed to terminate()
+        self.waits: list[float] = []
+
+    def list_running(self) -> tuple[RunningApp, ...]:
+        return tuple(self.apps)
+
+    def close(self, app: RunningApp, *, wait_s: float) -> CloseOutcome:
+        self.closed.append(app.key)
+        self.waits.append(wait_s)
+        if self.close_error is not None:
+            raise self.close_error
+        outcome = self.outcomes.get(app.key, CloseOutcome.CLOSED)
+        if isinstance(outcome, list):
+            outcome = outcome.pop(0) if len(outcome) > 1 else outcome[0]
+        return outcome
+
+    def terminate(self, app: RunningApp) -> None:
+        if self.terminate_error is not None:
+            raise self.terminate_error
+        self.terminated.append(app.key)
+
+    def identity_matches(self, app: RunningApp, entry: AppEntry) -> bool:
+        return self.identity.get(app.key) == entry.app_id

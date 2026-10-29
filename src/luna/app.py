@@ -33,9 +33,16 @@ from luna.llm.chain import LLMChain
 from luna.llm.openai_compat import OpenAICompatProvider, Quirks
 from luna.logs.action_log import ActionLog
 from luna.logs.setup import default_log_dir
-from luna.platform.base import AppCatalog, AppLauncher, BrowserOpener, HotkeyListener
+from luna.platform.base import (
+    AppCatalog,
+    AppLauncher,
+    BrowserOpener,
+    HotkeyListener,
+    RunningApps,
+)
 from luna.search.base import SearchProvider
 from luna.stt.base import STTProvider
+from luna.tools.builtin.close_app import CloseAppTool
 from luna.tools.builtin.datetime import GetDatetimeTool
 from luna.tools.builtin.open_app import OpenAppTool
 from luna.tools.builtin.open_website import OpenWebsiteTool
@@ -373,6 +380,7 @@ def _assemble(
     browser: BrowserOpener | None = None,
     catalog: AppCatalog | None = None,
     launcher: AppLauncher | None = None,
+    running: RunningApps | None = None,
     log_dir: Path | None = None,
     platform: str | None = None,
     clock: Clock | None = None,
@@ -421,6 +429,10 @@ def _assemble(
 
         catalog = WindowsAppCatalog()
         launcher = launcher or WindowsAppLauncher(catalog)
+        if running is None:
+            from luna.platform.factory import create_running_apps
+
+            running = create_running_apps(settings.apps.protected_extra)
     if catalog is not None and launcher is not None:
         registry.register(
             OpenAppTool(
@@ -431,6 +443,17 @@ def _assemble(
                 margin=settings.router.margin,
             )
         )
+        if running is not None:
+            registry.register(
+                CloseAppTool(
+                    running,
+                    catalog,
+                    settings.router.app_aliases,
+                    conf=settings.apps,
+                    threshold=settings.router.threshold,
+                    margin=settings.router.margin,
+                )
+            )
         thread = threading.Thread(
             target=_warm_catalog, args=(catalog,), name="luna-app-catalog", daemon=True
         )

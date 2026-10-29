@@ -57,6 +57,12 @@ margin = 5                  # the best match must beat the runner-up by this muc
 # [router.site_aliases]
 # "ютуб" = "https://www.youtube.com"
 
+[apps]                      # "close <app>" (the close_app tool)
+close_wait_s = 3.0          # how long to wait for an app to close after asking it to, seconds
+force_window_s = 60.0       # a "force-close?" offer stays valid this long, seconds
+# Extra program names that must never be closed (the built-in protected list cannot be reduced):
+# protected_extra = ["keepass", "obs64"]
+
 [tts]
 enabled = false             # speak replies aloud; `luna --voice` / `--no-voice` override this
 provider = "piper"          # "piper": local neural voice (Irina / Kristin), nothing leaves the PC,

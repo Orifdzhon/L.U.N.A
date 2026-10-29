@@ -277,3 +277,20 @@ Once on your real PC: install the personal setup and run the MVP phrases by voic
 | A general question gets a spoken and written answer | M9 | [ ] / [ ] |
 | Starts with Windows (when enabled) and lives in the tray | M17-M19 | [ ] / [ ] |
 | Automated tests and lint pass in CI | the PR's CI run | [ ] / [ ] |
+
+## O. close_app (ADR 0011, feature A)
+
+Use throw-away windows (Notepad with unsaved text, a spare Telegram), never work you care about.
+
+| # | Action | Expected | Pass / Fail |
+|---|---|---|---|
+| O1 | Open Notepad, type `закрой блокнот` | Notepad closes like the X button; reply "Закрыла Блокнот" or similar | [ ] / [ ] |
+| O2 | Open Notepad, type some text, type `закрой блокнот` | Notepad shows "Save changes?"; L.U.N.A. says the app is asking something and does nothing more | [ ] / [ ] |
+| O3 | Open Telegram, type `закрой телеграм` | Window closes (tray apps: the reply says it keeps running in the tray and offers to close it completely) | [ ] / [ ] |
+| O4 | After O3 (tray), reply `да, закрой полностью` | Telegram exits (force path, only after your answer in a new message) | [ ] / [ ] |
+| O5 | Open Chrome with two windows, type `закрой хром` | Both windows close (one app); an app with a "restore pages" prompt may report "asking" | [ ] / [ ] |
+| O6 | Type `закрой проводник`, `закрой диспетчер задач`, `закрой луну` | Refused or "no running app matches": protected and own processes are never closed | [ ] / [ ] |
+| O7 | Type `закрой фотошоп` (not installed / not running) | "No running app matches" / "not running"; nothing happens | [ ] / [ ] |
+| O8 | Type `force close notepad` right away (no earlier "not responding") | Not force-closed: a normal close is tried instead | [ ] / [ ] |
+| O9 | With a hung app (e.g. a test program that blocks its UI thread), type `закрой <app>` | "Not responding, force close?"; answer `да` in the next message to kill it; a `да` after 60 s or for another app does nothing | [ ] / [ ] |
+| O10 | Open the action log (`%LOCALAPPDATA%\LUNA\logs`) | One `close_app` record per call; no window titles | [ ] / [ ] |

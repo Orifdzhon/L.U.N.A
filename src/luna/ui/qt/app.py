@@ -33,6 +33,7 @@ from luna.ui.shell.controller import ShellController, arm_watchdog
 from luna.ui.shell.keys import KeysPresenter, has_cloud_llm_key
 from luna.ui.shell.launch import own_launch_command
 from luna.ui.shell.state import ConversationLine
+from luna.ui.shell.strings import resolve_language
 
 logger = logging.getLogger(__name__)
 
@@ -93,12 +94,13 @@ def run_tray(
         on_cancel=lambda: holder["controller"].cancel(),
         on_closed=on_closed,
     )
+    lang = resolve_language(settings.ui.language)
     keys_dialogs: list[KeysDialog] = []
 
     def show_keys() -> None:
         if not keys_dialogs:
             store = keys_store if keys_store is not None else credentials.default_store()
-            keys_dialogs.append(KeysDialog(KeysPresenter(settings, store)))
+            keys_dialogs.append(KeysDialog(KeysPresenter(settings, store), lang=lang))
         dialog = keys_dialogs[0]
         dialog.show()
         dialog.raise_()
@@ -111,6 +113,7 @@ def run_tray(
         on_set_autostart=lambda on: holder["controller"].set_autostart(on),
         on_quit=quit_shell,
         on_keys=show_keys,
+        lang=lang,
     )
     controller = ShellController(
         app,

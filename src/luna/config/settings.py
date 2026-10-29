@@ -331,6 +331,7 @@ class UISettings(_Section):
     start_minimized: bool = False  # start hidden in the tray
     notifications: bool = True  # tray balloon notifications
     history_lines: int = Field(default=200, ge=20, le=2000)  # lines kept in the window history
+    language: Literal["auto", "ru", "en"] = "auto"  # UI language; auto = Windows UI language
 
     @model_validator(mode="before")
     @classmethod

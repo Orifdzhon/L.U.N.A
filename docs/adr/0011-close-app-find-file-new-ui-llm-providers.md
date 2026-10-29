@@ -384,20 +384,25 @@ class FileSearch:                          # luna/files/search.py: index → wal
 ```
    (The glyphs in the mockup are placeholders; the real buttons are QPainter-drawn icons — no icon
    font, no image assets, no emoji.)
-3. **Palette** (dark, WCAG AA for text on its background):
+3. **Palette** (dark, WCAG AA for text on its background). Amended 2026-10-29 (Issue #201,
+   space theme): the blue-tinted greys became neutral black / dark grey; `StarfieldWidget`
+   paints a `bg` → `bg_bottom` vertical gradient with drifting stars behind the whole window
+   (orb and chat are transparent over it); `surface` and `user_bubble` are drawn about 86-88 %
+   opaque so stars show faintly through. `[ui] animations = false` freezes stars and orb.
 
 | Token | Hex | Use |
 |---|---|---|
-| `bg` | `#0E1016` | window background |
-| `surface` | `#161A23` | input, Луна bubbles |
-| `surface_2` | `#1E2330` | hover, chips |
-| `border` | `#2A3040` | 1 px outlines |
-| `text` | `#E6E8EE` | main text |
-| `text_muted` | `#8B93A7` | status line, timestamps, captions |
-| `user_bubble` | `#2B3A67` | user bubbles (text `#F2F4FF`) |
+| `bg` | `#050506` | top of the window gradient |
+| `bg_bottom` | `#121214` | bottom of the window gradient |
+| `surface` | `#1A1B1E` | input, Луна bubbles |
+| `surface_2` | `#25272B` | hover, chips |
+| `border` | `#34363B` | 1 px outlines |
+| `text` | `#E8E9EC` | main text |
+| `text_muted` | `#9A9DA5` | status line, timestamps, captions |
+| `user_bubble` | `#30343D` | user bubbles (text `#F2F4FF`) |
 | `accent` | `#8AB4FF` | focus ring, send button, links |
-| `chip_ok` | `#12262A` / text `#7FD1C7` | successful action chip |
-| `chip_fail` | `#2A1416` / text `#F28B82` | failed action chip |
+| `chip_ok` | `#101C1B` / text `#7FD1C7` | successful action chip |
+| `chip_fail` | `#241415` / text `#F28B82` | failed action chip |
 | `moon_core` | `#E8F0FF` → `#B8C7E6` | orb body (radial gradient), same in all states |
 | glow `IDLE` | `#8FA3C8` | slow breathing, 6 s period, low amplitude |
 | glow `WAKE` | `#6EA8FE` | breathing, 3 s period ("listening for «Луна»") |

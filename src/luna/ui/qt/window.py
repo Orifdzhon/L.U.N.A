@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QCloseEvent, QKeyEvent, QShowEvent
+from PySide6.QtGui import QCloseEvent, QKeyEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
 
 from luna.platform.windows.dwm import enable_dark_title_bar
 from luna.ui.qt.chat import ChatView
+from luna.ui.qt.guide import GuideOverlay
 from luna.ui.qt.orb import OrbWidget
+from luna.ui.qt.starfield import StarfieldWidget
 from luna.ui.qt.theme import PALETTE, mic_icon, send_icon, stylesheet
 from luna.ui.shell.state import ConversationLine, IconState
 from luna.ui.shell.strings import t
@@ -59,6 +61,8 @@ class QtWindowView(QWidget):
         on_open_file: Callable[[int, str], None] | None = None,
         history_lines: int = 200,
         lang: str = "en",
+        animations: bool = True,
+        on_guide_done: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self._on_submit = on_submit
@@ -75,7 +79,8 @@ class QtWindowView(QWidget):
         self.setStyleSheet(stylesheet())
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
-        self.orb = OrbWidget()
+        self.starfield = StarfieldWidget(self, animated=animations)  # bottom of the z-order
+        self.orb = OrbWidget(animated=animations)
         self.caption = QLabel("")
         self.caption.setObjectName("caption")
         self.caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -108,6 +113,11 @@ class QtWindowView(QWidget):
         layout.addLayout(row)
         layout.addWidget(self.status)
         self._sync_send()
+        self.guide = GuideOverlay(self, lang=lang, on_done=on_guide_done or (lambda: None))
+
+    def show_guide(self) -> None:
+        """Show the first-run guide over the window (also from the tray: "How to use")."""
+        self.guide.open()
 
     # ---- input -----------------------------------------------------------------------
 
@@ -170,6 +180,13 @@ class QtWindowView(QWidget):
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         enable_dark_title_bar(int(self.winId()))
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self.starfield.setGeometry(self.rect())
+        self.starfield.lower()
+        if not self.guide.isHidden():
+            self.guide.setGeometry(self.rect())
 
     def closeEvent(self, event: QCloseEvent) -> None:
         event.ignore()

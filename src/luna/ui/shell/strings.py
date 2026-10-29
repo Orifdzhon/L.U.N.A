@@ -73,7 +73,31 @@ _CATALOG: dict[str, dict[Lang, str]] = {
     "tray.open": {"ru": "Открыть окно", "en": "Open window"},
     "tray.autostart": {"ru": "Запускать с Windows", "en": "Start with Windows"},
     "tray.keys": {"ru": "Модели / провайдеры…", "en": "Models / providers…"},
+    "tray.guide": {"ru": "Как пользоваться", "en": "How to use"},
     "tray.quit": {"ru": "Выход", "en": "Quit"},
+    # first-run guide
+    "guide.title": {"ru": "Как пользоваться Луной", "en": "How to use L.U.N.A."},
+    "guide.call": {
+        "ru": "Позовите: скажите «Луна, …», нажмите кнопку микрофона или напишите команду внизу.",
+        "en": "Call her: say «Луна, …», press the mic button or type a command below.",
+    },
+    "guide.examples": {
+        "ru": "Например: «открой ютуб», «найди файл отчёт», «закрой телеграм», «какая погода».",
+        "en": "For example: «open youtube», «find file report», «close telegram», «weather».",
+    },
+    "guide.conversation": {
+        "ru": "Диалог: после ответа продолжайте без слова «Луна». «Спасибо» завершает разговор.",
+        "en": "Conversation: after a reply keep talking, no wake word. «Thanks» ends it.",
+    },
+    "guide.settings": {
+        "ru": "Настройки: значок в трее → «Модели / провайдеры…».",
+        "en": "Settings: tray icon → «Models / providers…».",
+    },
+    "guide.again": {
+        "ru": "Эту подсказку можно открыть снова: значок в трее → «Как пользоваться».",
+        "en": "Open this guide again: tray icon → «How to use».",
+    },
+    "guide.ok": {"ru": "Понятно", "en": "Got it"},
     # models / providers dialog
     "providers.title": {
         "ru": "L.U.N.A. - Модели / провайдеры",

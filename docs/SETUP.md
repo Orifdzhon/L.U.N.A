@@ -396,7 +396,10 @@ Tray menu (left click opens the window):
 | Quit | exit (a watchdog forces the exit after 10 s) |
 
 `[ui]` settings: `start_minimized` (default `false`), `notifications` (default `true`: tray
-notifications for errors only, such as a lost microphone; never any reply text), `history_lines`.
+notifications for errors only, such as a lost microphone; never any reply text), `history_lines`,
+`animations` (default `true`: orb motion and the drifting starfield; `false` = static frames).
+The first-run guide ("Как пользоваться" / "How to use") shows once, until "Got it" is pressed
+(marker `first_run_done` in `%LOCALAPPDATA%\LUNA\state.json`); the tray menu reopens it.
 The old `[ui] autostart` key is ignored (a warning is logged if it is `true`); the tray menu is
 the only switch.
 

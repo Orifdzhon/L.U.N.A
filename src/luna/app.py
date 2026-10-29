@@ -28,6 +28,7 @@ from luna.core.errors import ProviderUnavailable
 from luna.core.events import EventBus
 from luna.core.orchestrator import Orchestrator
 from luna.core.router import Router
+from luna.files.base import FileOpener, RootDir
 from luna.llm.base import ChatResponse, LLMProvider, Message, ToolSchema
 from luna.llm.chain import LLMChain
 from luna.llm.openai_compat import OpenAICompatProvider, Quirks
@@ -37,6 +38,7 @@ from luna.platform.base import AppCatalog, AppLauncher, BrowserOpener, HotkeyLis
 from luna.search.base import SearchProvider
 from luna.stt.base import STTProvider
 from luna.tools.builtin.datetime import GetDatetimeTool
+from luna.tools.builtin.find_file import FileResults, FindFileTool, OpenFileTool
 from luna.tools.builtin.open_app import OpenAppTool
 from luna.tools.builtin.open_website import OpenWebsiteTool
 from luna.tools.builtin.web_search import WebSearchTool
@@ -364,6 +366,35 @@ def _build_speaker(
     return speaker
 
 
+def _register_file_tools(
+    settings: Settings,
+    registry: ToolRegistry,
+    opener: FileOpener | None,
+    roots: Callable[[], Sequence[RootDir]] | None,
+    clock: Clock,
+    platform: str,
+    warnings: list[str],
+) -> FileResults | None:
+    """``find_file`` / ``open_file`` (ADR 0011, B); Windows only unless an opener is injected."""
+    from luna.files.query import load_kinds
+    from luna.files.search import FileSearch
+    from luna.platform.factory import create_file_opener, create_roots_provider
+
+    if opener is None and platform == "win32":
+        opener = create_file_opener()
+    if opener is None:
+        warnings.append("Finding files is only supported on Windows: 'find file' is disabled.")
+        return None
+    kinds = load_kinds()
+    results = FileResults(clock=clock)
+    search = FileSearch(
+        roots or create_roots_provider(settings.files), None, settings.files, clock=clock
+    )
+    registry.register(FindFileTool(search, results, settings.files, kinds))
+    registry.register(OpenFileTool(results, opener, kinds))
+    return results
+
+
 def _assemble(
     settings: Settings,
     closers: list[LLMProvider],
@@ -373,6 +404,8 @@ def _assemble(
     browser: BrowserOpener | None = None,
     catalog: AppCatalog | None = None,
     launcher: AppLauncher | None = None,
+    file_opener: FileOpener | None = None,
+    file_roots: Callable[[], Sequence[RootDir]] | None = None,
     log_dir: Path | None = None,
     platform: str | None = None,
     clock: Clock | None = None,
@@ -456,12 +489,18 @@ def _assemble(
             "web search is disabled."
         )
 
+    file_results = _register_file_tools(
+        settings, registry, file_opener, file_roots, clock, platform, warnings
+    )
+
     assistant = Assistant(
         chat,
         registry,
         history_turns=settings.app.history_turns,
         timeout_s=assistant_timeout(settings),
     )
+    if file_results is not None:
+        assistant.add_clear_hook(file_results.clear)  # /clear also forgets the found files
     orchestrator = Orchestrator(
         Router(registry), assistant, bus, settings.app.request_timeout_s, timer=clock
     )

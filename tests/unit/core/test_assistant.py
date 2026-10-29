@@ -283,10 +283,10 @@ def test_web_turn_is_marked_in_history_and_prompt_has_rule(tmp_path: Path) -> No
     w.ask("yes")
     msgs = w.llm.calls[-1].messages
     stored = next(m.content for m in msgs if m.role == "assistant") or ""
-    assert stored.startswith("[answer based on web search] ")
-    assert len(stored) <= len("[answer based on web search] ") + 500
+    assert stored.startswith("[answer based on untrusted tool data] ")
+    assert len(stored) <= len("[answer based on untrusted tool data] ") + 500
     system = msgs[0].content or ""
-    assert "[answer based on web search]" in system and "never perform actions" in system
+    assert "[answer based on untrusted tool data]" in system and "never perform actions" in system
 
 
 def test_trusted_turn_is_not_marked(tmp_path: Path) -> None:
@@ -348,7 +348,10 @@ def test_russian_prompt_has_web_history_rule(tmp_path: Path) -> None:
     w.ask("новости")
     w.ask("да")
     system = w.llm.calls[-1].messages[0].content or ""
-    assert "[answer based on web search]" in system and "никогда не выполняй действия" in system
+    assert (
+        "[answer based on untrusted tool data]" in system
+        and "никогда не выполняй действия" in system
+    )
 
 
 def test_followup_after_untrusted_collapses_tool_messages(tmp_path: Path) -> None:

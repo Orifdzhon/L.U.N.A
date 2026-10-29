@@ -1,6 +1,6 @@
 # ADR 0011 — close_app, find_file, the new dark window, and any OpenAI-compatible LLM provider
 
-- Status: **proposed** (architect, 2026-10-29). Owner decisions D1-D16 below.
+- Status: **accepted** (owner, 2026-10-29, relayed by the coordinator from the owner's chat: all recommendations D1-D16 accepted; compressed plan of 5 Issues, see "Owner decisions" below)
 - Date: 2026-10-29
 - Deciders: owner (approval), architect (proposal)
 - Related: [ADR 0002](0002-llm-providers-and-tool-calling.md) (LLM chain, tool calling),
@@ -556,6 +556,33 @@ class ProvidersPresenter:          # list/order/add/remove/save; used by the Qt 
 | D14 | Which presets ship | **all in the table**, non-free ones clearly badged «платно / пробный»; DeepSeek, Together, Cerebras below the free ones | ship only free ones (Groq, Gemini, OpenRouter, Mistral, Qwen trial) |
 | D15 | Product spec | **amend PRODUCT_SPEC §3.3 / §4**: `close_app` Safe (graceful) + force after re-ask; `find_file`/`open_file` read-only "file search" (not "file operations"); the providers dialog | keep the spec and treat these as post-MVP extras documented only here |
 | D16 | Models without tool calling | **allowed with a warning**; called without tools (answers only) | refuse to save them |
+
+### Owner decisions (2026-10-29, relayed by the coordinator from the owner's chat)
+
+- **D1-D16:** all accepted as recommended in the table above (no title matching; voice re-ask
+  enforced by the tool; tray apps get the same re-ask; PowerShell + ADODB for the index when it is
+  built; file names to the LLM with shortened paths; router "найди и открой" when built; open
+  allowlist / reveal-only; Qt Widgets + QPainter; RU UI with EN fallback; normal frame with a dark
+  title bar; separate `providers.toml`; `tomli-w`; apply on restart with "Restart now"; all presets
+  with badges; PRODUCT_SPEC amended (§3.3, §4, done in this PR); models without tools allowed with a
+  warning).
+- ADR 0011 **accepted**.
+- **Compressed plan — implemented now in 5 Issues** (each one PR, the sub-items below are its
+  checklist and acceptance criteria from the Issue breakdown):
+
+| Issue | Contents (from the breakdown) | Depends on |
+|---|---|---|
+| A — `close_app` | A1 protocol + fallback + fakes, A2 Windows enumeration + protected rules, A3 graceful close / hung / terminate, A4 running-app matching (`verbs=`), A5 tool + force rule + wiring + prompt + `[apps]` | — |
+| B — `find_file` / `open_file` (walk only) | B1 query parsing + ranking + `file_kinds.toml`, B2 bounded walker + `FileSearch` (no index: `FileIndex` is `None`, `[files] use_index` accepted but has no effect yet), B4 tools + `FileResults` + Windows opener/reveal + `UNTRUSTED_MARKER` + `[files]` | — |
+| C1 — orb + strings | C1 strings catalog RU/EN + `[ui] language`, C2 pure orb model + `OrbWidget` (+ `[ui] animations`) | — |
+| C2 — chat window | C3 chat view + theme, C4 window assembly + `WindowView.set_state/set_voice_available` + `ShellController.toggle_listen` + `VoiceInput.press()` + dark title bar, C6 file result chips | C1; B for the chips (C6 can land last in the PR or be stubbed until B merges) |
+| D — providers dialog | D1 presets, D2 `providers.toml` overlay + writer (`tomli-w`), D3 `check_provider`, D4 `supports_tools` in the chain, D5 Qt dialog replacing the keys dialog | — (C1 strings if it lands first) |
+
+- **Deferred to later Issues:** router fast paths A6 ("закрой X") and B6 ("найди … и открой"); the
+  Windows Search index (spike B3 and backend B5); C5 tray icons drawn by the orb painter. Until A6
+  lands, "закрой X" goes through the LLM (the router's `_NOT_A_COMMAND` already sends it there);
+  until B5 lands, `find_file` uses the bounded walk only (user folders < 0.5 s on the reference PC,
+  large drives within the 4 s budget, `timed_out` reported).
 
 ## Consequences
 

@@ -69,7 +69,9 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
-def run(qapp, monkeypatch, *, tray=True, minimized=False, settings=None, voice=None, steps=None):
+def run(
+    qapp, monkeypatch, *, tray=True, minimized=False, settings=None, voice=None, steps=None, **extra
+):
     monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", staticmethod(lambda: tray))
     fake = FakeApp(voice)
     instance = FakeInstance()
@@ -94,6 +96,7 @@ def run(qapp, monkeypatch, *, tray=True, minimized=False, settings=None, voice=N
         app_factory=factory,
         watchdog=lambda: None,
         on_ready=ready,
+        **extra,
     )
     return rc, fake, instance, seen, factory_kwargs
 
@@ -143,3 +146,30 @@ def test_wake_requested_only_when_enabled_and_voice_up(qapp, monkeypatch):
     run(qapp, monkeypatch, settings=settings, voice=FakeVoice(enabled=False))
     run(qapp, monkeypatch, settings=settings, voice=None)
     assert started == [True, False, False]
+
+
+def test_providers_dialog_restart_spawns_after_quit(qapp, monkeypatch, tmp_path):
+    from luna.config.secrets import InMemoryStore
+    from luna.ui.qt.providers_dialog import ProvidersDialog
+
+    spawned = []
+
+    def steps(controller):
+        controller._tray.keys_action.trigger()
+        dialog = next(w for w in QApplication.topLevelWidgets() if isinstance(w, ProvidersDialog))
+        assert dialog.save()
+        assert (tmp_path / "providers.toml").is_file()
+        dialog.restart_button.click()
+
+    settings = Settings().with_api_keys({"GROQ_API_KEY": "gk-run-tray-1234"})
+    rc, _fake, instance, _, _ = run(
+        qapp,
+        monkeypatch,
+        settings=settings,
+        steps=steps,
+        keys_store=InMemoryStore(),
+        overlay_path=tmp_path / "providers.toml",
+        spawn=spawned.append,
+    )
+    assert rc == 0 and instance.released == 1
+    assert len(spawned) == 1 and "--tray" in spawned[0].args

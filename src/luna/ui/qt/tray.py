@@ -33,7 +33,7 @@ class QtTrayView:
         self.open_action = QAction("Open window", self._menu)
         self.open_action.triggered.connect(lambda _checked=False: on_open())
         self.autostart_action = self._checkable("Start with Windows", on_set_autostart)
-        self.keys_action = QAction("API keys…", self._menu)
+        self.keys_action = QAction("Models / providers…", self._menu)
         self.keys_action.triggered.connect(lambda _checked=False: on_keys() if on_keys else None)
         self.quit_action = QAction("Quit", self._menu)
         self.quit_action.triggered.connect(lambda _checked=False: on_quit())

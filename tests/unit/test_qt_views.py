@@ -82,7 +82,7 @@ def test_tray_menu_has_six_items_and_reflects_state(app):
     assert calls == []  # programmatic updates do not fire callbacks
     actions = [a for a in tray._menu.actions() if not a.isSeparator()]
     assert len(actions) == 6
-    assert tray.keys_action.text() == "API keys…"
+    assert tray.keys_action.text() == "Models / providers…"
     assert tray._menu.defaultAction() is tray.open_action
 
 

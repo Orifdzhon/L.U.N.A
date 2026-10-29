@@ -215,26 +215,57 @@ def test_autoscroll_only_when_at_bottom(app):
     win.hide()
 
 
-def test_file_chips_call_open_file_and_other_actions_have_none(app):
-    opened: list = []
+def _file_window(lang, files, opened=None):
     win = QtWindowView(
         on_submit=lambda t: None,
         on_cancel=lambda: None,
         on_closed=lambda: None,
-        on_open_file=lambda i, a: opened.append((i, a)),
+        on_open_file=(lambda i, a: opened.append((i, a))) if opened is not None else None,
+        lang=lang,
     )
+    win.append(ConversationLine("action", "find_file: ok", ok=True, files=files))
+    return win
+
+
+def test_file_rows_call_open_file_and_other_actions_have_none(app):
+    opened: list = []
+    win = _file_window("en", (FileChip(1, "a.pdf"), FileChip(2, "b.docx")), opened)
     win.append(ConversationLine("action", "open_website: ok", ok=True))
-    assert not win.chat.findChildren(QPushButton)
-    win.append(
-        ConversationLine(
-            "action", "find_file: ok", ok=True, files=(FileChip(1, "a.pdf"), FileChip(2))
-        )
-    )
-    buttons = {b.text(): b for b in win.chat.findChildren(QPushButton)}
-    assert set(buttons) == {"Open 1", "Folder 1", "Open 2", "Folder 2"}
-    buttons["Open 2"].click()
-    buttons["Folder 1"].click()
+    buttons = win.chat.findChildren(QPushButton)
+    assert [b.text() for b in buttons] == ["Open", "Folder", "Open", "Folder"]
+    buttons[2].click()
+    buttons[1].click()
     assert opened == [(2, "open"), (1, "reveal")]
+    names = [lb.text() for lb in win.chat.findChildren(QLabel) if lb.property("filename")]
+    assert names == ["1. a.pdf", "2. b.docx"]
+    assert not [lb for lb in win.chat.findChildren(QLabel) if lb.property("chip")][1:]
+
+
+def test_file_rows_one_row_per_result_with_right_buttons_and_localized(app):
+    files = (
+        FileChip(1, "a.pdf"),
+        FileChip(2, "projects", kind="dir"),
+        FileChip(3, "tool.exe", can_open=False),
+    )
+    win = _file_window("ru", files)
+    texts = [b.text() for b in win.chat.findChildren(QPushButton)]
+    assert texts == ["Открыть", "Папка", "Открыть", "Показать в папке"]
+    assert len([lb for lb in win.chat.findChildren(QLabel) if lb.property("filename")]) == 3
+    en = _file_window("en", files)
+    assert [b.text() for b in en.chat.findChildren(QPushButton)] == [
+        "Open",
+        "Folder",
+        "Open",
+        "Show in folder",
+    ]
+
+
+def test_long_file_names_are_shortened_with_full_name_in_tooltip(app):
+    name = "очень_длинное_имя_документа_для_проверки_обрезки.pdf"
+    win = _file_window("en", (FileChip(1, name),))
+    label = next(lb for lb in win.chat.findChildren(QLabel) if lb.property("filename"))
+    assert len(label.text()) <= 34 and "…" in label.text()
+    assert label.toolTip() == name
 
 
 def test_send_button_and_enter_submit(app):

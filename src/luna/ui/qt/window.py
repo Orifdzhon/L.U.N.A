@@ -79,7 +79,7 @@ class QtWindowView(QWidget):
         self.caption = QLabel("")
         self.caption.setObjectName("caption")
         self.caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.chat = ChatView(history_lines, on_open_file)
+        self.chat = ChatView(history_lines, on_open_file, lang)
         self.input = _InputLine(on_cancel)
         self.input.setPlaceholderText(t("window.input_placeholder", lang))
         self.input.returnPressed.connect(self._submit)

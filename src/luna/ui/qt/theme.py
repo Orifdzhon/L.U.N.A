@@ -52,6 +52,7 @@ QPushButton[filechip="true"] {{
     border-radius: 10px; padding: 3px 10px; font-size: 9pt;
 }}
 QPushButton[filechip="true"]:hover {{ border-color: {p["accent"]}; }}
+QLabel[filename="true"] {{ color: {p["text"]}; font-size: 9pt; padding-left: 4px; }}
 QLabel#caption, QLabel#status {{ color: {p["text_muted"]}; }}
 QLabel#caption {{ font-size: 11pt; }}
 QLabel#status {{ font-size: 9pt; }}

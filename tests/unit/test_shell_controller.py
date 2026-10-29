@@ -893,7 +893,14 @@ def test_find_file_result_carries_chips_other_tools_do_not(env):
         "find_file",
         True,
         "2 files",
-        {"results": [{"index": 1, "name": "a.pdf"}, {"index": 2}, {"index": 99}, "junk"]},
+        {
+            "results": [
+                {"index": 1, "name": "a.pdf", "kind": "dir", "can_open": False},
+                {"index": 2},
+                {"index": 99},
+                "junk",
+            ]
+        },
         untrusted=True,
     )
     env.app.orchestrator.reply = Reply("Нашла", "ru", [found, ToolResult("open_website", True, "")])
@@ -902,6 +909,8 @@ def test_find_file_result_carries_chips_other_tools_do_not(env):
     actions = [ln for ln in env.window.lines if ln.kind == "action"]
     assert [c.index for c in actions[0].files] == [1, 2]
     assert actions[0].files[0].label == "a.pdf"
+    assert actions[0].files[0].kind == "dir" and actions[0].files[0].can_open is False
+    assert actions[0].files[1].kind == "file" and actions[0].files[1].can_open is True
     assert actions[1].files == () and actions[1].ok is True
 
 

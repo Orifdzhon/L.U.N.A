@@ -31,6 +31,12 @@ _CATALOG: dict[str, dict[Lang, str]] = {
     },
     "window.prefix.user": {"ru": "Вы: ", "en": "You: "},
     "window.prefix.assistant": {"ru": "Луна: ", "en": "L.U.N.A.: "},
+    # file result rows
+    "files.open": {"ru": "Открыть", "en": "Open"},
+    "files.folder": {"ru": "Папка", "en": "Folder"},
+    "files.reveal": {"ru": "Показать в папке", "en": "Show in folder"},
+    "files.open_tip": {"ru": "Открыть: {name}", "en": "Open: {name}"},
+    "files.folder_tip": {"ru": "Показать в папке: {name}", "en": "Show in folder: {name}"},
     # orb state captions
     "state.idle": {"ru": "Отдыхаю", "en": "Idle"},
     "state.wake": {"ru": "Слушаю «Луна»…", "en": "Listening for «Луна»…"},

@@ -231,6 +231,7 @@ def test_search_walk_only_ranks_and_limits(tmp_path):
     assert out.backend == "walk" and not out.timed_out
     assert out.hits[0].path.name == "Резюме_2026.pdf"
     assert len(out.hits) == 2
+    assert out.total >= 2
     assert out.roots[0].label == "Documents"
 
 

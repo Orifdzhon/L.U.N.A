@@ -76,6 +76,20 @@ def _parse_models(base_url: str, payload: Any) -> tuple[str, ...]:
     return tuple(sorted(found)[:MAX_MODELS])
 
 
+_NO_TOOLS_CUES = (
+    "not support",
+    "unsupported",
+    "does not",
+    "doesn't",
+    "no endpoints",
+    "not available",
+    "unknown parameter",
+    "unrecognized",
+    "extra inputs",
+    "not allowed",
+)
+
+
 def _probe_tools(response: httpx.Response) -> ToolSupport | None:
     if response.status_code == 200:
         try:
@@ -86,7 +100,8 @@ def _probe_tools(response: httpx.Response) -> ToolSupport | None:
         return ToolSupport.YES if calls else ToolSupport.UNCLEAR
     if response.status_code in (400, 422):
         text = response.text.lower()
-        if "tool" in text or "function" in text:
+        mentions = "tool" in text or "function" in text
+        if mentions and any(cue in text for cue in _NO_TOOLS_CUES):
             return ToolSupport.NO
     return None
 
@@ -332,6 +347,21 @@ class ProvidersPresenter:
             return None
         active = self._settings.api_key(env_name)
         return self._store.get(env_name) or (active.get_secret_value() if active else None)
+
+    def apply_check(self, name: str, base_url: str, model: str, check: ProviderCheck) -> int | None:
+        """Record a finished test for the row ``name``; its index, or None if the result is stale.
+
+        Stale: the row was removed, or its base URL (or, for a test with a model, its model)
+        changed while the test ran.
+        """
+        for index, draft in enumerate(self.drafts):
+            if draft.name != name:
+                continue
+            if draft.conf.base_url != base_url or (model and draft.conf.model != model):
+                return None
+            self.record_check(index, check)
+            return index
+        return None
 
     def record_check(self, index: int, check: ProviderCheck) -> None:
         """Remember the probe result as ``supports_tools`` (unclear / no probe: unknown)."""

@@ -12,7 +12,10 @@ environment or when passed explicitly.
 Any problem with the config raises :class:`~luna.core.errors.ConfigError` naming the key.
 """
 
+import contextlib
+import logging
 import os
+import time
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -23,10 +26,12 @@ from pydantic import ValidationError
 
 from luna.config import secrets as credentials
 from luna.config.providers_file import deep_merge as _deep_merge
-from luna.config.providers_file import providers_path, read_overlay
+from luna.config.providers_file import providers_path, read_overlay, resolve_overlay
 from luna.config.secrets import CredentialStore
 from luna.config.settings import Settings
 from luna.core.errors import ConfigError
+
+logger = logging.getLogger(__name__)
 
 CONFIG_FILENAME = "luna.toml"
 ENV_FILENAME = ".env"
@@ -95,6 +100,31 @@ def _read_secrets(env: Mapping[str, str], cwd: Path) -> dict[str, str]:
     return merged
 
 
+def _quarantine(path: Path) -> None:
+    """Rename a broken overlay to ``providers.toml.bad-<timestamp>`` (best effort)."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    with contextlib.suppress(OSError):
+        os.replace(path, path.with_name(f"{path.name}.bad-{stamp}"))
+
+
+def _apply_overlay(settings: Settings, merged: dict[str, Any], path: Path | None) -> Settings:
+    """Merge the dialog's ``providers.toml``; a broken one is skipped so the app can start."""
+    try:
+        overlay = read_overlay(path)
+        if not overlay:
+            return settings
+        try:
+            return Settings.model_validate(_deep_merge(merged, resolve_overlay(overlay)))
+        except ValidationError as exc:
+            raise ConfigError(_format_validation_error(path, exc)) from exc
+    except ConfigError as exc:
+        first = str(exc).splitlines()[0]
+        logger.warning("Ignoring %s (%s); fix it in Models / providers", path, first)
+        if path is not None:
+            _quarantine(path)
+        return settings
+
+
 def load_settings(
     explicit: Path | None = None,
     env: Mapping[str, str] | None = None,
@@ -129,13 +159,7 @@ def load_settings(
         settings = Settings.model_validate(merged)
     except ValidationError as exc:
         raise ConfigError(_format_validation_error(source, exc)) from exc
-    overlay_path = providers_path(env)
-    overlay = read_overlay(overlay_path)
-    if overlay:  # the dialog's generated file wins over luna.toml (ADR 0011 D11)
-        try:
-            settings = Settings.model_validate(_deep_merge(merged, overlay))
-        except ValidationError as exc:
-            raise ConfigError(_format_validation_error(overlay_path, exc)) from exc
+    settings = _apply_overlay(settings, merged, providers_path(env))
     secrets = _read_secrets(env, cwd)
     if store is None and real_env:
         store = credentials.default_store()

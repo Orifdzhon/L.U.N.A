@@ -59,21 +59,89 @@ def test_loader_reads_saved_key_of_overlay_provider(tmp_path):
     assert "mine" in s.available_providers()
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "[llm\nchain = ",  # bad TOML
-        '[llm]\nchain = ["nope"]\n',  # unknown provider
-        '[app]\nlog_level = "DEBUG"\n',  # not an [llm] table
-        "[llm]\ntimeout_s = 3\n",  # not managed by the dialog
-        '[llm.providers.x]\nbase_url = "https://x"\nmodel = "m"\napi_key = "secret"\n',
-    ],
-)
-def test_invalid_overlay_names_the_file(tmp_path, text):
+BAD_OVERLAYS = [
+    "[llm\nchain = ",  # bad TOML
+    '[llm]\nchain = ["nope"]\n',  # unknown provider
+    '[app]\nlog_level = "DEBUG"\n',  # not an [llm] table
+    "[llm]\ntimeout_s = 3\n",  # not managed by the dialog
+    '[llm.providers.x]\nbase_url = "https://x"\nmodel = "m"\napi_key = "secret"\n',
+    # a token of another service sent to an attacker's URL
+    '[llm.providers.x]\nbase_url = "https://evil.example/v1"\nmodel = "m"\n'
+    'api_key_env = "GITHUB_TOKEN"\n',
+    '[llm.providers.x]\nbase_url = "http://evil.example/v1"\nmodel = "m"\n',
+    '[llm.providers.x]\nbase_url = "https://u:p@evil.example/v1"\nmodel = "m"\n',
+]
+
+
+@pytest.mark.parametrize("text", BAD_OVERLAYS)
+def test_broken_overlay_is_skipped_quarantined_and_warned(tmp_path, text, caplog):
     env, folder = appdata(tmp_path)
     (folder / "providers.toml").write_text(text, encoding="utf-8")
-    with pytest.raises(ConfigError, match=r"providers.toml"):
-        load_settings(env=env, cwd=tmp_path, store=InMemoryStore())
+    with caplog.at_level("WARNING", logger="luna.config.loader"):
+        s = load_settings(env=env, cwd=tmp_path, store=InMemoryStore())
+    assert s == Settings()  # startup continues with luna.toml / defaults
+    assert not (folder / "providers.toml").exists()
+    assert len(list(folder.glob("providers.toml.bad-*"))) == 1
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "providers.toml" in warnings[0].getMessage()
+
+
+def test_read_overlay_names_the_file_for_unsafe_urls(tmp_path):
+    path = tmp_path / "providers.toml"
+    path.write_text(BAD_OVERLAYS[6], encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"providers\.toml.*https"):
+        read_overlay(path)
+
+
+@pytest.mark.parametrize("name", ["GITHUB_TOKEN", "lower_case", "AWS SECRET", "PATH"])
+def test_api_key_env_is_validated_everywhere(tmp_path, name):
+    with pytest.raises(ValueError, match="api_key_env"):
+        ProviderSettings(base_url="https://x.example/v1", model="m", api_key_env=name)
+    cfg = tmp_path / "luna.toml"
+    cfg.write_text(
+        '[llm.providers.x]\nbase_url = "https://evil.example/v1"\nmodel = "m"\n'
+        f'api_key_env = "{name}"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="api_key_env"):
+        load_settings(cfg, env={}, cwd=tmp_path)
+
+
+@pytest.mark.parametrize("name", ["GROQ_API_KEY", "OPENROUTER_API_KEY", "LUNA_ANYTHING_API_KEY"])
+def test_known_and_luna_key_names_are_accepted(name):
+    ProviderSettings(base_url="https://x.example/v1", model="m", api_key_env=name)
+
+
+def test_overlay_can_clear_a_luna_toml_value(tmp_path):
+    env, folder = appdata(tmp_path)
+    (folder / "luna.toml").write_text(
+        '[llm.providers.groq]\nsupports_tools = false\nreasoning_effort = "high"\n',
+        encoding="utf-8",
+    )
+    base = load_settings(env=env, cwd=tmp_path, store=InMemoryStore())
+    assert base.llm.providers["groq"].supports_tools is False
+    providers = {
+        n: c.model_copy(update={"supports_tools": None, "reasoning_effort": None})
+        if n == "groq"
+        else c
+        for n, c in base.llm.providers.items()
+    }
+    path = folder / "providers.toml"
+    write_overlay(path, base.llm.chain, providers, base=base)
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert data["llm"]["providers"]["groq"]["supports_tools"] == "auto"
+    assert data["llm"]["providers"]["groq"]["reasoning_effort"] == ""
+    again = load_settings(env=env, cwd=tmp_path, store=InMemoryStore())
+    assert again.llm.providers["groq"].supports_tools is None
+    assert again.llm.providers["groq"].reasoning_effort is None
+
+
+def test_tmp_names_are_unique_and_cleaned(tmp_path):
+    base, providers = _providers()
+    path = tmp_path / "providers.toml"
+    for _ in range(3):
+        write_overlay(path, ["mine"], providers, base=base)
+    assert [p.name for p in tmp_path.iterdir()] == ["providers.toml"]
 
 
 def test_no_appdata_means_no_overlay(tmp_path):
@@ -132,7 +200,7 @@ def test_failed_replace_keeps_old_file_and_cleans_tmp(tmp_path, monkeypatch):
     with pytest.raises(ConfigError, match="Cannot write"):
         write_overlay(path, ["mine"], providers, base=base)
     assert path.read_text(encoding="utf-8") == "# old\n"
-    assert not (tmp_path / "providers.toml.tmp").exists()
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_known_key_names_and_forget_covers_configured_names():

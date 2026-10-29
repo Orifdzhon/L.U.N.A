@@ -56,7 +56,8 @@ def _default_check(base_url: str, model: str, key: str | None) -> ProviderCheck:
 
 
 class _Bridge(QObject):
-    checked = Signal(str, object)  # provider name, ProviderCheck (queued across threads)
+    # provider name, base_url and model that were tested, ProviderCheck (queued across threads)
+    checked = Signal(str, str, str, object)
 
 
 class _CustomDialog(QDialog):
@@ -99,6 +100,7 @@ class ProvidersDialog(QDialog):
         self._open_url = open_url
         self._on_restart = on_restart
         self._loading = False
+        self._typed: dict[str, str] = {}  # keys typed per provider, saved together
         self._bridge = _Bridge()
         self._bridge.checked.connect(self._on_checked)
 
@@ -169,6 +171,8 @@ class ProvidersDialog(QDialog):
         right.addStretch(1)
         body.addLayout(right, 2)
 
+        for label in (self.title, self.preset_note, self.key_status, self.result, self.warning):
+            label.setTextFormat(Qt.TextFormat.PlainText)  # provider texts are never markup
         self.stt_note = QLabel(t("providers.stt_note", lang))
         self.stt_note.setWordWrap(True)
         outer.addWidget(self.stt_note)
@@ -177,6 +181,7 @@ class ProvidersDialog(QDialog):
         self.order_hint.setVisible(presenter.order_overridden)
         outer.addWidget(self.order_hint)
         self.note = QLabel("")
+        self.note.setTextFormat(Qt.TextFormat.PlainText)
         self.note.setWordWrap(True)
         outer.addWidget(self.note)
         bottom = QHBoxLayout()
@@ -195,6 +200,7 @@ class ProvidersDialog(QDialog):
         self.down_button.clicked.connect(lambda _c=False: self._move(1))
         self.remove_button.clicked.connect(lambda _c=False: self._remove())
         self.model_box.currentTextChanged.connect(self._on_model_changed)
+        self.key_edit.textChanged.connect(self._on_key_typed)
         self.url_edit.editingFinished.connect(self._on_url_edited)
         self.fetch_button.clicked.connect(lambda _c=False: self.start_check(fetch_only=True))
         self.test_button.clicked.connect(lambda _c=False: self.start_check())
@@ -242,7 +248,7 @@ class ProvidersDialog(QDialog):
         self.model_box.clear()
         self.model_box.addItem(draft.conf.model)
         self.model_box.setCurrentText(draft.conf.model)
-        self.key_edit.clear()
+        self.key_edit.setText(self._typed.get(draft.name, ""))
         self.key_edit.setEnabled(presenter.needs_key(row))
         self.key_status.setText(presenter.key_status(row))
         self.get_key_button.setEnabled(presenter.key_url(row) is not None)
@@ -267,6 +273,7 @@ class ProvidersDialog(QDialog):
     def _remove(self) -> None:
         row = self._current()
         if row is not None:
+            self._typed.pop(self._presenter.drafts[row].name, None)
             self._presenter.remove(row)
             self._refresh_list(row)
 
@@ -298,6 +305,16 @@ class ProvidersDialog(QDialog):
             return
         self._presenter.set_model(row, text)
         self._show_warnings(row)
+
+    def _on_key_typed(self, text: str) -> None:
+        row = self._current()
+        if self._loading or row is None:
+            return
+        name = self._presenter.drafts[row].name
+        if text.strip():
+            self._typed[name] = text
+        else:
+            self._typed.pop(name, None)
 
     def _on_url_edited(self) -> None:
         row = self._current()
@@ -339,18 +356,21 @@ class ProvidersDialog(QDialog):
                 outcome = self._run_check(base_url, model, key)
             except Exception:
                 outcome = ProviderCheck(KeyCheck.ERROR)
-            self._bridge.checked.emit(name, outcome)
+            try:
+                self._bridge.checked.emit(name, base_url, model, outcome)
+            except RuntimeError:  # the dialog was deleted while the test ran
+                logger.debug("[providers] test result dropped: dialog is gone")
 
         threading.Thread(target=work, name="providers-test", daemon=True).start()
 
-    def _on_checked(self, name: str, check: ProviderCheck) -> None:
+    def _on_checked(self, name: str, base_url: str, model: str, check: ProviderCheck) -> None:
         self.test_button.setEnabled(True)
         self.fetch_button.setEnabled(True)
-        names = [d.name for d in self._presenter.drafts]
-        if name not in names:
-            return  # the provider was removed while the test ran
-        row = names.index(name)
-        self._presenter.record_check(row, check)
+        row = self._presenter.apply_check(name, base_url, model, check)
+        if row is None:  # removed, or its URL / model changed while the test ran
+            if self._current() is not None:
+                self.result.setText("")
+            return
         if self._current() != row:
             return
         lang = self._lang
@@ -380,12 +400,12 @@ class ProvidersDialog(QDialog):
     # --- save ---------------------------------------------------------------------------------
 
     def save(self) -> bool:
-        row = self._current()
         try:
-            if row is not None and self._presenter.save_key(row, self.key_edit.text()):
-                self.key_edit.clear()
-                self.key_status.setText(self._presenter.key_status(row))
-                logger.info("[keys] API key saved")
+            for name in list(self._typed):
+                names = [d.name for d in self._presenter.drafts]
+                if name in names and self._presenter.save_key(names.index(name), self._typed[name]):
+                    logger.info("[keys] API key saved")
+                self._typed.pop(name, None)
             self._presenter.save()
         except SecretStoreError as exc:
             logger.warning("[keys] %s", exc)
@@ -394,6 +414,9 @@ class ProvidersDialog(QDialog):
         except ConfigError as exc:
             self.note.setText(t("providers.cannot_save", self._lang, error=exc))
             return False
+        row = self._current()
+        if row is not None:
+            self._load_row(row)  # clears the key field, refreshes the status
         self.note.setText(t("providers.saved", self._lang))
         self.restart_button.setVisible(True)
         logger.info("[providers] providers.toml saved")

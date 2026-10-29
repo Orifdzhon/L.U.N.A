@@ -92,6 +92,8 @@ def test_tools_no_on_rejection_mentioning_tools(status, text):
 
 def test_unrelated_400_is_not_a_tools_verdict():
     assert check(listing("m1"), httpx.Response(400, text="model not found")).tools is None
+    # mentions tools but does not say they are unsupported: not a verdict either
+    assert check(listing("m1"), httpx.Response(400, text="tools[0].name is invalid")).tools is None
 
 
 @pytest.mark.parametrize("status", [401, 403])
@@ -320,3 +322,16 @@ def test_save_rejects_empty_chain_and_missing_model(tmp_path):
 def test_has_cloud_llm_key():
     assert not has_cloud_llm_key(Settings())
     assert has_cloud_llm_key(Settings().with_api_keys({"GEMINI_API_KEY": "g-12345"}))
+
+
+def test_apply_check_drops_stale_results(tmp_path):
+    p, _ = make(tmp_path)
+    i = p.add_custom("mine", BASE, "m1")
+    result = ProviderCheck(KeyCheck.OK, ToolSupport.NO)
+    assert p.apply_check("gone", BASE, "m1", result) is None
+    assert p.apply_check("mine", "https://other.example/v1", "m1", result) is None
+    assert p.apply_check("mine", BASE, "other-model", result) is None
+    assert p.drafts[i].conf.supports_tools is None
+    assert p.apply_check("mine", BASE, "m1", result) == i
+    assert p.drafts[i].conf.supports_tools is False
+    assert p.apply_check("mine", BASE, "", ProviderCheck(KeyCheck.OK)) == i  # fetch-only

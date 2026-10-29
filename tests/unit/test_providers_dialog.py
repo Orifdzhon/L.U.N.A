@@ -241,3 +241,41 @@ def test_english_dialog_texts(app, tmp_path):
     dialog = ProvidersDialog(presenter, lang="en")
     CREATED.append(dialog)
     assert dialog.save_button.text() == "Save" and dialog.list.item(0).text() == "groq  [free]"
+
+
+def test_keys_typed_for_several_rows_are_all_saved(app, tmp_path):
+    dialog, store = make(tmp_path)
+    dialog.key_edit.setText("gk-first-1234")
+    dialog.list.setCurrentRow(1)
+    assert dialog.key_edit.text() == ""
+    dialog.key_edit.setText("ge-second-1234")
+    dialog.list.setCurrentRow(0)
+    assert dialog.key_edit.text() == "gk-first-1234"  # kept while switching rows
+    assert dialog.save() is True
+    assert store.values == {"GROQ_API_KEY": "gk-first-1234", "GEMINI_API_KEY": "ge-second-1234"}
+    assert dialog.key_edit.text() == ""
+    assert dialog.save() is True and len(store.values) == 2
+
+
+def test_stale_test_result_is_dropped(app, tmp_path):
+    gate = []
+
+    def run_check(url, model, key):
+        while not gate:
+            time.sleep(0.005)
+        return ProviderCheck(KeyCheck.OK, ToolSupport.NO, 5)
+
+    dialog, _ = make(tmp_path, run_check)
+    dialog.key_edit.setText("k-12345678")
+    dialog.test_button.click()
+    dialog.model_box.setCurrentText("another-model")  # the row changed while the test runs
+    gate.append(1)
+    wait_idle(app, dialog)
+    assert dialog._presenter.drafts[0].conf.supports_tools is None
+    assert dialog.result.text() == ""
+
+
+def test_labels_are_plain_text(app, tmp_path):
+    dialog, _ = make(tmp_path)
+    for label in (dialog.title, dialog.preset_note, dialog.result, dialog.warning, dialog.note):
+        assert label.textFormat() == Qt.TextFormat.PlainText

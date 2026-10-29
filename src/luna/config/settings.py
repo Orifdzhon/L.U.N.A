@@ -24,6 +24,13 @@ from pydantic import (
 _log = logging.getLogger(__name__)
 
 
+def _known_key_envs() -> set[str]:
+    from luna.config.secrets import KNOWN_KEY_NAMES
+    from luna.llm.presets import load_presets
+
+    return {*KNOWN_KEY_NAMES, *(p.key_env for p in load_presets() if p.key_env)}
+
+
 class _Section(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -51,6 +58,23 @@ class ProviderSettings(_Section):
     # Result of the dialog's tool-calling probe; False = the chain sends this provider no tools
     # (it only answers). None = unknown, tools are sent as usual (ADR 0011 D16).
     supports_tools: bool | None = None
+
+    @field_validator("api_key_env")
+    @classmethod
+    def _key_env_is_safe(cls, value: str | None) -> str | None:
+        """Only a pattern-conforming name that is a known preset key or ``LUNA_*``.
+
+        Stops a config / overlay from pointing a provider at another secret (``GITHUB_TOKEN``)
+        and sending it to an arbitrary URL.
+        """
+        if value is None or not value.strip():
+            return value
+        name = value.strip()
+        if not re.fullmatch(r"[A-Z0-9_]+", name):
+            raise ValueError("api_key_env must match [A-Z0-9_]+")
+        if not name.startswith("LUNA_") and name not in _known_key_envs():
+            raise ValueError("api_key_env must be a known provider key name or start with LUNA_")
+        return value
 
 
 def _default_providers() -> dict[str, ProviderSettings]:

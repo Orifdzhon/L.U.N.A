@@ -42,6 +42,7 @@ from luna.ui.shell.state import (
     derive_icon_state,
     tooltip_for,
 )
+from luna.ui.shell.strings import t
 from luna.ui.shell.views import TrayView, UiThread, WindowView
 from luna.wakeword.listener import WakeState, WakeStateChanged
 
@@ -51,11 +52,8 @@ ERROR_ICON_S = 5.0
 NOTIFY_INTERVAL_S = 300.0
 WATCHDOG_S = 10.0
 LOCAL_PROVIDER = "local"
-WAKE_LABEL = "Listen for «Луна»"
-WAKE_STARTING_LABEL = "Starting wake word…"
 COMMANDS_HINT = "Commands are in the tray menu"
 NOTIFY_TITLE = "L.U.N.A."
-NO_VOICE_REASON = "Voice input is not available"
 
 LineKind = Literal["user", "assistant", "action", "system"]
 Clock = Callable[[], float]
@@ -121,6 +119,7 @@ class ShellController:
         schedule: Schedule = schedule_timer,
         watchdog: Callable[[], None] = arm_watchdog,
         on_quit: Callable[[], None] | None = None,
+        lang: str = "en",
     ) -> None:
         self._app = app
         self._tray = tray
@@ -134,6 +133,7 @@ class ShellController:
         self._schedule = schedule
         self._watchdog = watchdog
         self._on_quit = on_quit
+        self._lang = lang
 
         self._conversation = Conversation(conf.history_lines)
         self._status: Status | None = None
@@ -365,7 +365,7 @@ class ShellController:
         if self._quitting:
             return
         if voice is None:
-            self._line("system", NO_VOICE_REASON)
+            self._line("system", self._no_voice())
             return
         self._start_thread("luna-ui-mic", lambda: self._run_press(voice))
 
@@ -589,27 +589,34 @@ class ShellController:
             self._conversation_open,
         )
         self._icon = state
-        self._tray.set_state(state, tooltip_for(state))
-        self._window.set_state(state, caption_for(state))
+        self._tray.set_state(state, tooltip_for(state, self._lang))
+        self._window.set_state(state, caption_for(state, self._lang))
+
+    def _no_voice(self) -> str:
+        return t("window.mic_unavailable", self._lang)
 
     def _refresh_voice_available(self) -> None:
         available = self._app.voice_input is not None
-        self._window.set_voice_available(available, "" if available else NO_VOICE_REASON)
+        self._window.set_voice_available(available, "" if available else self._no_voice())
 
     def _refresh_status(self) -> None:
-        parts = [self._status.value if self._status is not None else Status.IDLE.value]
-        if self._status is Status.ERROR and self._status_detail:
-            parts[0] = f"error: {self._status_detail}"
+        lang = self._lang
+        status = self._status if self._status is not None else Status.IDLE
+        parts = [t(f"status.{status.value}", lang)]
+        if status is Status.ERROR and self._status_detail:
+            parts[0] = t("status.error_detail", lang, detail=self._status_detail)
         if self._wake_state != "OFF":
-            parts.append(f"Wake: {self._wake_state}")
+            parts.append(t("status.wake", lang, state=self._wake_state))
             if self._conversation_open:
-                parts.append("conversation")
+                parts.append(t("status.conversation", lang))
         speaker = self._app.speaker
         if speaker is not None and speaker.muted:
-            parts.append("Voice: muted")
+            parts.append(t("status.muted", lang))
         if self._provider is not None:
             parts.append(
-                "LLM: offline" if self._provider == LOCAL_PROVIDER else f"LLM: {self._provider}"
+                t("status.llm_offline", lang)
+                if self._provider == LOCAL_PROVIDER
+                else t("status.llm", lang, name=self._provider)
             )
         self._window.set_status(" | ".join(parts))
 
@@ -621,7 +628,7 @@ class ShellController:
             TrayMenuState(
                 wake_checked=wake_on and not self._wake_busy,
                 wake_enabled=voice is not None and not self._wake_busy,
-                wake_label=WAKE_STARTING_LABEL if self._wake_busy else WAKE_LABEL,
+                wake_label=t("tray.wake_starting" if self._wake_busy else "tray.wake", self._lang),
                 voice_checked=speaker is not None and not speaker.muted,
                 voice_enabled=speaker is not None,
                 autostart_checked=self._autostart_checked,

@@ -151,3 +151,4 @@ log_rejects = false           # true: write what the check heard in REJECTED wak
 start_minimized = false       # start hidden in the tray
 notifications = true          # tray notifications
 history_lines = 200           # lines kept in the window history (20..2000)
+language = "auto"             # UI language: "auto" (Windows UI language), "ru" or "en"

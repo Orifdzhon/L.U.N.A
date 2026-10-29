@@ -10,6 +10,7 @@ from typing import Literal
 
 from luna.core.events import Status
 from luna.tools.base import ToolResult
+from luna.ui.shell.strings import t
 
 MAX_SUMMARY_CHARS = 120
 
@@ -33,23 +34,15 @@ _TOOLTIPS = {
 }
 
 
-_CAPTIONS = {
-    IconState.IDLE: "Idle",
-    IconState.WAKE: "Listening for «Luna»…",
-    IconState.RECORDING: "Listening…",
-    IconState.THINKING: "Thinking…",
-    IconState.SPEAKING: "Speaking…",
-    IconState.ERROR: "Something went wrong",
-}
-
-
-def caption_for(state: IconState) -> str:
+def caption_for(state: IconState, lang: str = "en") -> str:
     """Short text under the orb in the window."""
-    return _CAPTIONS[state]
+    return t(f"state.{state.value}", lang)
 
 
-def tooltip_for(state: IconState) -> str:
-    return _TOOLTIPS[state]
+def tooltip_for(state: IconState, lang: str = "en") -> str:
+    if lang == "en":
+        return _TOOLTIPS[state]
+    return t(f"tooltip.{state.value}", lang)
 
 
 def derive_icon_state(

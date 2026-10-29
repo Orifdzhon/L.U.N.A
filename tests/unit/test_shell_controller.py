@@ -903,3 +903,14 @@ def test_find_file_result_carries_chips_other_tools_do_not(env):
     assert [c.index for c in actions[0].files] == [1, 2]
     assert actions[0].files[0].label == "a.pdf"
     assert actions[1].files == () and actions[1].ok is True
+
+
+def test_controller_localizes_captions_tooltips_status_and_wake_label():
+    env = Env()
+    env.controller._lang = "ru"
+    env.start()
+    _state, caption = env.window.states[-1]
+    assert caption == "Отдыхаю"
+    assert env.tray.states[-1][1] == "L.U.N.A. - ожидание"
+    assert env.window.status.startswith("ожидание")
+    assert env.tray.menus[-1].wake_label == "Слушать «Луна»"

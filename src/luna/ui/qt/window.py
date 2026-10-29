@@ -17,22 +17,10 @@ from PySide6.QtWidgets import (
 
 from luna.platform.windows.dwm import enable_dark_title_bar
 from luna.ui.qt.chat import ChatView
+from luna.ui.qt.orb import OrbWidget
 from luna.ui.qt.theme import PALETTE, mic_icon, send_icon, stylesheet
 from luna.ui.shell.state import ConversationLine, IconState
-
-try:  # the animated orb (#191); a static stand-in until it is merged
-    from luna.ui.qt.orb import OrbWidget
-except ImportError:  # pragma: no cover - depends on which Issue merged first
-    from luna.ui.qt._orb_placeholder import OrbWidget
-
-MIC_TOOLTIP = "Push to talk"
-SEND_TOOLTIP = "Send"
-INPUT_PLACEHOLDER = "Type a command and press Enter"
-
-
-def tr(text: str) -> str:
-    """UI string hook; becomes the strings catalog lookup when that module lands."""
-    return text
+from luna.ui.shell.strings import t
 
 
 class _InputLine(QLineEdit):
@@ -70,16 +58,18 @@ class QtWindowView(QWidget):
         on_listen: Callable[[], None] | None = None,
         on_open_file: Callable[[int, str], None] | None = None,
         history_lines: int = 200,
+        lang: str = "en",
     ) -> None:
         super().__init__()
         self._on_submit = on_submit
         self._on_closed = on_closed
         self._on_listen = on_listen
+        self._lang = lang
         self._voice_reason = ""
         self._voice_available = True
         self._recording = False
         self.setObjectName("luna-window")
-        self.setWindowTitle("L.U.N.A.")
+        self.setWindowTitle(t("window.title", lang))
         self.resize(420, 640)
         self.setMinimumSize(360, 480)
         self.setStyleSheet(stylesheet())
@@ -91,13 +81,13 @@ class QtWindowView(QWidget):
         self.caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.chat = ChatView(history_lines, on_open_file)
         self.input = _InputLine(on_cancel)
-        self.input.setPlaceholderText(tr(INPUT_PLACEHOLDER))
+        self.input.setPlaceholderText(t("window.input_placeholder", lang))
         self.input.returnPressed.connect(self._submit)
         self.input.textChanged.connect(self._sync_send)
-        self.send_button = _round_button("send", tr(SEND_TOOLTIP))
+        self.send_button = _round_button("send", t("window.send", lang))
         self.send_button.setIcon(send_icon(PALETTE["bg"]))
         self.send_button.clicked.connect(self._submit)
-        self.mic_button = _round_button("mic", tr(MIC_TOOLTIP))
+        self.mic_button = _round_button("mic", t("window.mic", lang))
         self.mic_button.setIcon(mic_icon(PALETTE["text"]))
         self.mic_button.setCheckable(True)
         self.mic_button.clicked.connect(self._mic_clicked)
@@ -163,7 +153,7 @@ class QtWindowView(QWidget):
         self._voice_available = available
         self._voice_reason = reason
         self.mic_button.setEnabled(available)
-        self.mic_button.setToolTip(tr(MIC_TOOLTIP) if available else reason)
+        self.mic_button.setToolTip(t("window.mic", self._lang) if available else reason)
 
     def show(self) -> None:
         super().show()

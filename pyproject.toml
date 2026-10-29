@@ -1,6 +1,6 @@
 [project]
 name = "luna"
-version = "0.1.0"
+version = "0.1.1"
 description = "L.U.N.A. - voice assistant for Windows"
 readme = "README.md"
 license = "Apache-2.0"

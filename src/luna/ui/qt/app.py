@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import logging
 import signal
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -21,17 +22,21 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from luna.app import App, build_app
 from luna.config import secrets as credentials
+from luna.config.loader import luna_toml_sets_chain
+from luna.config.providers_file import providers_path
 from luna.config.secrets import CredentialStore
 from luna.config.settings import Settings
-from luna.platform.base import Autostart, SingleInstance
+from luna.llm.presets import load_presets
+from luna.platform.base import Autostart, LaunchCommand, SingleInstance
 from luna.platform.factory import create_autostart
 from luna.ui.qt.dispatch import QtUiThread
-from luna.ui.qt.keys_dialog import KeysDialog
+from luna.ui.qt.providers_dialog import ProvidersDialog
 from luna.ui.qt.tray import QtTrayView
 from luna.ui.qt.window import QtWindowView
 from luna.ui.shell.controller import ShellController, arm_watchdog
-from luna.ui.shell.keys import KeysPresenter, has_cloud_llm_key
+from luna.ui.shell.keys import has_cloud_llm_key
 from luna.ui.shell.launch import own_launch_command
+from luna.ui.shell.providers import ProvidersPresenter
 from luna.ui.shell.state import ConversationLine
 from luna.ui.shell.strings import resolve_language
 
@@ -55,6 +60,22 @@ def show_already_running() -> None:
     QMessageBox.information(None, "L.U.N.A.", ALREADY_RUNNING)
 
 
+def spawn_detached(command: LaunchCommand) -> None:
+    """Start the new L.U.N.A. process (the single-instance mutex is already released)."""
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+        subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+    )
+    try:
+        subprocess.Popen(
+            [command.executable, *command.args],
+            cwd=command.working_dir,
+            creationflags=flags,
+            close_fds=True,
+        )
+    except OSError as exc:
+        logger.warning("[providers] restart failed: %s", type(exc).__name__)
+
+
 def run_tray(
     settings: Settings,
     args: argparse.Namespace,
@@ -65,6 +86,8 @@ def run_tray(
     app_factory: Callable[..., App] = build_app,
     on_ready: Callable[[QApplication, ShellController], Any] | None = None,
     keys_store: CredentialStore | None = None,
+    overlay_path: Path | None = None,
+    spawn: Callable[[LaunchCommand], None] | None = None,
 ) -> int:
     """Run the tray shell until Quit. ``instance`` is released when the shell quits."""
     qt_app = _application()
@@ -99,12 +122,29 @@ def run_tray(
         history_lines=settings.ui.history_lines,
         lang=lang,
     )
-    keys_dialogs: list[KeysDialog] = []
+    keys_dialogs: list[ProvidersDialog] = []
+    restart = {"requested": False}
+
+    def request_restart() -> None:
+        restart["requested"] = True  # the new process starts after the mutex is released
+        quit_shell()
 
     def show_keys() -> None:
         if not keys_dialogs:
             store = keys_store if keys_store is not None else credentials.default_store()
-            keys_dialogs.append(KeysDialog(KeysPresenter(settings, store), lang=lang))
+            target = overlay_path if overlay_path is not None else providers_path()
+            if target is None:
+                QMessageBox.warning(None, "L.U.N.A.", "%APPDATA% is not set: cannot save settings")
+                return
+            presenter = ProvidersPresenter(
+                settings,
+                store,
+                load_presets(),
+                target,
+                lang=lang,
+                order_overridden=luna_toml_sets_chain(args.config),
+            )
+            keys_dialogs.append(ProvidersDialog(presenter, lang=lang, on_restart=request_restart))
         dialog = keys_dialogs[0]
         dialog.show()
         dialog.raise_()
@@ -163,4 +203,6 @@ def run_tray(
         keys_dialogs.clear()
         signal.signal(signal.SIGINT, previous)
         controller.quit()  # idempotent: covers an exit that did not come through Quit
+    if restart["requested"]:
+        (spawn or spawn_detached)(own_launch_command(Path(sys.executable), args.config, Path.cwd()))
     return 0

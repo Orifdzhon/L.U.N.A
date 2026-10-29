@@ -1,0 +1,107 @@
+# LLM provider presets for the "Models / providers" dialog (ADR 0011, Feature D).
+# Verified 2026-10-29; free tiers change often - re-check before each release.
+# A preset is only a template: what runs is [llm.providers.<name>] in the config.
+# free: yes | trial | paid | local.  tools: yes | per_model | unknown.
+
+[[preset]]
+id = "groq"
+label = "Groq"
+base_url = "https://api.groq.com/openai/v1"
+default_model = "openai/gpt-oss-120b"
+key_env = "GROQ_API_KEY"
+key_url = "https://console.groq.com/keys"
+free = "yes"
+free_note = "Free tier. Also used for speech recognition."
+tools = "yes"
+quirks = { reasoning_effort = "low" }
+
+[[preset]]
+id = "gemini"
+label = "Google Gemini"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+default_model = "gemini-3.5-flash-lite"
+key_env = "GEMINI_API_KEY"
+key_url = "https://aistudio.google.com/apikey"
+free = "yes"
+free_note = "Free tier."
+tools = "yes"
+
+[[preset]]
+id = "openrouter"
+label = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+key_env = "OPENROUTER_API_KEY"
+key_url = "https://openrouter.ai/keys"
+free = "yes"
+free_note = "Models with the :free suffix: 20 requests/min, 50 requests/day (1000/day after buying 10 credits). Pick a model that supports tools."
+tools = "per_model"
+
+[[preset]]
+id = "mistral"
+label = "Mistral"
+base_url = "https://api.mistral.ai/v1"
+default_model = "mistral-small-latest"
+key_env = "MISTRAL_API_KEY"
+key_url = "https://console.mistral.ai"
+free = "yes"
+free_note = "Free mode without a card; limits are shown in the console. Check the data-use terms of the free mode."
+tools = "yes"
+
+[[preset]]
+id = "qwen"
+label = "Qwen (Alibaba Model Studio, international)"
+base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+default_model = "qwen-plus"
+key_env = "DASHSCOPE_API_KEY"
+key_url = "https://modelstudio.console.alibabacloud.com"
+free = "trial"
+free_note = "New users get a trial quota (about 1M tokens per model for 90 days, Singapore region). Turn on 'Free quota only' in the console, otherwise it is pay-as-you-go."
+tools = "yes"
+
+[[preset]]
+id = "lmstudio"
+label = "LM Studio (local)"
+base_url = "http://localhost:1234/v1"
+free = "local"
+free_note = "Runs on this computer, works offline. Type the name of the loaded model."
+tools = "per_model"
+
+[[preset]]
+id = "ollama"
+label = "Ollama (local)"
+base_url = "http://localhost:11434/v1"
+free = "local"
+free_note = "Runs on this computer, works offline. Type the name of a pulled model."
+tools = "per_model"
+
+[[preset]]
+id = "cerebras"
+label = "Cerebras"
+base_url = "https://api.cerebras.ai/v1"
+default_model = "gpt-oss-120b"
+key_env = "CEREBRAS_API_KEY"
+key_url = "https://cloud.cerebras.ai"
+free = "trial"
+free_note = "Trial only: 5 USD credits, a payment method is required, they expire after 30 days."
+tools = "yes"
+
+[[preset]]
+id = "deepseek"
+label = "DeepSeek"
+base_url = "https://api.deepseek.com"
+default_model = "deepseek-flash"
+key_env = "DEEPSEEK_API_KEY"
+key_url = "https://platform.deepseek.com"
+free = "paid"
+free_note = "Paid (prepaid balance, cheap). No free tier."
+tools = "unknown"
+
+[[preset]]
+id = "together"
+label = "Together AI"
+base_url = "https://api.together.xyz/v1"
+key_env = "TOGETHER_API_KEY"
+key_url = "https://api.together.ai"
+free = "paid"
+free_note = "Paid. No free trial. Pick a model that supports tools."
+tools = "per_model"

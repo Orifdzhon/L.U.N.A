@@ -66,27 +66,132 @@ _CATALOG: dict[str, dict[Lang, str]] = {
     "tray.voice": {"ru": "Голосовые ответы", "en": "Voice replies"},
     "tray.open": {"ru": "Открыть окно", "en": "Open window"},
     "tray.autostart": {"ru": "Запускать с Windows", "en": "Start with Windows"},
-    "tray.keys": {"ru": "API-ключи…", "en": "API keys…"},
+    "tray.keys": {"ru": "Модели / провайдеры…", "en": "Models / providers…"},
     "tray.quit": {"ru": "Выход", "en": "Quit"},
-    # keys dialog
-    "keys.title": {"ru": "L.U.N.A. - API-ключи", "en": "L.U.N.A. - API keys"},
-    "keys.intro": {
-        "ru": "Облачные ключи для голосового помощника (хранятся в Windows).",
-        "en": "Cloud keys for the voice assistant (stored in Windows).",
+    # models / providers dialog
+    "providers.title": {
+        "ru": "L.U.N.A. - Модели / провайдеры",
+        "en": "L.U.N.A. - Models / providers",
     },
-    "keys.required": {"ru": " - обязателен", "en": " - required"},
-    "keys.placeholder": {"ru": "вставьте ключ сюда", "en": "paste the key here"},
-    "keys.test": {"ru": "Проверить", "en": "Test"},
-    "keys.save": {"ru": "Сохранить", "en": "Save"},
-    "keys.later": {"ru": "Позже", "en": "Later"},
-    "keys.enter_first": {"ru": "Сначала введите ключ", "en": "Enter a key first"},
-    "keys.testing": {"ru": "Проверка...", "en": "Testing..."},
-    "keys.saved": {
-        "ru": "Сохранено. Перезапустите L.U.N.A., чтобы применить новый ключ.",
-        "en": "Saved. Restart L.U.N.A. to use the new key.",
+    "providers.order": {
+        "ru": "Порядок (первый отвечает первым)",
+        "en": "Order (the first one answers first)",
     },
-    "keys.nothing": {"ru": "Нечего сохранять", "en": "Nothing to save"},
-    "keys.save_failed": {"ru": "Не удалось сохранить: {error}", "en": "Could not save: {error}"},
+    "providers.up": {"ru": "Вверх", "en": "Up"},
+    "providers.down": {"ru": "Вниз", "en": "Down"},
+    "providers.remove": {"ru": "Убрать", "en": "Remove"},
+    "providers.add": {"ru": "Добавить провайдера", "en": "Add provider"},
+    "providers.custom_item": {
+        "ru": "Свой (совместимый с OpenAI)...",
+        "en": "Custom (OpenAI-compatible)...",
+    },
+    "providers.custom_title": {
+        "ru": "Свой провайдер (совместимый с OpenAI)",
+        "en": "Custom provider (OpenAI-compatible)",
+    },
+    "providers.custom_name": {"ru": "Имя", "en": "Name"},
+    "providers.custom_name_hint": {"ru": "например, myserver", "en": "e.g. myserver"},
+    "providers.custom_add": {"ru": "Добавить", "en": "Add"},
+    "providers.base_url": {"ru": "Адрес API", "en": "Base URL"},
+    "providers.model": {"ru": "Модель", "en": "Model"},
+    "providers.key": {"ru": "Ключ", "en": "Key"},
+    "providers.key_placeholder": {"ru": "вставьте ключ сюда", "en": "paste the key here"},
+    "providers.fetch": {"ru": "Список моделей", "en": "Fetch models"},
+    "providers.get_key": {"ru": "Получить ключ", "en": "Get a key"},
+    "providers.test": {"ru": "Проверить", "en": "Test"},
+    "providers.save": {"ru": "Сохранить", "en": "Save"},
+    "providers.close": {"ru": "Закрыть", "en": "Close"},
+    "providers.restart": {"ru": "Перезапустить L.U.N.A.", "en": "Restart L.U.N.A."},
+    "providers.testing": {"ru": "Проверка...", "en": "Testing..."},
+    "providers.enter_key": {"ru": "Сначала введите ключ", "en": "Enter a key first"},
+    "providers.enter_model": {
+        "ru": "Сначала введите название модели",
+        "en": "Enter a model name first",
+    },
+    "providers.saved": {
+        "ru": "Сохранено. Новые настройки применятся после перезапуска.",
+        "en": "Saved. The new setup applies after a restart.",
+    },
+    "providers.cannot_add": {"ru": "Не удалось добавить: {error}", "en": "Cannot add: {error}"},
+    "providers.url_error": {"ru": "Адрес API: {error}", "en": "Base URL: {error}"},
+    "providers.cannot_save": {
+        "ru": "Не удалось сохранить: {error}",
+        "en": "Could not save: {error}",
+    },
+    "providers.cannot_save_key": {
+        "ru": "Не удалось сохранить ключ: {error}",
+        "en": "Could not save the key: {error}",
+    },
+    "providers.order_hint": {
+        "ru": "luna.toml тоже задаёт порядок; порядок из этого окна главнее.",
+        "en": "luna.toml also sets the order; the dialog's order wins.",
+    },
+    "providers.stt_note": {
+        "ru": "Распознавание речи использует Groq - оставьте ключ Groq, "
+        "даже если отвечает другая модель.",
+        "en": "Speech recognition uses Groq - keep the Groq key even if another model answers.",
+    },
+    "providers.warn.no_tools": {
+        "ru": "Эта модель не умеет вызывать инструменты: она сможет только отвечать, "
+        "но не открывать приложения и не искать в интернете.",
+        "en": "This model cannot call tools: it can only answer, not open apps or search the web.",
+    },
+    "providers.warn.paid": {
+        "ru": "Платный провайдер: запросы оплачиваются с вашего баланса.",
+        "en": "Paid provider: requests are charged to your balance.",
+    },
+    "providers.warn.trial": {
+        "ru": "Пробный период: после его окончания запросы станут платными.",
+        "en": "Trial: requests become paid when the trial ends.",
+    },
+    "providers.warn.untested": {
+        "ru": "Поддержка инструментов не проверена - нажмите «Проверить».",
+        "en": "Tool support is not tested - press Test.",
+    },
+    "providers.badge.yes": {"ru": "бесплатно", "en": "free"},
+    "providers.badge.trial": {"ru": "пробный период", "en": "trial"},
+    "providers.badge.paid": {"ru": "платно", "en": "paid"},
+    "providers.badge.local": {"ru": "локально", "en": "local"},
+    "providers.key.none": {"ru": "ключ не нужен", "en": "no key needed"},
+    "providers.key.saved": {"ru": "сохранён", "en": "saved"},
+    "providers.key.overridden": {
+        "ru": "сохранён; его перекрывает ключ из окружения / .env",
+        "en": "saved; the key from environment / .env overrides it",
+    },
+    "providers.key.env": {"ru": "задан в окружении / .env", "en": "set in environment / .env"},
+    "providers.key.not_set": {"ru": "не задан", "en": "not set"},
+    "providers.err.no_provider": {
+        "ru": "Включите хотя бы одного провайдера",
+        "en": "Enable at least one provider",
+    },
+    "providers.err.no_model": {
+        "ru": "У провайдера {name} не указана модель",
+        "en": "Provider {name} has no model name",
+    },
+    "providers.check.ok": {"ru": "Ключ принят", "en": "OK"},
+    "providers.check.rejected": {"ru": "Ключ отклонён (401/403)", "en": "Rejected (401/403)"},
+    "providers.check.no_connection": {"ru": "Нет соединения", "en": "No connection"},
+    "providers.check.error": {"ru": "Неожиданный ответ", "en": "Unexpected answer"},
+    "providers.tools.yes": {"ru": "инструменты: да", "en": "tools: yes"},
+    "providers.tools.unclear": {
+        "ru": "инструменты: неясно (модель ответила без вызова)",
+        "en": "tools: unclear (the model answered without calling the tool)",
+    },
+    "providers.tools.no": {"ru": "инструменты: нет", "en": "tools: no"},
+    "providers.models_count": {"ru": "моделей: {n}", "en": "{n} models"},
+    "providers.latency": {"ru": "{ms} мс", "en": "{ms} ms"},
+    "providers.name_rule": {
+        "ru": "имя: 1-32 символа a-z 0-9 _, начинается с буквы",
+        "en": "name: 1-32 characters, a-z 0-9 _, starting with a letter",
+    },
+    "providers.name_taken": {
+        "ru": "провайдер с таким именем уже есть",
+        "en": "a provider with this name already exists",
+    },
+    "providers.url_fixed": {
+        "ru": "адрес API готового провайдера менять нельзя",
+        "en": "the URL of a preset provider is fixed",
+    },
 }
 
 

@@ -2,7 +2,8 @@
 
 Search order: explicit ``--config PATH`` -> ``%APPDATA%\\LUNA\\luna.toml`` -> ``./luna.toml``.
 A missing file (outside an explicit path) means defaults. User values are deep-merged over the
-defaults, so overriding one key of a provider keeps the rest.
+defaults, so overriding one key of a provider keeps the rest. The dialog-generated
+``%APPDATA%\\LUNA\\providers.toml`` (``[llm]`` only) is merged on top of that.
 
 API keys come from the process environment, then from ``.env`` (``./.env``, then
 ``%APPDATA%\\LUNA\\.env``), then from the Windows Credential Manager (``luna.config.secrets``) and
@@ -11,7 +12,10 @@ environment or when passed explicitly.
 Any problem with the config raises :class:`~luna.core.errors.ConfigError` naming the key.
 """
 
+import contextlib
+import logging
 import os
+import time
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -21,9 +25,13 @@ from dotenv import dotenv_values
 from pydantic import ValidationError
 
 from luna.config import secrets as credentials
+from luna.config.providers_file import deep_merge as _deep_merge
+from luna.config.providers_file import providers_path, read_overlay, resolve_overlay
 from luna.config.secrets import CredentialStore
 from luna.config.settings import Settings
 from luna.core.errors import ConfigError
+
+logger = logging.getLogger(__name__)
 
 CONFIG_FILENAME = "luna.toml"
 ENV_FILENAME = ".env"
@@ -46,14 +54,22 @@ def candidate_paths(
     return paths
 
 
-def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in override.items():
-        if isinstance(value, Mapping) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
+def luna_toml_sets_chain(
+    explicit: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> bool:
+    """True when the active ``luna.toml`` sets ``[llm] chain`` (the dialog's order overrides it)."""
+    env = os.environ if env is None else env
+    for path in candidate_paths(explicit, env, cwd):
+        if path.is_file():
+            try:
+                with path.open("rb") as fh:
+                    llm = tomllib.load(fh).get("llm", {})
+            except (tomllib.TOMLDecodeError, OSError):
+                return False
+            return isinstance(llm, dict) and "chain" in llm
+    return False
 
 
 def _format_validation_error(path: Path | None, exc: ValidationError) -> str:
@@ -82,6 +98,31 @@ def _read_secrets(env: Mapping[str, str], cwd: Path) -> dict[str, str]:
             merged.update({k: v for k, v in values.items() if v})
     merged.update({k: v for k, v in env.items() if v})
     return merged
+
+
+def _quarantine(path: Path) -> None:
+    """Rename a broken overlay to ``providers.toml.bad-<timestamp>`` (best effort)."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    with contextlib.suppress(OSError):
+        os.replace(path, path.with_name(f"{path.name}.bad-{stamp}"))
+
+
+def _apply_overlay(settings: Settings, merged: dict[str, Any], path: Path | None) -> Settings:
+    """Merge the dialog's ``providers.toml``; a broken one is skipped so the app can start."""
+    try:
+        overlay = read_overlay(path)
+        if not overlay:
+            return settings
+        try:
+            return Settings.model_validate(_deep_merge(merged, resolve_overlay(overlay)))
+        except ValidationError as exc:
+            raise ConfigError(_format_validation_error(path, exc)) from exc
+    except ConfigError as exc:
+        first = str(exc).splitlines()[0]
+        logger.warning("Ignoring %s (%s); fix it in Models / providers", path, first)
+        if path is not None:
+            _quarantine(path)
+        return settings
 
 
 def load_settings(
@@ -118,6 +159,7 @@ def load_settings(
         settings = Settings.model_validate(merged)
     except ValidationError as exc:
         raise ConfigError(_format_validation_error(source, exc)) from exc
+    settings = _apply_overlay(settings, merged, providers_path(env))
     secrets = _read_secrets(env, cwd)
     if store is None and real_env:
         store = credentials.default_store()

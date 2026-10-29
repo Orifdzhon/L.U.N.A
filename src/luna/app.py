@@ -413,7 +413,8 @@ def _assemble(
         providers, missing = _build_providers(settings)
         closers.extend(providers)
         active = [p.name for p in providers]
-        chat = LLMChain(providers, clock, bus) if providers else _NoLLM()
+        no_tools = {n for n, c in settings.llm.providers.items() if c.supports_tools is False}
+        chat = LLMChain(providers, clock, bus, no_tools=no_tools) if providers else _NoLLM()
 
     # Tools
     if browser is None:

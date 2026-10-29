@@ -55,6 +55,8 @@ class FakeWindow:
         self.status = ""
         self.busy = []
         self.visible = False
+        self.states = []
+        self.voice_available = []
 
     def append(self, line):
         self.lines.append(line)
@@ -64,6 +66,12 @@ class FakeWindow:
 
     def set_input_busy(self, busy):
         self.busy.append(busy)
+
+    def set_state(self, state, caption):
+        self.states.append((state, caption))
+
+    def set_voice_available(self, available, reason):
+        self.voice_available.append((available, reason))
 
     def show(self):
         self.visible = True
@@ -124,6 +132,20 @@ class FakeVoice:
         self.disable_calls = 0
         self.thread_names = []
         self.entered = threading.Event()
+        self.enabled = False
+        self.enable_reason = None
+        self.press_result = True
+        self.calls = []
+
+    def enable(self, *, hotkey_required=True):
+        self.calls.append(("enable", hotkey_required))
+        if self.enable_reason is None:
+            self.enabled = True
+        return self.enable_reason
+
+    def press(self):
+        self.calls.append(("press",))
+        return self.press_result
 
     def set_sinks(self, on_reply, on_stale):
         self.sinks = (on_reply, on_stale)
@@ -166,6 +188,19 @@ class FakeOrchestrator:
         return self.reply
 
 
+class FakeRegistry:
+    def __init__(self):
+        self.calls = []
+        self.result = ToolResult("open_file", True, "opened")
+        self.error = None
+
+    def execute(self, call, ctx):
+        self.calls.append((call.name, call.arguments, ctx.source, ctx.confirmer.confirm("x")))
+        if self.error:
+            raise self.error
+        return self.result
+
+
 class FakeApp:
     def __init__(self, voice=True, speaker=True, llm=True, warnings=()):
         self.bus = EventBus()
@@ -173,6 +208,7 @@ class FakeApp:
         self.voice_input = FakeVoice() if voice is True else (voice or None)
         self.speaker = FakeSpeaker() if speaker else None
         self.llm_available = llm
+        self.registry = FakeRegistry()
         self.warnings = list(warnings)
         self.closed = 0
 
@@ -192,7 +228,7 @@ class Starter:
 
     def __call__(self, name, target):
         self.started.append(name)
-        if name.startswith("luna-ui-req-"):
+        if name.startswith(("luna-ui-req-", "luna-ui-mic", "luna-ui-open-")):
             target()
         else:
             self.loops[name] = target
@@ -362,8 +398,8 @@ def test_transcript_and_reply_lines_with_actions(env):
     assert env.window.lines[-4:] == [
         ConversationLine("user", "открой ютуб"),
         ConversationLine("assistant", "Открываю"),
-        ConversationLine("action", "open_website: ok - youtube"),
-        ConversationLine("action", "web_search: ok"),
+        ConversationLine("action", "open_website: ok - youtube", ok=True),
+        ConversationLine("action", "web_search: ok", ok=True),
     ]
 
 
@@ -781,3 +817,100 @@ def test_no_qt_import():
     # a fresh interpreter: other tests in this process may import Qt
     code = "import luna.ui.shell.controller, sys; assert 'PySide6' not in sys.modules"
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+# ---- window v2: state, voice button, file chips (ADR 0011 C4 / C6) ---------------------
+
+
+def test_window_gets_state_and_caption_with_the_tray_icon(env):
+    env.start()
+    state, caption = env.window.states[-1]
+    assert state is IconState.IDLE and caption
+    env.app.bus.publish(StatusChanged(Status.THINKING))
+    env.pump_bus()
+    assert env.window.states[-1][0] is IconState.THINKING
+    assert env.window.states[-1][0] is env.tray.states[-1][0]
+
+
+def test_voice_availability_is_reported(env):
+    env.start()
+    assert env.window.voice_available[-1] == (True, "")
+    off = Env(voice=False)
+    off.start()
+    available, reason = off.window.voice_available[-1]
+    assert not available and reason
+
+
+def test_toggle_listen_enables_listening_then_presses(env):
+    env.start()
+    env.controller.toggle_listen()
+    voice = env.app.voice_input
+    assert voice.calls == [("enable", False), ("press",)]
+    env.controller.toggle_listen()  # already enabled: only the press
+    assert voice.calls[2:] == [("press",)]
+    assert "luna-ui-mic" in env.starter.started
+
+
+def test_toggle_listen_reports_why_it_cannot_listen(env):
+    env.start()
+    env.app.voice_input.enable_reason = "no microphone"
+    env.controller.toggle_listen()
+    assert env.window.kinds("system")[-1] == "Cannot listen: no microphone."
+    assert ("press",) not in env.app.voice_input.calls
+
+
+def test_toggle_listen_without_voice_says_so():
+    env = Env(voice=False)
+    env.start()
+    env.controller.toggle_listen()
+    assert "not available" in env.window.kinds("system")[-1]
+
+
+def test_open_result_calls_open_file_through_the_registry(env):
+    env.start()
+    env.controller.open_result(2, "reveal")
+    assert env.app.registry.calls == [
+        ("open_file", {"index": 2, "action": "reveal"}, "text", False)
+    ]
+    last = env.window.lines[-1]
+    assert last.kind == "action" and last.ok is True
+
+
+def test_open_result_rejects_bad_input_and_survives_errors(env):
+    env.start()
+    env.controller.open_result(0, "open")
+    env.controller.open_result(11, "open")
+    env.controller.open_result(1, "rm")
+    assert env.app.registry.calls == []
+    env.app.registry.error = RuntimeError("boom")
+    env.controller.open_result(1, "open")
+    assert "Could not open" in env.window.kinds("system")[-1]
+
+
+def test_find_file_result_carries_chips_other_tools_do_not(env):
+    env.start()
+    found = ToolResult(
+        "find_file",
+        True,
+        "2 files",
+        {"results": [{"index": 1, "name": "a.pdf"}, {"index": 2}, {"index": 99}, "junk"]},
+        untrusted=True,
+    )
+    env.app.orchestrator.reply = Reply("Нашла", "ru", [found, ToolResult("open_website", True, "")])
+    env.controller.submit("find")
+    env.pump_bus()
+    actions = [ln for ln in env.window.lines if ln.kind == "action"]
+    assert [c.index for c in actions[0].files] == [1, 2]
+    assert actions[0].files[0].label == "a.pdf"
+    assert actions[1].files == () and actions[1].ok is True
+
+
+def test_controller_localizes_captions_tooltips_status_and_wake_label():
+    env = Env()
+    env.controller._lang = "ru"
+    env.start()
+    _state, caption = env.window.states[-1]
+    assert caption == "Отдыхаю"
+    assert env.tray.states[-1][1] == "L.U.N.A. - ожидание"
+    assert env.window.status.startswith("ожидание")
+    assert env.tray.menus[-1].wake_label == "Слушать «Луна»"

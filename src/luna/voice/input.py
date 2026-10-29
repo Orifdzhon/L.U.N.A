@@ -277,6 +277,15 @@ class VoiceInput:
                 self._warmup = parts.local.start_warm_up()
             return None
 
+    def press(self) -> bool:
+        """Push-to-talk like the hotkey (start / stop a turn). False when listening is off."""
+        with self._lock:
+            parts = self._parts
+            if self._closed or not self._enabled or parts is None:
+                return False
+        parts.frontend.press()
+        return True
+
     def disable(self) -> None:
         """Stop listening: wake mode off, hotkey unregistered, the running turn cancelled."""
         with self._lock:

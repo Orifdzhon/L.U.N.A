@@ -38,6 +38,18 @@ _CATALOG: dict[str, dict[Lang, str]] = {
     "state.thinking": {"ru": "Думаю…", "en": "Thinking…"},
     "state.speaking": {"ru": "Говорю…", "en": "Speaking…"},
     "state.error": {"ru": "Ошибка", "en": "Error"},
+    # status line and shell messages
+    "status.idle": {"ru": "ожидание", "en": "idle"},
+    "status.listening": {"ru": "слушаю", "en": "listening"},
+    "status.thinking": {"ru": "думаю", "en": "thinking"},
+    "status.speaking": {"ru": "говорю", "en": "speaking"},
+    "status.error": {"ru": "ошибка", "en": "error"},
+    "status.error_detail": {"ru": "ошибка: {detail}", "en": "error: {detail}"},
+    "status.wake": {"ru": "Слово: {state}", "en": "Wake: {state}"},
+    "status.conversation": {"ru": "диалог", "en": "conversation"},
+    "status.muted": {"ru": "Голос: выкл", "en": "Voice: muted"},
+    "status.llm": {"ru": "LLM: {name}", "en": "LLM: {name}"},
+    "status.llm_offline": {"ru": "LLM: офлайн", "en": "LLM: offline"},
     # tray tooltips
     "tooltip.idle": {"ru": "L.U.N.A. - ожидание", "en": "L.U.N.A. - idle"},
     "tooltip.wake": {

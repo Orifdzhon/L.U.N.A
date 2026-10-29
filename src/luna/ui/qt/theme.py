@@ -6,36 +6,52 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 PALETTE = {
-    "bg": "#0E1016",
-    "surface": "#161A23",
-    "surface_2": "#1E2330",
-    "border": "#2A3040",
-    "text": "#E6E8EE",
-    "text_muted": "#8B93A7",
-    "user_bubble": "#2B3A67",
+    "bg": "#050506",  # top of the space gradient
+    "bg_bottom": "#121214",  # bottom of the space gradient
+    "surface": "#1A1B1E",
+    "surface_2": "#25272B",
+    "border": "#34363B",
+    "text": "#E8E9EC",
+    "text_muted": "#9A9DA5",
+    "user_bubble": "#30343D",
     "user_text": "#F2F4FF",
     "accent": "#8AB4FF",
-    "chip_ok": "#12262A",
+    "chip_ok": "#101C1B",
     "chip_ok_text": "#7FD1C7",
-    "chip_fail": "#2A1416",
+    "chip_fail": "#241415",
     "chip_fail_text": "#F28B82",
     "rec": "#FF5C7A",
 }
+
+# Surfaces are slightly see-through so the stars show faintly behind bubbles and the input.
+SURFACE_ALPHA = 0.86
+BUBBLE_ALPHA = 0.88
+
+
+def rgba(color: str, alpha: float) -> str:
+    """``#RRGGBB`` + opacity 0..1 -> a Qt stylesheet ``rgba(r, g, b, a)`` value."""
+    c = QColor(color)
+    return f"rgba({c.red()}, {c.green()}, {c.blue()}, {round(alpha * 255)})"
+
 
 FONT_FAMILY = '"Segoe UI Variable", "Segoe UI", sans-serif'
 
 
 def stylesheet() -> str:
     p = PALETTE
+    sf = rgba(p["surface"], SURFACE_ALPHA)
+    ub = rgba(p["user_bubble"], BUBBLE_ALPHA)
     return f"""
-QWidget#luna-window, QWidget#chat-body {{ background: {p["bg"]}; }}
-QScrollArea#chat {{ background: {p["bg"]}; border: none; }}
+QWidget#luna-window {{ background: {p["bg"]}; }}
+QWidget#chat-body, QScrollArea#chat, QScrollArea#chat > QWidget#qt_scrollarea_viewport {{
+    background: transparent; border: none;
+}}
 QWidget {{ font-family: {FONT_FAMILY}; color: {p["text"]}; font-size: 10pt; }}
 QLabel[bubble="user"] {{
-    background: {p["user_bubble"]}; color: {p["user_text"]}; border-radius: 14px; padding: 8px 12px;
+    background: {ub}; color: {p["user_text"]}; border-radius: 14px; padding: 8px 12px;
 }}
 QLabel[bubble="assistant"] {{
-    background: {p["surface"]}; border: 1px solid {p["border"]}; border-radius: 14px;
+    background: {sf}; border: 1px solid {p["border"]}; border-radius: 14px;
     padding: 8px 12px;
 }}
 QLabel[bubble="system"] {{ color: {p["text_muted"]}; font-size: 9pt; }}
@@ -56,20 +72,20 @@ QLabel#caption, QLabel#status {{ color: {p["text_muted"]}; }}
 QLabel#caption {{ font-size: 11pt; }}
 QLabel#status {{ font-size: 9pt; }}
 QLineEdit {{
-    background: {p["surface"]}; border: 1px solid {p["border"]}; border-radius: 12px;
+    background: {sf}; border: 1px solid {p["border"]}; border-radius: 12px;
     padding: 8px 12px; selection-background-color: {p["user_bubble"]};
 }}
 QLineEdit:focus {{ border-color: {p["accent"]}; }}
 QLineEdit:disabled {{ color: {p["text_muted"]}; }}
 QToolButton {{
-    background: {p["surface"]}; border: 1px solid {p["border"]}; border-radius: 18px;
+    background: {sf}; border: 1px solid {p["border"]}; border-radius: 18px;
 }}
 QToolButton:hover {{ background: {p["surface_2"]}; }}
-QToolButton:disabled {{ background: {p["bg"]}; }}
+QToolButton:disabled {{ background: {sf}; }}
 QToolButton#send {{ background: {p["accent"]}; border-color: {p["accent"]}; }}
 QToolButton#send:disabled {{ background: {p["surface_2"]}; border-color: {p["border"]}; }}
 QToolButton#mic[recording="true"] {{ border-color: {p["rec"]}; background: {p["surface_2"]}; }}
-QScrollBar:vertical {{ background: {p["bg"]}; width: 8px; margin: 0; }}
+QScrollBar:vertical {{ background: transparent; width: 8px; margin: 0; }}
 QScrollBar::handle:vertical {{ background: {p["border"]}; border-radius: 4px; min-height: 24px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """
@@ -117,3 +133,21 @@ def mic_icon(color: str, size: int = 36) -> QIcon:
     finally:
         painter.end()
     return QIcon(pixmap)
+
+
+def guide_stylesheet() -> str:
+    """Styles of the first-run guide overlay (``guide.py``)."""
+    p = PALETTE
+    return f"""
+QWidget#guide-overlay {{ background: rgba(0, 0, 0, 150); }}
+QFrame#guide-card {{
+    background: {rgba(p["surface"], 0.94)}; border: 1px solid {p["border"]}; border-radius: 16px;
+}}
+QLabel#guide-title {{ font-size: 13pt; font-weight: 600; }}
+QLabel#guide-line {{ color: {p["text"]}; }}
+QPushButton#guide-ok {{
+    background: {p["accent"]}; color: {p["bg"]}; border: none; border-radius: 12px;
+    padding: 8px 18px; font-weight: 600;
+}}
+QPushButton#guide-ok:hover {{ background: #A5C5FF; }}
+"""

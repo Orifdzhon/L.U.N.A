@@ -380,6 +380,7 @@ class UISettings(_Section):
     notifications: bool = True  # tray balloon notifications
     history_lines: int = Field(default=200, ge=20, le=2000)  # lines kept in the window history
     language: Literal["auto", "ru", "en"] = "auto"  # UI language; auto = Windows UI language
+    animations: bool = True  # orb motion and the drifting starfield; false = static frames
 
     @model_validator(mode="before")
     @classmethod

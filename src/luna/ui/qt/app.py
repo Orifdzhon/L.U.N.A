@@ -34,6 +34,7 @@ from luna.ui.qt.providers_dialog import ProvidersDialog
 from luna.ui.qt.tray import QtTrayView
 from luna.ui.qt.window import QtWindowView
 from luna.ui.shell.controller import ShellController, arm_watchdog
+from luna.ui.shell.firstrun import default_state_path, is_first_run_done, mark_first_run_done
 from luna.ui.shell.keys import has_cloud_llm_key
 from luna.ui.shell.launch import own_launch_command
 from luna.ui.shell.providers import ProvidersPresenter
@@ -88,6 +89,7 @@ def run_tray(
     keys_store: CredentialStore | None = None,
     overlay_path: Path | None = None,
     spawn: Callable[[LaunchCommand], None] | None = None,
+    state_path: Path | None = None,
 ) -> int:
     """Run the tray shell until Quit. ``instance`` is released when the shell quits."""
     qt_app = _application()
@@ -113,6 +115,7 @@ def run_tray(
             qt_app.quit()
 
     lang = resolve_language(settings.ui.language)
+    marker = state_path if state_path is not None else default_state_path()
     window = QtWindowView(
         on_submit=lambda text: holder["controller"].submit(text),
         on_cancel=lambda: holder["controller"].cancel(),
@@ -121,7 +124,11 @@ def run_tray(
         on_open_file=lambda index, action: holder["controller"].open_result(index, action),
         history_lines=settings.ui.history_lines,
         lang=lang,
+        animations=settings.ui.animations,
+        on_guide_done=lambda: mark_first_run_done(marker),
     )
+    if not is_first_run_done(marker):
+        window.show_guide()  # stays until the user presses "Got it"
     keys_dialogs: list[ProvidersDialog] = []
     restart = {"requested": False}
 
@@ -150,6 +157,12 @@ def run_tray(
         dialog.raise_()
         dialog.activateWindow()
 
+    def show_guide() -> None:
+        window.show()
+        if window.isMinimized():
+            window.showNormal()
+        window.show_guide()
+
     tray = QtTrayView(
         on_open=lambda: holder["controller"].toggle_window(),
         on_set_wake=lambda on: holder["controller"].set_wake(on),
@@ -157,6 +170,7 @@ def run_tray(
         on_set_autostart=lambda on: holder["controller"].set_autostart(on),
         on_quit=quit_shell,
         on_keys=show_keys,
+        on_guide=show_guide,
         lang=lang,
     )
     controller = ShellController(

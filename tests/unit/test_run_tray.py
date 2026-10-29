@@ -173,3 +173,24 @@ def test_providers_dialog_restart_spawns_after_quit(qapp, monkeypatch, tmp_path)
     )
     assert rc == 0 and instance.released == 1
     assert len(spawned) == 1 and "--tray" in spawned[0].args
+
+
+def test_guide_shown_until_acknowledged_then_not(qapp, monkeypatch, tmp_path):
+    marker = tmp_path / "state.json"
+    seen = {}
+
+    def steps(controller):
+        window = controller._window
+        seen["first"] = window.guide.isVisible()
+        window.guide.button.click()
+
+    run(qapp, monkeypatch, steps=steps, state_path=marker)
+    assert seen["first"] is True
+    assert marker.exists()
+    run(
+        qapp,
+        monkeypatch,
+        steps=lambda c: seen.update(second=c._window.guide.isVisible()),
+        state_path=marker,
+    )
+    assert seen["second"] is False

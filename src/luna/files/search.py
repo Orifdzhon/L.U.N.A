@@ -18,7 +18,7 @@ from luna.core.clock import Clock
 from luna.files.base import FileHit, FileIndex, FileQuery, RootDir, SearchOutcome
 from luna.files.query import normalize_text
 from luna.files.rank import rank
-from luna.files.walk import DEFAULT_SKIP, walk
+from luna.files.walk import DEFAULT_SKIP, path_blocked, walk
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +126,8 @@ class FileSearch:
                 continue
             parts = hit.path.parts[len(root.path.parts) :]
             if any(normalize_text(p) in self._skip for p in parts[:-1]):
+                continue
+            if path_blocked(hit.path, root.path):
                 continue
             kept.append(hit)
         return kept

@@ -11,6 +11,7 @@ set; the result then says it did not cover everything.
 from __future__ import annotations
 
 import os
+import stat
 import threading
 from collections import deque
 from collections.abc import Sequence
@@ -100,6 +101,30 @@ def _hidden(entry: os.DirEntry[str]) -> bool:
     return bool(attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
 
 
+def path_blocked(path: Path, root: Path) -> bool:
+    """True if ``path`` or a folder between ``root`` and it is hidden/system or a link.
+
+    Used for hits that did not come from the walk (OS index); a few ``lstat`` calls per hit.
+    """
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return True
+    current = root
+    for part in parts:
+        current = current / part
+        try:
+            st = os.lstat(current)
+        except OSError:
+            return True
+        attrs = getattr(st, "st_file_attributes", 0)
+        if attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM):
+            return True
+        if stat.S_ISLNK(st.st_mode) or os.path.isjunction(current):
+            return True
+    return False
+
+
 def walk(
     roots: Sequence[RootDir],
     q: FileQuery,
@@ -166,8 +191,8 @@ def _walk_root(
                 except OSError:
                     continue
                 name = normalize_text(entry.name)
-                if is_dir and (
-                    name in skip or _is_link(entry) or os.path.normcase(entry.path) in root_keys
+                if _is_link(entry) or (
+                    is_dir and (name in skip or os.path.normcase(entry.path) in root_keys)
                 ):
                     continue
                 if _hidden(entry):

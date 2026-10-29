@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import secrets
 import stat
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from luna.config.settings import FilesSettings
@@ -94,7 +96,23 @@ def _display_path(hit: FileHit, roots: Sequence[RootDir]) -> str:
     if root is None:
         return hit.path.name
     rel = hit.path.parts[len(root.path.parts) :]
-    return "\\".join((root.label, *rel))
+    return _hide_user(
+        "\\".join((root.label, *rel)), os.path.normcase(os.path.basename(str(Path.home())))
+    )
+
+
+_USERS_RE = re.compile(r"^([A-Za-z]:)\\Users\\([^\\]+)(?=\\|$)", re.IGNORECASE)
+
+
+def _hide_user(shown: str, home_name: str) -> str:
+    r"""The Windows user name must not reach the LLM: ``C:\Users\me\x`` -> ``~\x``."""
+
+    def repl(m: re.Match[str]) -> str:
+        if os.path.normcase(m.group(2)) == home_name:
+            return "~"
+        return m.group(1) + "\\Users\\..."
+
+    return _USERS_RE.sub(repl, shown)
 
 
 def _fmt_size(size: int | None) -> str:
@@ -318,9 +336,17 @@ class OpenFileTool:
 def _still_valid(hit: FileHit, roots: Sequence[RootDir]) -> bool:
     """The stored hit still points at the same thing, inside a root, and is not a link."""
     path = hit.path
-    if is_unc(path) or root_of(str(path), roots) is None:
+    root = root_of(str(path), roots)
+    if is_unc(path) or root is None:
         return False
     try:
+        # A swapped parent junction/symlink would lead out of the root: resolve and re-check.
+        real, real_root = (
+            os.path.normcase(os.path.realpath(path)),
+            os.path.normcase(os.path.realpath(root.path)),
+        )
+        if not real.startswith(real_root.rstrip("\\/") + os.sep):
+            return False
         if path.is_symlink() or path.is_junction():
             return False
         if hit.is_dir:

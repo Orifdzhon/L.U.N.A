@@ -275,7 +275,7 @@ def test_fully_covered_roots_are_not_walked(tmp_path, monkeypatch):
 
 def test_index_hits_outside_roots_or_in_skipped_dirs_dropped(tmp_path):
     root = tmp_path / "r"
-    root.mkdir()
+    make_files(root, ["ok/report.txt"])  # stale index hits (files gone) are dropped too
     idx = FakeFileIndex(
         [
             fake_hit(str(tmp_path / "elsewhere" / "report.txt")),

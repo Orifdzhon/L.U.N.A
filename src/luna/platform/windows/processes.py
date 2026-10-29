@@ -60,6 +60,11 @@ PROTECTED_NAMES = frozenset(
 
 
 def _norm_path(path: str) -> str:
+    """Case-folded, normalized path with the ``\\\\?\\`` and ``\\\\?\\UNC\\`` prefixes removed."""
+    if path[:8].upper() == "\\\\?\\UNC\\":
+        path = "\\\\" + path[8:]
+    elif path.startswith("\\\\?\\"):
+        path = path[4:]
     return ntpath.normcase(ntpath.normpath(path))
 
 
@@ -207,6 +212,8 @@ class _Kernel32:
     PROCESS_TERMINATE = 0x0001
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     TH32CS_SNAPPROCESS = 0x2
+    STILL_ACTIVE = 259
+    INVALID_HANDLE_VALUE = None  # c_void_p(-1).value, set in __init__ (64-bit safe)
 
     def __init__(self) -> None:
         import ctypes
@@ -232,6 +239,10 @@ class _Kernel32:
             wintypes.LPWSTR,
         )
         k.GetApplicationUserModelId.restype = ctypes.c_long
+        k.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        k.GetSystemWindowsDirectoryW.argtypes = (wintypes.LPWSTR, wintypes.UINT)
+        k.GetSystemWindowsDirectoryW.restype = wintypes.UINT
+        self.INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
         k.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
         k.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
         k.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
@@ -281,6 +292,11 @@ class _Kernel32:
             buf = ct.create_unicode_buffer(1024)
             if not self._k.QueryFullProcessImageNameW(handle, 0, buf, ct.byref(size)):
                 return None
+            exit_code = self._wt.DWORD(0)
+            if not self._k.GetExitCodeProcess(handle, ct.byref(exit_code)) or (
+                exit_code.value != self.STILL_ACTIVE
+            ):
+                return None  # already exited (a lingering handle keeps the object openable)
             creation = self._creation(handle)
             session = self.session_of(pid)
             if creation is None or session is None:
@@ -296,8 +312,8 @@ class _Kernel32:
         """pid -> parent pid for every process (Toolhelp32 snapshot)."""
         snap = self._k.CreateToolhelp32Snapshot(self.TH32CS_SNAPPROCESS, 0)
         table: dict[int, int] = {}
-        if not snap or int(snap) == -1:
-            return table
+        if not snap or snap == self.INVALID_HANDLE_VALUE:
+            return table  # empty: the caller refuses to act without a process table
         try:
             entry = self._entry()
             entry.dwSize = self._ct.sizeof(entry)
@@ -308,6 +324,12 @@ class _Kernel32:
         finally:
             self._k.CloseHandle(snap)
         return table
+
+    def system_windows_dir(self) -> str | None:
+        """``GetSystemWindowsDirectoryW`` (the real %SystemRoot%, not an environment variable)."""
+        buf = self._ct.create_unicode_buffer(260)
+        n = self._k.GetSystemWindowsDirectoryW(buf, 260)
+        return buf.value if 0 < n < 260 else None
 
     def terminate(self, pid: int, creation: int) -> bool:
         """TerminateProcess, but only if the process still started at ``creation``."""
@@ -464,7 +486,7 @@ class WindowsRunningApps:
         self._clock = clock
         self._sleep = sleep
         self._extra = tuple(protected_extra)
-        self._system_root = system_root if system_root is not None else os.environ.get("SYSTEMROOT")
+        self._system_root = system_root
         self._descriptions: dict[str, str | None] = {}
 
     # lazy wrappers so the module imports (and tests construct) without ctypes
@@ -494,12 +516,28 @@ class WindowsRunningApps:
 
     # --- scanning ---------------------------------------------------------------------------
 
+    def _root(self) -> str:
+        """%SystemRoot%: the environment variable, else the API. Unknown -> refuse (fail closed)."""
+        if not self._system_root:
+            self._system_root = os.environ.get("SYSTEMROOT") or self.k.system_windows_dir()
+        if not self._system_root:
+            raise ToolError("cannot determine the Windows directory")
+        return self._system_root
+
     def _protected(self, path: str) -> bool:
-        return is_protected_path(path, self._system_root, self._extra)
+        return is_protected_path(path, self._root(), self._extra)
+
+    def _table(self) -> dict[int, int]:
+        """pid -> parent pid. An empty table, or one without our own process, means the
+        snapshot failed: refuse to act rather than miss our own parent."""
+        table = self.k.process_table()
+        if not table or self.k.current_pid() not in table:
+            raise ToolError("cannot read the process list")
+        return table
 
     def _own_pids(self) -> set[int]:
         own = self.k.current_pid()
-        parent = self.k.process_table().get(own)
+        parent = self._table().get(own)
         return {own} | ({parent} if parent else set())
 
     def _real_pid(self, win: WindowInfo) -> int | None:
@@ -632,45 +670,52 @@ class WindowsRunningApps:
         while True:
             if not self._alive(procs):
                 return CloseOutcome.CLOSED
-            open_windows = self._visible_windows(pids, group.hwnds)
-            if any(self.u.is_hung(w.hwnd) for w in open_windows):
-                return CloseOutcome.NOT_RESPONDING
-            if open_windows and self._owned_visible(pids) > baseline:
+            if self._visible_windows(pids, group.hwnds) and self._owned_visible(pids) > baseline:
                 return CloseOutcome.PROMPTED
             if self._clock() >= deadline:
                 break
             self._sleep(POLL_INTERVAL_S)
-        if not self._visible_windows(pids, group.hwnds):
+        open_windows = self._visible_windows(pids, group.hwnds)
+        if not open_windows:
             return CloseOutcome.HIDDEN
-        return CloseOutcome.NOT_RESPONDING  # still open after the wait and not asking anything
+        # One hang probe per close, after the wait (each probe may block up to a second). Hung
+        # or just slow, a window that ignored WM_CLOSE for the whole wait is "not responding".
+        hung = any(self.u.is_hung(w.hwnd) for w in open_windows)
+        log.debug("window still open after close (hung=%s)", hung)
+        return CloseOutcome.NOT_RESPONDING
 
     def terminate(self, app: RunningApp) -> None:
         group = self._find(app)
         if group is None:
             raise ToolError("the app is no longer running or has changed")
-        table = self.k.process_table()
-        wanted = _descendants(set(group.procs), table)
+        table = self._table()
+        own = self._own_pids()
+        targets: dict[int, ProcInfo] = {pid: info for pid, info in group.procs.items()}
+        # Children: same image, same session, started no earlier than their parent (a reused
+        # parent pid would otherwise adopt unrelated processes), never our own processes.
+        frontier = dict(targets)
+        while frontier:
+            nxt: dict[int, ProcInfo] = {}
+            for pid, parent in table.items():
+                parent_info = frontier.get(parent)
+                if parent_info is None or pid in targets or pid in own:
+                    continue
+                info = self.k.process_info(pid)
+                if (
+                    info is not None
+                    and _norm_path(info.image_path) == _norm_path(group.image_path)
+                    and info.session == parent_info.session
+                    and info.creation >= parent_info.creation
+                ):
+                    nxt[pid] = info
+            targets.update(nxt)
+            frontier = nxt
         killed = 0
-        for pid in sorted(wanted):
-            info = group.procs.get(pid) or self.k.process_info(pid)
-            if info is None or _norm_path(info.image_path) != _norm_path(group.image_path):
-                continue
+        for pid in sorted(targets):
+            info = targets[pid]
             if self._protected(info.image_path):
                 raise ProtectedApp("this app is protected and is never closed")
             if self.k.terminate(pid, info.creation):
                 killed += 1
         if killed == 0:
             raise ToolError("could not terminate the app")
-
-
-def _descendants(roots: set[int], table: dict[int, int]) -> set[int]:
-    """``roots`` plus every process below them in the parent/child table."""
-    found = set(roots)
-    changed = True
-    while changed:
-        changed = False
-        for pid, parent in table.items():
-            if parent in found and pid not in found:
-                found.add(pid)
-                changed = True
-    return found

@@ -8,7 +8,7 @@ from luna.logs.action_log import ActionLog
 from luna.platform.base import AppEntry, CloseOutcome, ProtectedApp, RunningApp
 from luna.platform.fallback import NoRunningApps
 from luna.tools.base import SafetyLevel, Tool, ToolContext
-from luna.tools.builtin.close_app import CloseAppTool
+from luna.tools.builtin.close_app import CloseAppTool, user_consents
 from luna.tools.registry import ToolRegistry
 from luna.tools.schema import validate_args
 
@@ -18,8 +18,8 @@ TG = RunningApp("tg-key", "Telegram Desktop", "C:\\t\\Telegram.exe", "Pkg.Telegr
 TOOL_X = RunningApp("x-key", "Some Tool", "D:\\x\\sometool.exe", None, (2,), 1)
 
 
-def ctx(request_id="r1"):
-    return ToolContext(request_id, "voice", FakeConfirmer(), "закрой")
+def ctx(request_id="r1", text="закрой"):
+    return ToolContext(request_id, "voice", FakeConfirmer(), text)
 
 
 class Env:
@@ -30,8 +30,8 @@ class Env:
             self.running, FakeAppCatalog(CATALOG), conf=AppsSettings(), clock=self.clock
         )
 
-    def run(self, name="телеграм", request_id="r1", **args):
-        return self.tool.run({"name": name, **args}, ctx(request_id))
+    def run(self, name="телеграм", request_id="r1", text="закрой", **args):
+        return self.tool.run({"name": name, **args}, ctx(request_id, text))
 
 
 @pytest.fixture
@@ -197,6 +197,45 @@ def test_force_for_a_restarted_app_is_refused():
     e.running.apps = [restarted, TOOL_X]
     e.running.identity = {"tg-key2": TG_ENTRY.app_id}
     assert e.run(force=True, request_id="r2").data["reason"] == "force_not_offered"
+    assert e.running.terminated == []
+
+
+@pytest.mark.parametrize(
+    ("text", "yes"),
+    [
+        ("да", True),
+        ("да, закрой принудительно", True),
+        ("Давай!", True),
+        ("yes, force it", True),
+        ("kill it", True),
+        ("нет", False),
+        ("не надо", False),
+        ("нет, не закрывай", False),
+        ("no don't", False),
+        ("открой хром", False),
+        ("закрой хром и потом ещё открой почту пожалуйста", False),  # too long to be an answer
+        ("", False),
+    ],
+)
+def test_user_consents(text, yes):
+    assert user_consents(text) is yes
+
+
+def test_force_needs_the_users_own_yes():
+    e = hung()
+    e.run(request_id="r1")
+    # The model asks for force=true, but the user's message in that turn is not a yes.
+    r = e.run(force=True, request_id="r2", text="что-то другое")
+    assert r.data["reason"] == "force_not_offered"
+    assert e.running.terminated == []
+
+
+def test_a_no_cancels_the_offer():
+    e = hung()
+    e.run(request_id="r1")
+    assert e.run(force=True, request_id="r2", text="нет, не надо").data["reason"] == (
+        "force_not_offered"
+    )
     assert e.running.terminated == []
 
 

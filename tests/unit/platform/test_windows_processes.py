@@ -364,6 +364,95 @@ def test_terminate_failure_is_a_tool_error(world):
         apps.terminate(app)
 
 
+def test_terminate_children_must_be_newer_and_same_session(world):
+    world.add(10, CHROME, [1])  # creation 1010
+    apps = make(world)
+    app = only(apps.list_running())
+    world.procs[11] = proc(11, CHROME)  # ok: newer
+    world.table[11] = 10
+    world.procs[12] = proc(12, CHROME, creation=0)  # older than its parent: pid reuse
+    world.table[12] = 10
+    world.procs[13] = proc(13, CHROME, session=2)  # other session
+    world.table[13] = 10
+    apps.terminate(app)
+    assert sorted(world.terminated) == [10, 11]
+
+
+def test_terminate_follows_grandchildren(world):
+    world.add(10, CHROME, [1])
+    world.procs[11] = proc(11, CHROME)
+    world.table[11] = 10
+    world.procs[12] = proc(12, CHROME)
+    world.table[12] = 11
+    apps = make(world)
+    apps.terminate(only(apps.list_running()))
+    assert sorted(world.terminated) == [10, 11, 12]
+
+
+def test_failed_process_table_fails_closed(world):
+    world.add(10, TG, [1])
+    apps = make(world)
+    app = only(apps.list_running())
+    world.table.clear()
+    with pytest.raises(ToolError):
+        apps.list_running()
+    with pytest.raises(ToolError):
+        apps.close(app, wait_s=1)
+    with pytest.raises(ToolError):
+        apps.terminate(app)
+    assert world.posted == [] and world.terminated == []
+
+
+def test_system_root_falls_back_to_the_api(world, monkeypatch):
+    monkeypatch.delenv("SYSTEMROOT", raising=False)
+    world.add(1, "C:\\Windows\\System32\\cmd.exe", [1])
+    world.add(2, TG, [2])
+    apps = WindowsRunningApps(
+        FakeUser32(world), FakeKernel32(world), FakeVersion(world), FakeShell(world)
+    )
+    apps.k.system_windows_dir = lambda: ROOT
+    assert [a.name for a in apps.list_running()] == ["Telegram"]
+
+
+def test_unknown_system_root_refuses(world, monkeypatch):
+    monkeypatch.delenv("SYSTEMROOT", raising=False)
+    world.add(2, TG, [2])
+    apps = WindowsRunningApps(
+        FakeUser32(world), FakeKernel32(world), FakeVersion(world), FakeShell(world)
+    )
+    apps.k.system_windows_dir = lambda: None
+    with pytest.raises(ToolError):
+        apps.list_running()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "\\\\?\\C:\\Windows\\System32\\cmd.exe",
+        "\\\\?\\c:\\windows\\system32\\cmd.exe",
+        "C:\\Windows\\System32\\..\\System32\\cmd.exe",
+    ],
+)
+def test_prefixed_and_unnormalized_paths_are_still_protected(path):
+    assert is_protected_path(path, ROOT)
+    assert is_protected_path(path, "\\\\?\\" + ROOT)
+
+
+def test_unc_extended_prefix_is_stripped():
+    from luna.platform.windows.processes import _norm_path
+
+    assert _norm_path("\\\\?\\UNC\\srv\\share\\a.exe") == _norm_path("\\\\srv\\share\\a.exe")
+
+
+def test_hang_is_probed_once_after_the_wait(world):
+    world.add(10, TG, [1])
+    probes = []
+    apps = make(world)
+    apps._user32.is_hung = lambda h: probes.append(h) or False
+    assert apps.close(only(apps.list_running()), wait_s=1) is CloseOutcome.NOT_RESPONDING
+    assert probes == [1]
+
+
 # --- identity -------------------------------------------------------------------------------
 
 

@@ -1,3 +1,4 @@
+# ruff: noqa: RUF001
 """``close_app``: close a running app by a (spoken) name, gracefully (ADR 0011, feature A).
 
 SAFE: no confirmation for a normal close (owner decision). The app gets ``WM_CLOSE`` like the
@@ -5,7 +6,9 @@ X button of its window; nothing is killed unless the user explicitly agreed to i
 
 * ``force=true`` is accepted only if an earlier ``close_app`` reported the SAME app as
   not responding / hidden in the tray (a pending offer), less than ``force_window_s`` ago, and
-  the call belongs to a LATER request than the offer (the user answered in a new turn).
+  the call belongs to a LATER request than the offer, and that request's own user text says
+  yes ("да", "принудительно", "yes", "force"...; any "нет"/"no" cancels). The offer is consumed
+  by the first later call, so it never survives a second ``close_app`` call.
   Otherwise a normal close is attempted and ``reason="force_not_offered"`` is reported.
 * the tool only acts on ``RunningApp`` objects it listed itself in the same call; the model's
   text is only used to pick among them; protected processes are never listed.
@@ -18,6 +21,7 @@ name only, never window titles.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -38,6 +42,57 @@ from luna.tools.base import SafetyLevel, ToolContext, ToolResult
 from luna.tools.running_match import match_running
 
 NAME = "close_app"
+
+MAX_CONSENT_WORDS = 6
+_YES = frozenset(
+    [
+        "да",
+        "давай",
+        "закрой",
+        "закрывай",
+        "закрыть",
+        "принудительно",
+        "завершай",
+        "убей",
+        "угу",
+        "ага",
+        "конечно",
+        "yes",
+        "yep",
+        "yeah",
+        "sure",
+        "force",
+        "kill",
+        "close",
+        "ok",
+        "okay",
+    ]
+)
+_NO = frozenset(
+    [
+        "нет",
+        "не",
+        "отмена",
+        "отбой",
+        "стоп",
+        "никогда",
+        "no",
+        "nope",
+        "dont",
+        "don't",
+        "cancel",
+        "stop",
+        "never",
+    ]
+)
+
+
+def user_consents(text: str) -> bool:
+    """Does the user's own message say yes to a force-close? Any negative word means no."""
+    words = re.findall(r"[\w']+", text.casefold().replace("ё", "е"))
+    if len(words) > MAX_CONSENT_WORDS:  # an answer, not a new command that happens to say "close"
+        return False
+    return not any(w in _NO for w in words) and any(w in _YES for w in words)
 
 
 @dataclass(frozen=True)
@@ -167,13 +222,18 @@ class CloseAppTool:
             self._pending = PendingForce(app.key, display, ctx.request_id, self._clock())
 
     def _force_allowed(self, app: RunningApp, ctx: ToolContext) -> bool:
-        """Consume the pending offer; True only for the same app, in time, in a later request."""
+        """Consume the pending offer (so it is good for the first later call only).
+
+        True only for the same app, in time, in a later request whose own user text says yes:
+        the model's ``force=true`` alone is never consent.
+        """
         pending = self._take_pending()
         return (
             pending is not None
             and pending.app_key == app.key
             and self._clock() - pending.at <= self._conf.force_window_s
             and pending.request_id != ctx.request_id
+            and user_consents(ctx.user_text)
         )
 
     # --- actions ------------------------------------------------------------------------------
@@ -216,8 +276,8 @@ class CloseAppTool:
             )
             return ToolResult(NAME, True, summary, data)
         summary = (
-            f"{display} is not responding. Ask the user whether to force-close it; "
-            "unsaved data will be lost."
+            f"{display} is not responding. Ask the user whether to force-close it "
+            "(all its windows and processes); unsaved data will be lost."
         )
         return ToolResult(NAME, False, summary, data)
 

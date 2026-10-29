@@ -293,4 +293,5 @@ Use throw-away windows (Notepad with unsaved text, a spare Telegram), never work
 | O7 | Type `закрой фотошоп` (not installed / not running) | "No running app matches" / "not running"; nothing happens | [ ] / [ ] |
 | O8 | Type `force close notepad` right away (no earlier "not responding") | Not force-closed: a normal close is tried instead | [ ] / [ ] |
 | O9 | With a hung app (e.g. a test program that blocks its UI thread), type `закрой <app>` | "Not responding, force close?"; answer `да` in the next message to kill it; a `да` after 60 s or for another app does nothing | [ ] / [ ] |
+| O9b | After a "force close?" question answer `нет`, then `да` in a later message | `нет` cancels the offer. Force needs your own short `да`/`принудительно`/`yes` message after the question; a long unrelated message is not consent. Known limit: the offer lives up to 60 s and ends at the first later `close_app` call, so a bare `да` sent after an unrelated turn within 60 s can still be taken as consent | [ ] / [ ] |
 | O10 | Open the action log (`%LOCALAPPDATA%\LUNA\logs`) | One `close_app` record per call; no window titles | [ ] / [ ] |

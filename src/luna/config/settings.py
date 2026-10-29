@@ -130,6 +130,19 @@ class RouterSettings(_Section):
     site_aliases: dict[str, str] = Field(default_factory=dict)
 
 
+class FilesSettings(_Section):
+    """File search by name (``find_file`` / ``open_file``, ADR 0011)."""
+
+    roots: list[Literal["user", "drives"]] = Field(default_factory=lambda: ["user", "drives"])
+    extra_roots: list[Path] = Field(default_factory=list)  # more folders to search
+    exclude: list[str] = Field(default_factory=list)  # more folder names to skip
+    aliases: dict[str, str | list[str]] = Field(default_factory=dict)  # "резюме" = ["cv"]
+    time_budget_s: float = Field(default=4.0, gt=0, le=30)
+    max_entries: int = Field(default=300_000, ge=1000)
+    max_results: int = Field(default=5, ge=1, le=10)
+    send_names_to_llm: bool = True  # False: the LLM gets only counts, names stay on screen
+
+
 class AppsSettings(_Section):
     """``close_app`` (ADR 0011)."""
 
@@ -389,6 +402,7 @@ class Settings(_Section):
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     wakeword: WakeWordSettings = Field(default_factory=WakeWordSettings)
     ui: UISettings = Field(default_factory=UISettings)
+    files: FilesSettings = Field(default_factory=FilesSettings)
 
     # env-variable name -> secret value; never serialized, never in repr().
     _api_keys: dict[str, SecretStr] = PrivateAttr(default_factory=dict)

@@ -158,3 +158,19 @@ start_minimized = false       # start hidden in the tray
 notifications = true          # tray notifications
 history_lines = 200           # lines kept in the window history (20..2000)
 language = "auto"             # UI language: "auto" (Windows UI language), "ru" or "en"
+
+# Find files by name: "найди резюме", then "открой первый" (tools find_file / open_file).
+# Only names are searched, never file contents. Documents, media, archives and folders are
+# opened; programs and scripts are only shown in Explorer.
+[files]
+roots = ["user", "drives"]    # "user" = Desktop, Documents, Downloads, Music, Pictures, Videos,
+                              # OneDrive; "drives" = every fixed drive (no network / USB drives)
+extra_roots = []              # more folders, e.g. ['E:\Work']
+exclude = []                  # more folder names to skip (Windows, Program Files, AppData,
+                              # node_modules, .git ... are always skipped)
+time_budget_s = 4.0           # total time for one search
+max_entries = 300000          # folder entries looked at per search
+max_results = 5               # numbered results (1..10)
+send_names_to_llm = true      # file names go to the cloud LLM (paths shortened to
+                              # "Documents\..."); false = only counts, names stay on screen
+# aliases = { "резюме" = ["cv", "resume"] }   # extra spellings of a word in file names

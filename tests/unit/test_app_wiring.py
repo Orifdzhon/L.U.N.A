@@ -130,7 +130,14 @@ def test_non_windows_disables_app_launching(tmp_path):
 
 
 def test_tools_registered(made):
-    assert made().tool_names == ["get_datetime", "open_app", "open_website", "web_search"]
+    assert made().tool_names == [
+        "find_file",
+        "get_datetime",
+        "open_app",
+        "open_file",
+        "open_website",
+        "web_search",
+    ]
 
 
 def test_catalog_warmed_in_background_without_blocking(tmp_path):

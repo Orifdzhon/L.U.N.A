@@ -265,6 +265,20 @@ sandbox Desktop before running it.
 | N16 | Look into the install folder | `LICENSE` and `THIRD_PARTY_NOTICES.txt` are there; the notices contain no `C:\Users\...` build paths | [ ] / [ ] |
 | N17 | Public vs personal setup | The public bundle has no `sherpa_onnx`; the personal one has the Piper voice runtime | [ ] / [ ] |
 
+<<<<<<< HEAD
+## P. File search (find_file / open_file, ADR 0011 B)
+
+| # | Step | Expected | Pass / Fail |
+|---|---|---|---|
+| P1 | `uv run luna`, type `найди резюме` (or a file name you know exists) | numbered matches are named in the answer | [ ] / [ ] |
+| P2 | `открой первый` | a document/image/video/archive opens in its default app | [ ] / [ ] |
+| P3 | find an `.exe`/`.bat`/`.lnk`, then `открой первый` | Explorer shows it selected; the reply says it was only shown | [ ] / [ ] |
+| P4 | `найди папку <name>`, `открой первый` | the folder opens in Explorer | [ ] / [ ] |
+| P5 | rename or delete a found file, then `открой первый` | "changed / search again" | [ ] / [ ] |
+| P6 | `/clear`, then `открой первый` | "no search results" | [ ] / [ ] |
+| P7 | `[files] send_names_to_llm = false` | the answer gives only counts | [ ] / [ ] |
+| P8 | open the app log | `file search: N result(s) ... backend=walk`, no names or paths | [ ] / [ ] |
+=======
 ## O. New window (ADR 0011 Feature C)
 
 | # | Step | Expected | Pass / Fail |
@@ -277,6 +291,7 @@ sandbox Desktop before running it.
 | O6 | Reply containing `<b>x</b>` (ask Luna to repeat it) | Shown literally, not bold | [ ] / [ ] |
 | O7 | After a file search (when #-B4 is merged) click "Open 1" / "Folder 1" | The file opens / Explorer selects it; the action appears in the chat and the action log | [ ] / [ ] |
 | O8 | Hide the window (X) and watch Task Manager for a minute | `luna.exe` CPU stays at about 0 % while hidden or minimized | [ ] / [ ] |
+>>>>>>> origin/main
 
 Once on your real PC: install the personal setup and run the MVP phrases by voice (spec section 6).
 

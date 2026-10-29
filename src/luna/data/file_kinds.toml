@@ -1,0 +1,85 @@
+# Word tables of the file search (luna.files.query) and the "may open" allowlist.
+# Words are written normalized: lower case, "ё" as "е".
+
+stop_words = [
+  "за", "в", "на", "из", "мой", "мои", "моя", "мое", "файл", "файлы", "файла", "документ",
+  "документы", "найди", "поищи", "the", "a", "my", "file", "files", "document", "for", "of",
+  "find", "и", "с", "со", "по",
+]
+
+# These words restrict the search to folders.
+folder_words = ["папка", "папку", "папки", "папке", "каталог", "folder", "directory"]
+
+# kind name -> words that select it + the extensions it stands for.
+[kinds.pdf]
+words = ["pdf", "пдф"]
+extensions = [".pdf"]
+
+[kinds.word]
+words = ["word", "ворд", "docx", "doc"]
+extensions = [".doc", ".docx", ".odt", ".rtf"]
+
+[kinds.excel]
+words = ["excel", "эксель", "таблица", "таблицу", "таблицы", "xlsx", "spreadsheet"]
+extensions = [".xls", ".xlsx", ".ods", ".csv"]
+
+[kinds.presentation]
+words = ["презентация", "презентацию", "презентации", "powerpoint", "pptx", "slides"]
+extensions = [".ppt", ".pptx", ".odp"]
+
+[kinds.image]
+words = ["фото", "фотография", "фотографию", "картинка", "картинку", "скриншот", "image",
+         "photo", "picture", "screenshot"]
+extensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".tif", ".tiff", ".svg"]
+
+[kinds.video]
+words = ["видео", "ролик", "video", "movie", "фильм"]
+extensions = [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".m4v"]
+
+[kinds.audio]
+words = ["музыка", "музыку", "песня", "песню", "трек", "mp3", "music", "song", "audio"]
+extensions = [".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma"]
+
+[kinds.archive]
+words = ["архив", "zip", "rar", "archive"]
+extensions = [".zip", ".rar", ".7z", ".tar", ".gz"]
+
+# Russian month forms -> the English name that file names often use (any variant may match).
+[months]
+january = ["январь", "января", "january"]
+february = ["февраль", "февраля", "february"]
+march = ["март", "марта", "march"]
+april = ["апрель", "апреля", "april"]
+may = ["май", "мая", "may"]
+june = ["июнь", "июня", "june"]
+july = ["июль", "июля", "july"]
+august = ["август", "августа", "august"]
+september = ["сентябрь", "сентября", "september"]
+october = ["октябрь", "октября", "october"]
+november = ["ноябрь", "ноября", "november"]
+december = ["декабрь", "декабря", "december"]
+
+# Words that also mean something in another spelling (the owner adds more in [files] aliases).
+[aliases]
+"резюме" = ["cv", "resume"]
+"договор" = ["contract"]
+"отчет" = ["report"]
+"справка" = ["certificate"]
+
+# D7: what open_file may open (documents, media, archives). Everything else, and everything
+# in `never_open`, is only revealed in Explorer.
+[open]
+extensions = [
+  ".pdf", ".doc", ".docx", ".odt", ".rtf", ".txt", ".md", ".xls", ".xlsx", ".ods", ".csv",
+  ".ppt", ".pptx", ".odp", ".epub", ".djvu",
+  ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".tif", ".tiff",
+  ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma",
+  ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm", ".m4v",
+  ".zip", ".rar", ".7z", ".tar", ".gz",
+]
+never_open = [
+  ".exe", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".jse", ".wsf", ".hta", ".msi", ".msix",
+  ".appx", ".scr", ".com", ".pif", ".lnk", ".url", ".reg", ".jar", ".py", ".pyw",
+  ".library-ms", ".settingcontent-ms", ".cpl", ".dll", ".sys",
+  ".svg", ".html", ".htm", ".xhtml", ".mht", ".mhtml", ".xml", ".chm",
+]

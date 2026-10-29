@@ -35,7 +35,7 @@ from luna.core.prompts import (
     NO_TOOLS_NOTE,
     SEARCH_TOOL,
     TOOL_RESULTS_HEADER,
-    WEB_MARKER,
+    UNTRUSTED_MARKER,
     build_answer_prompt,
     build_system_prompt,
     fallback_text,
@@ -154,11 +154,21 @@ class Assistant:
         self._history: deque[tuple[str, str]] = deque(maxlen=max(0, history_turns))
         self._confirmer = _DenyConfirmer()
         self._lock = threading.Lock()  # guards _history only; never held during an LLM call
+        self._on_clear: list[Callable[[], None]] = []
+
+    def add_clear_hook(self, hook: Callable[[], None]) -> None:
+        """Call ``hook`` whenever the dialogue is cleared (e.g. to forget found files)."""
+        self._on_clear.append(hook)
 
     def clear_history(self) -> None:
         """Forget the dialogue context (the CLI ``/clear`` command)."""
         with self._lock:
             self._history.clear()
+        for hook in self._on_clear:
+            try:
+                hook()
+            except Exception:
+                logger.exception("clear hook failed")
 
     def answer(
         self,
@@ -184,7 +194,7 @@ class Assistant:
         if self._history.maxlen:
             stored = reply.text
             if web:
-                stored = WEB_MARKER + stored[:MAX_WEB_HISTORY_CHARS]
+                stored = UNTRUSTED_MARKER + stored[:MAX_WEB_HISTORY_CHARS]
             with self._lock:
                 if cancel is not None and cancel.is_set():
                     return Reply(fallback_text("cancelled", lang), lang)

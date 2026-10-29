@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from luna.core.errors import (
 )
 from luna.core.events import EventBus, ProviderSwitched
 from luna.llm.base import ChatResponse, LLMProvider, Message, ToolSchema
+
+logger = logging.getLogger(__name__)
 
 BASE_COOLDOWN_S = 60.0  # first cooldown, and the default when ``Retry-After`` is missing
 MAX_COOLDOWN_S = 900.0  # 15 minutes: upper bound for both backoff and ``Retry-After``
@@ -67,6 +70,8 @@ class LLMChain:
         providers: Sequence[LLMProvider],
         clock: Clock,
         bus: EventBus | None = None,
+        *,
+        no_tools: Collection[str] = (),
     ) -> None:
         if not providers:
             raise ConfigError("LLMChain needs at least one provider")
@@ -79,6 +84,9 @@ class LLMChain:
         self._lock = threading.Lock()
         self._state = {p.name: _State() for p in self._providers}
         self._last_answered: str | None = None
+        # Providers configured with supports_tools = false: called with tools=(), logged once.
+        self._no_tools = frozenset(no_tools)
+        self._no_tools_logged: set[str] = set()
 
     def chat(
         self,
@@ -109,9 +117,10 @@ class LLMChain:
             if remaining <= 0:
                 causes.append("deadline exceeded")
                 break
+            offered = self._tools_for(provider.name, tools)
             try:
                 started = self._clock()
-                response = provider.chat(messages, tools, timeout_s=remaining)
+                response = provider.chat(messages, offered, timeout_s=remaining)
             except RateLimited as exc:
                 self._fail(provider.name, exc.retry_after_s, started)
                 causes.append(f"{provider.name}: RateLimited")
@@ -141,6 +150,17 @@ class LLMChain:
         if last_error is not None:
             raise error from last_error
         raise error
+
+    def _tools_for(self, name: str, tools: Sequence[ToolSchema]) -> Sequence[ToolSchema]:
+        if name not in self._no_tools:
+            return tools
+        if tools:
+            with self._lock:
+                first = name not in self._no_tools_logged
+                self._no_tools_logged.add(name)
+            if first:
+                logger.info("%s: supports_tools is false, calling it without tools", name)
+        return ()
 
     def _cooling_down(self, name: str, now: float) -> bool:
         with self._lock:

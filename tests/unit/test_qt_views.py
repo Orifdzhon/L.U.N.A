@@ -10,16 +10,17 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSystemTrayIcon
 
+from luna.ui.qt import window as window_module
 from luna.ui.qt.dispatch import QtUiThread
 from luna.ui.qt.icons import make_icon
 from luna.ui.qt.tray import QtTrayView
 from luna.ui.qt.window import QtWindowView
-from luna.ui.shell.state import ConversationLine, IconState, TrayMenuState
+from luna.ui.shell.state import ConversationLine, FileChip, IconState, TrayMenuState
 
 
 @pytest.fixture(scope="module")
@@ -134,18 +135,163 @@ def _window(calls):
     )
 
 
+def _texts(win):
+    return [lbl.text() for lbl in win.chat.findChildren(QLabel)]
+
+
 def test_window_append_status_busy(app):
     win = _window([])
     win.append(ConversationLine("user", "hello <b>"))
     win.append(ConversationLine("assistant", "hi"))
-    text = win.log.toPlainText()
-    assert "You: hello <b>" in text and "L.U.N.A.: hi" in text
+    assert _texts(win) == ["hello <b>", "hi"]  # markup is shown literally
+    assert all(lbl.textFormat() == Qt.TextFormat.PlainText for lbl in win.chat.findChildren(QLabel))
     win.set_status("Thinking")
     assert win.status.text() == "Thinking"
     win.set_input_busy(True)
-    assert not win.input.isEnabled()
+    assert not win.input.isEnabled() and not win.send_button.isEnabled()
     win.set_input_busy(False)
     assert win.input.isEnabled()
+
+
+def test_bubbles_align_by_kind_and_chip_colour_follows_ok(app):
+    win = _window([])
+    win.resize(420, 640)
+    win.show()
+    win.append(ConversationLine("user", "open youtube"))
+    win.append(ConversationLine("assistant", "Opening."))
+    win.append(ConversationLine("action", "open_website: ok", ok=True))
+    win.append(ConversationLine("action", "close_app: failed", ok=False))
+    win.append(ConversationLine("system", "note"))
+    QApplication.processEvents()
+    labels = {lbl.text(): lbl for lbl in win.chat.findChildren(QLabel)}
+    assert labels["open youtube"].property("bubble") == "user"
+    assert labels["Opening."].property("bubble") == "assistant"
+    user_x = labels["open youtube"].mapTo(win, labels["open youtube"].rect().topLeft()).x()
+    luna_x = labels["Opening."].mapTo(win, labels["Opening."].rect().topLeft()).x()
+    assert user_x > luna_x
+    assert labels["open youtube"].geometry().right() > win.width() // 2
+    assert labels["open_website: ok"].property("chip") == "ok"
+    assert labels["close_app: failed"].property("chip") == "fail"
+    assert labels["note"].property("bubble") == "system"
+    win.hide()
+
+
+def test_long_bubble_is_at_most_80_percent_wide(app):
+    win = _window([])
+    win.show()
+    win.append(ConversationLine("assistant", "word " * 200))
+    QApplication.processEvents()
+    bubble = win.chat.findChildren(QLabel)[0]
+    assert bubble.width() <= win.chat.viewport().width() * 0.8 + 1
+    win.hide()
+
+
+def test_chat_is_bounded_by_history_lines(app):
+    win = QtWindowView(
+        on_submit=lambda t: None, on_cancel=lambda: None, on_closed=lambda: None, history_lines=3
+    )
+    for i in range(5):
+        win.append(ConversationLine("assistant", f"m{i}"))
+    assert win.chat.row_count == 3
+    assert _texts(win) == ["m2", "m3", "m4"]
+
+
+def test_autoscroll_only_when_at_bottom(app):
+    win = _window([])
+    win.show()
+    for i in range(40):
+        win.append(ConversationLine("assistant", f"line {i}"))
+    QTest.qWait(30)
+    bar = win.chat.verticalScrollBar()
+    assert bar.maximum() > 0 and bar.value() == bar.maximum()
+    bar.setValue(0)  # the user scrolled up
+    win.append(ConversationLine("assistant", "new"))
+    QTest.qWait(30)
+    assert bar.value() == 0
+    bar.setValue(bar.maximum())
+    win.append(ConversationLine("assistant", "newer"))
+    QTest.qWait(30)
+    assert bar.value() == bar.maximum()
+    win.hide()
+
+
+def test_file_chips_call_open_file_and_other_actions_have_none(app):
+    opened: list = []
+    win = QtWindowView(
+        on_submit=lambda t: None,
+        on_cancel=lambda: None,
+        on_closed=lambda: None,
+        on_open_file=lambda i, a: opened.append((i, a)),
+    )
+    win.append(ConversationLine("action", "open_website: ok", ok=True))
+    assert not win.chat.findChildren(QPushButton)
+    win.append(
+        ConversationLine(
+            "action", "find_file: ok", ok=True, files=(FileChip(1, "a.pdf"), FileChip(2))
+        )
+    )
+    buttons = {b.text(): b for b in win.chat.findChildren(QPushButton)}
+    assert set(buttons) == {"Open 1", "Folder 1", "Open 2", "Folder 2"}
+    buttons["Open 2"].click()
+    buttons["Folder 1"].click()
+    assert opened == [(2, "open"), (1, "reveal")]
+
+
+def test_send_button_and_enter_submit(app):
+    calls: list = []
+    win = _window(calls)
+    win.show()
+    assert not win.send_button.isEnabled()
+    win.input.setText("hello")
+    assert win.send_button.isEnabled()
+    win.send_button.click()
+    assert calls == [("submit", "hello")] and win.input.text() == ""
+    win.hide()
+
+
+def test_mic_button_presses_and_follows_state(app):
+    calls: list = []
+    win = QtWindowView(
+        on_submit=lambda t: None,
+        on_cancel=lambda: None,
+        on_closed=lambda: None,
+        on_listen=lambda: calls.append("listen"),
+    )
+    win.mic_button.click()
+    assert calls == ["listen"] and not win.mic_button.isChecked()  # state is the controller's
+    win.set_state(IconState.RECORDING, "Listening")
+    assert win.mic_button.isChecked() and win.caption.text() == "Listening"
+    assert win.orb.state is IconState.RECORDING
+    win.mic_button.click()
+    assert calls == ["listen", "listen"] and win.mic_button.isChecked()
+    win.set_state(IconState.IDLE, "Idle")
+    assert not win.mic_button.isChecked()
+
+
+def test_mic_button_disabled_with_reason(app):
+    win = _window([])
+    win.set_voice_available(False, "Voice input is not available")
+    assert not win.mic_button.isEnabled()
+    assert win.mic_button.toolTip() == "Voice input is not available"
+    win.set_voice_available(True, "")
+    assert win.mic_button.isEnabled() and win.mic_button.toolTip()
+
+
+def test_hidden_window_runs_no_timers(app):
+    win = _window([])
+    win.show()
+    win.set_state(IconState.THINKING, "Thinking")
+    win.hide()
+    assert not any(t.isActive() for t in win.findChildren(QTimer))
+
+
+def test_dark_title_bar_requested_on_show(app, monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(window_module, "enable_dark_title_bar", lambda hwnd: seen.append(hwnd))
+    win = _window([])
+    win.show()
+    assert len(seen) == 1
+    win.hide()
 
 
 def test_window_enter_submits_and_escape_cancels(app):

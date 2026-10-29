@@ -420,3 +420,15 @@ def test_listener_close_error_does_not_break_close(tmp_path, wake_apps, fake_loc
     listener.close = boom
     app.close()  # no exception
     assert voice._wake is None
+
+
+def test_press_is_push_to_talk_only_while_listening_is_on(tmp_path, wake_apps, fake_local):
+    app = make(tmp_path, wake_apps, mic=FakeLiveMic())
+    voice = app.voice_input
+    assert voice.press() is False  # listening is off: nothing is started
+    assert voice.enable(hotkey_required=False) is None
+    presses = []
+    voice._parts.frontend.press = lambda: presses.append(1)
+    assert voice.press() is True and presses == [1]
+    voice.close()
+    assert voice.press() is False

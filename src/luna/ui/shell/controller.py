@@ -29,16 +29,20 @@ from luna.core.events import (
     TranscriptReady,
 )
 from luna.core.models import Reply, Request
+from luna.llm.base import ToolCall
 from luna.platform.base import Autostart, LaunchCommand
+from luna.tools.base import ToolContext, ToolResult
 from luna.ui.replies import is_silent
 from luna.ui.shell.state import (
     Conversation,
     ConversationLine,
     IconState,
     TrayMenuState,
+    caption_for,
     derive_icon_state,
     tooltip_for,
 )
+from luna.ui.shell.strings import t
 from luna.ui.shell.views import TrayView, UiThread, WindowView
 from luna.wakeword.listener import WakeState, WakeStateChanged
 
@@ -48,8 +52,6 @@ ERROR_ICON_S = 5.0
 NOTIFY_INTERVAL_S = 300.0
 WATCHDOG_S = 10.0
 LOCAL_PROVIDER = "local"
-WAKE_LABEL = "Listen for «Луна»"
-WAKE_STARTING_LABEL = "Starting wake word…"
 COMMANDS_HINT = "Commands are in the tray menu"
 NOTIFY_TITLE = "L.U.N.A."
 
@@ -57,6 +59,18 @@ LineKind = Literal["user", "assistant", "action", "system"]
 Clock = Callable[[], float]
 StartThread = Callable[[str, Callable[[], None]], None]
 Job = Callable[[], None]
+
+
+class _DenyConfirmer:
+    def confirm(self, prompt: str) -> bool:
+        return False
+
+
+class VoicePress(Protocol):
+    enabled: bool
+
+    def enable(self, *, hotkey_required: bool = True) -> str | None: ...
+    def press(self) -> bool: ...
 
 
 class Cancellable(Protocol):
@@ -105,6 +119,7 @@ class ShellController:
         schedule: Schedule = schedule_timer,
         watchdog: Callable[[], None] = arm_watchdog,
         on_quit: Callable[[], None] | None = None,
+        lang: str = "en",
     ) -> None:
         self._app = app
         self._tray = tray
@@ -118,6 +133,7 @@ class ShellController:
         self._schedule = schedule
         self._watchdog = watchdog
         self._on_quit = on_quit
+        self._lang = lang
 
         self._conversation = Conversation(conf.history_lines)
         self._status: Status | None = None
@@ -165,6 +181,7 @@ class ShellController:
             self._notify("degraded", "L.U.N.A. started with limited features; see its window.")
         self._refresh_icon()
         self._refresh_status()
+        self._refresh_voice_available()
         if wake:
             self._queue_wake_on(from_start=True)
         else:
@@ -298,6 +315,32 @@ class ShellController:
         if cancel is not None:
             cancel.set()
 
+    def open_result(self, index: int, action: str) -> None:
+        """A "Open N" / "Folder N" chip: ``open_file`` through the registry (logged, SAFE)."""
+        if self._quitting or action not in ("open", "reveal") or not 1 <= index <= 10:
+            return
+        self._request_seq += 1
+        number = self._request_seq
+        self._start_thread(f"luna-ui-open-{number}", lambda: self._run_open(number, index, action))
+
+    def _run_open(self, number: int, index: int, action: str) -> None:
+        call = ToolCall(f"ui-open-{number}", "open_file", {"index": index, "action": action})
+        ctx = ToolContext(f"ui-open-{number}", "text", _DenyConfirmer(), "")
+        try:
+            result: ToolResult | None = self._app.registry.execute(call, ctx)
+        except Exception:
+            logger.exception("open_file from the window failed")
+            result = None
+        self._ui.post(lambda: self._open_done(result))
+
+    def _open_done(self, result: ToolResult | None) -> None:
+        if self._quitting:
+            return
+        if result is None:
+            self._line("system", "Could not open the file. See the log.")
+        else:
+            self._add(self._conversation.add_action(result))
+
     # ---- speech ----------------------------------------------------------------------
 
     def _speak(self, reply: Reply) -> None:
@@ -315,6 +358,33 @@ class ShellController:
         return None
 
     # ---- window ----------------------------------------------------------------------
+
+    def toggle_listen(self) -> None:
+        """The window's microphone button: push-to-talk, like the hotkey (never blocks the UI)."""
+        voice = self._app.voice_input
+        if self._quitting:
+            return
+        if voice is None:
+            self._line("system", self._no_voice())
+            return
+        self._start_thread("luna-ui-mic", lambda: self._run_press(voice))
+
+    def _run_press(self, voice: VoicePress) -> None:
+        reason: str | None = None
+        try:
+            if not voice.enabled:
+                reason = voice.enable(hotkey_required=False)
+            if reason is None and not voice.press():
+                reason = "listening is off"
+        except Exception as exc:
+            logger.warning("push-to-talk from the window failed", exc_info=True)
+            reason = f"unexpected error ({type(exc).__name__})"
+        if reason is not None:
+            self._ui.post(lambda: self._mic_failed(reason))
+
+    def _mic_failed(self, reason: str) -> None:
+        if not self._quitting:
+            self._line("system", f"Cannot listen: {reason}.")
 
     def toggle_window(self) -> None:
         if self._quitting:
@@ -519,22 +589,34 @@ class ShellController:
             self._conversation_open,
         )
         self._icon = state
-        self._tray.set_state(state, tooltip_for(state))
+        self._tray.set_state(state, tooltip_for(state, self._lang))
+        self._window.set_state(state, caption_for(state, self._lang))
+
+    def _no_voice(self) -> str:
+        return t("window.mic_unavailable", self._lang)
+
+    def _refresh_voice_available(self) -> None:
+        available = self._app.voice_input is not None
+        self._window.set_voice_available(available, "" if available else self._no_voice())
 
     def _refresh_status(self) -> None:
-        parts = [self._status.value if self._status is not None else Status.IDLE.value]
-        if self._status is Status.ERROR and self._status_detail:
-            parts[0] = f"error: {self._status_detail}"
+        lang = self._lang
+        status = self._status if self._status is not None else Status.IDLE
+        parts = [t(f"status.{status.value}", lang)]
+        if status is Status.ERROR and self._status_detail:
+            parts[0] = t("status.error_detail", lang, detail=self._status_detail)
         if self._wake_state != "OFF":
-            parts.append(f"Wake: {self._wake_state}")
+            parts.append(t("status.wake", lang, state=self._wake_state))
             if self._conversation_open:
-                parts.append("conversation")
+                parts.append(t("status.conversation", lang))
         speaker = self._app.speaker
         if speaker is not None and speaker.muted:
-            parts.append("Voice: muted")
+            parts.append(t("status.muted", lang))
         if self._provider is not None:
             parts.append(
-                "LLM: offline" if self._provider == LOCAL_PROVIDER else f"LLM: {self._provider}"
+                t("status.llm_offline", lang)
+                if self._provider == LOCAL_PROVIDER
+                else t("status.llm", lang, name=self._provider)
             )
         self._window.set_status(" | ".join(parts))
 
@@ -546,7 +628,7 @@ class ShellController:
             TrayMenuState(
                 wake_checked=wake_on and not self._wake_busy,
                 wake_enabled=voice is not None and not self._wake_busy,
-                wake_label=WAKE_STARTING_LABEL if self._wake_busy else WAKE_LABEL,
+                wake_label=t("tray.wake_starting" if self._wake_busy else "tray.wake", self._lang),
                 voice_checked=speaker is not None and not speaker.muted,
                 voice_enabled=speaker is not None,
                 autostart_checked=self._autostart_checked,

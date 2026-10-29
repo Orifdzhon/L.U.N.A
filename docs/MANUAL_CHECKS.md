@@ -265,6 +265,19 @@ sandbox Desktop before running it.
 | N16 | Look into the install folder | `LICENSE` and `THIRD_PARTY_NOTICES.txt` are there; the notices contain no `C:\Users\...` build paths | [ ] / [ ] |
 | N17 | Public vs personal setup | The public bundle has no `sherpa_onnx`; the personal one has the Piper voice runtime | [ ] / [ ] |
 
+## O. New window (ADR 0011 Feature C)
+
+| # | Step | Expected | Pass / Fail |
+|---|---|---|---|
+| O1 | Open the window from the tray | Dark window with a dark title bar; the moon orb on top with its state caption; your lines in blue bubbles on the right, Luna's in dark bubbles on the left | [ ] / [ ] |
+| O2 | Type a command, press Enter; then type another and click the send button | Both are sent; Esc cancels a running request | [ ] / [ ] |
+| O3 | Click the microphone button, speak, click it again | Recording starts (button outlined red, orb RECORDING), the second click stops it; same as the hotkey | [ ] / [ ] |
+| O4 | Start with `[tts]`/voice unavailable (no microphone) | The microphone button is disabled; its tooltip says why | [ ] / [ ] |
+| O5 | Scroll up in a long chat, then get a new reply | The view does not jump; at the bottom it follows new lines | [ ] / [ ] |
+| O6 | Reply containing `<b>x</b>` (ask Luna to repeat it) | Shown literally, not bold | [ ] / [ ] |
+| O7 | After a file search (when #-B4 is merged) click "Open 1" / "Folder 1" | The file opens / Explorer selects it; the action appears in the chat and the action log | [ ] / [ ] |
+| O8 | Hide the window (X) and watch Task Manager for a minute | `luna.exe` CPU stays at about 0 % while hidden or minimized | [ ] / [ ] |
+
 Once on your real PC: install the personal setup and run the MVP phrases by voice (spec section 6).
 
 ### Spec section 6 summary

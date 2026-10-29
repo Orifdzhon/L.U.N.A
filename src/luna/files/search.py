@@ -86,7 +86,8 @@ class FileSearch:
             hits.extend(walked.hits)
             timed_out, scanned = walked.timed_out, walked.scanned
             backend = "index+walk" if backend == "index" else "walk"
-        ranked = rank(hits, q, limit=self._conf.max_results)
+        everything = rank(hits, q, limit=len(hits))
+        ranked = everything[: self._conf.max_results]
         elapsed = self._clock() - start
         log.info(
             "file search: %d result(s) from %d candidate(s), backend=%s, scanned=%d, "
@@ -98,7 +99,9 @@ class FileSearch:
             timed_out,
             round(elapsed * 1000),
         )
-        return SearchOutcome(tuple(ranked), backend, timed_out, scanned, elapsed, tuple(roots))
+        return SearchOutcome(
+            tuple(ranked), backend, timed_out, scanned, elapsed, tuple(roots), len(everything)
+        )
 
     def _from_index(
         self, q: FileQuery, roots: Sequence[RootDir], budget: float

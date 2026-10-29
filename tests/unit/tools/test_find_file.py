@@ -79,7 +79,8 @@ def test_find_returns_untrusted_wrapped_relative_paths(env):
     assert "secretuser" not in text and str(env.base) not in text
     first = result.data["results"][0]
     assert result.data["count"] == 2 and first["index"] == 1
-    assert first == {"index": 1, "name": "Резюме_2026.pdf"}  # no full path in data
+    assert first == {"index": 1, "name": "Резюме_2026.pdf", "kind": "file", "can_open": True}
+    assert str(env.base) not in str(first)  # no full path in data
     assert str(env.base) not in str(result.data)
     assert text.rstrip().endswith(text.split("id=")[1].split(">")[0] + ">")
 
@@ -313,3 +314,35 @@ def test_registry_logs_untrusted_placeholder_not_names(env, tmp_path):
     assert "договор" in logged  # the query argument is logged
     bad = registry.execute(ToolCall("2", "open_file", {"index": 99, "path": "C:\\x.exe"}), CTX)
     assert not bad.ok  # a path argument is rejected by the schema
+
+
+def test_results_are_capped_to_max_results_and_more_is_reported(env):
+    make_files(env.root.path, [f"отчёт_{i}.pdf" for i in range(8)], b"x")
+    find_tool, open_tool = env.tools(FilesSettings(max_results=5))
+    result = find(find_tool, "отчёт")
+    assert len(result.data["results"]) == 5 == result.data["count"]
+    assert result.data["more"] == 3
+    text = result.summary
+    assert "[5] " in text and "[6] " not in text
+    assert "List all 5, numbered 1..5" in text
+    assert "3 more match" in text
+    assert open_it(open_tool, 6).data["reason"] == "no_such_result"  # the stored list is capped too
+
+
+def test_no_more_note_when_everything_is_shown(env):
+    make_files(env.root.path, ["отчёт_1.pdf", "отчёт_2.pdf"], b"x")
+    find_tool, _ = env.tools()
+    result = find(find_tool, "отчёт")
+    assert result.data["more"] == 0 and "more match" not in result.summary
+    assert "List all 2, numbered 1..2" in result.summary
+
+
+def test_results_carry_kind_and_can_open_without_paths(env):
+    make_files(env.root.path, ["проекты/a.txt", "отчёт.pdf", "отчёт.exe"], b"x")
+    (env.root.path / "отчёт папка").mkdir()
+    find_tool, _ = env.tools()
+    rows = {r["name"]: r for r in find(find_tool, "отчёт").data["results"]}
+    assert rows["отчёт папка"]["kind"] == "dir" and rows["отчёт папка"]["can_open"] is True
+    assert rows["отчёт.pdf"]["kind"] == "file" and rows["отчёт.pdf"]["can_open"] is True
+    assert rows["отчёт.exe"]["kind"] == "file" and rows["отчёт.exe"]["can_open"] is False
+    assert all(set(r) == {"index", "name", "kind", "can_open"} for r in rows.values())

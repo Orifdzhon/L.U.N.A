@@ -50,3 +50,12 @@ def test_no_fixed_russian_string_uses_masculine_self_forms() -> None:
             if is_text and MASCULINE.search(node.value):
                 offenders.append((path.name, node.value[:60]))
     assert not offenders
+
+
+def test_find_file_instruction_requires_listing_all_numbered_results():
+    en = prompts.build_system_prompt("en", "now")
+    assert "list ALL returned results, numbered 1..N" in en
+    assert "'and N more'" in en
+    ru = prompts.build_system_prompt("ru", "now")
+    assert "перечисли ВСЕ возвращённые результаты с номерами 1..N" in ru  # noqa: RUF001
+    assert "«и ещё N»" in ru

@@ -17,12 +17,20 @@ from PySide6.QtWidgets import (
 )
 
 from luna.ui.shell.state import ConversationLine, FileChip
+from luna.ui.shell.strings import t
 
 BUBBLE_WIDTH_RATIO = 0.8
 AT_BOTTOM_SLACK_PX = 4
-FILES_PER_LINE = 1  # "Open N / Folder N" pairs per line
+NAME_MAX_CHARS = 30  # file names are cut in the middle; the tooltip has the whole name
 
 OpenFile = Callable[[int, str], None]
+
+
+def _short(name: str) -> str:
+    if len(name) <= NAME_MAX_CHARS:
+        return name
+    head = (NAME_MAX_CHARS - 1) * 2 // 3
+    return name[:head] + "…" + name[-(NAME_MAX_CHARS - 1 - head) :]
 
 
 def _label(text: str, prop: str, value: str) -> QLabel:
@@ -35,7 +43,9 @@ def _label(text: str, prop: str, value: str) -> QLabel:
 class ChatView(QScrollArea):
     """UI thread only. ``max_lines`` bounds the widgets kept (the oldest row is deleted)."""
 
-    def __init__(self, max_lines: int, on_open_file: OpenFile | None = None) -> None:
+    def __init__(
+        self, max_lines: int, on_open_file: OpenFile | None = None, lang: str = "en"
+    ) -> None:
         super().__init__()
         self.setObjectName("chat")
         self.setWidgetResizable(True)
@@ -43,6 +53,7 @@ class ChatView(QScrollArea):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._max_lines = max(1, max_lines)
         self._on_open_file = on_open_file
+        self._lang = lang
         self._rows: list[QWidget] = []
         self._bubbles: list[QLabel] = []
         self._stick = True  # the view was at the bottom before the last change
@@ -107,33 +118,46 @@ class ChatView(QScrollArea):
         column = QVBoxLayout(row)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(4)
-        top = QHBoxLayout()
-        top.setContentsMargins(0, 0, 0, 0)
         ok = line.ok is not False  # unknown counts as fine; only an explicit failure is red
-        chip = _label(line.text, "chip", "ok" if ok else "fail")
-        chip.setWordWrap(True)
-        self._bubbles.append(chip)
-        top.addWidget(chip)
-        top.addStretch(1)
-        column.addLayout(top)
-        for start in range(0, len(line.files), FILES_PER_LINE):
-            buttons = QHBoxLayout()
-            buttons.setContentsMargins(0, 0, 0, 0)
-            buttons.setSpacing(6)
-            for file in line.files[start : start + FILES_PER_LINE]:
-                buttons.addWidget(self._file_button(file, "Open", "open"))
-                buttons.addWidget(self._file_button(file, "Folder", "reveal"))
-            buttons.addStretch(1)
-            column.addLayout(buttons)
+        if not line.files:  # a find_file result is shown as its rows, not as a status chip
+            top = QHBoxLayout()
+            top.setContentsMargins(0, 0, 0, 0)
+            chip = _label(line.text, "chip", "ok" if ok else "fail")
+            chip.setWordWrap(True)
+            self._bubbles.append(chip)
+            top.addWidget(chip)
+            top.addStretch(1)
+            column.addLayout(top)
+        for file in line.files:
+            column.addLayout(self._file_row(file))
         return row
 
-    def _file_button(self, file: FileChip, title: str, action: str) -> QPushButton:
-        button = QPushButton(f"{title} {file.index}")
+    def _file_row(self, file: FileChip) -> QHBoxLayout:
+        """``1. name  [Open] [Folder]``: one compact row per result."""
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        name = _label(f"{file.index}. {_short(file.label)}", "filename", "true")
+        if file.label:
+            name.setToolTip(file.label)
+        layout.addWidget(name)
+        layout.addStretch(1)
+        if file.kind == "dir":
+            layout.addWidget(self._file_button(file, "files.open", "open"))
+        elif not file.can_open:
+            layout.addWidget(self._file_button(file, "files.reveal", "reveal"))
+        else:
+            layout.addWidget(self._file_button(file, "files.open", "open"))
+            layout.addWidget(self._file_button(file, "files.folder", "reveal"))
+        return layout
+
+    def _file_button(self, file: FileChip, key: str, action: str) -> QPushButton:
+        button = QPushButton(t(key, self._lang))
         button.setProperty("filechip", "true")
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        if file.label:
-            button.setToolTip(file.label)
+        tip = "files.open_tip" if action == "open" else "files.folder_tip"
+        button.setToolTip(t(tip, self._lang, name=file.label or str(file.index)))
         button.clicked.connect(lambda _=False, i=file.index, a=action: self._open(i, a))
         return button
 

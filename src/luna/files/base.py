@@ -42,6 +42,7 @@ class SearchOutcome:
     scanned: int = 0
     elapsed_s: float = 0.0
     roots: tuple[RootDir, ...] = ()  # the roots this search was allowed to use
+    total: int = 0  # all matches found; 0 = unknown (then ``len(hits)``)
 
 
 @runtime_checkable

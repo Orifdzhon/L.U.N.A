@@ -70,10 +70,12 @@ MAX_FILE_CHIPS = 10
 
 @dataclass(frozen=True)
 class FileChip:
-    """One ``find_file`` hit as the window shows it: buttons "Open N" / "Folder N" (no path)."""
+    """One ``find_file`` hit as the window shows it: a numbered row with buttons (no path)."""
 
     index: int  # 1-based, as ``open_file(index, ...)`` expects
-    label: str = ""  # file name for the tooltip; never a full path
+    label: str = ""  # short file name; never a full path
+    kind: Literal["file", "dir"] = "file"  # a folder gets one button: open it
+    can_open: bool = True  # False: only "show in folder" (programs, scripts, unknown types)
 
 
 @dataclass(frozen=True)
@@ -99,7 +101,9 @@ def file_chips(result: ToolResult) -> tuple[FileChip, ...]:
         if not isinstance(index, int) or isinstance(index, bool) or not 1 <= index <= 10:
             continue
         name = item.get("name")
-        chips.append(FileChip(index, name if isinstance(name, str) else ""))
+        kind = "dir" if item.get("kind") == "dir" else "file"
+        can_open = item.get("can_open") is not False  # old data without the key: both buttons
+        chips.append(FileChip(index, name if isinstance(name, str) else "", kind, can_open))
     return tuple(chips)
 
 
